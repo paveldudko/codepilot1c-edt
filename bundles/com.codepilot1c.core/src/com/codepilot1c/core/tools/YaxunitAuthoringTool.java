@@ -57,9 +57,7 @@ public class YaxunitAuthoringTool implements ITool {
     private static final String DEFAULT_SAMPLE_TEST = "TestSample"; //$NON-NLS-1$
     private static final String DEFAULT_DATA_HELPER = "ЮТДанные.Подготовить();"; //$NON-NLS-1$
 
-    /** Matches Procedure/EndProcedure blocks in both RU and EN BSL syntax. Group 1 is the procedure name. */
-    static final Pattern PROCEDURE_PATTERN = Pattern.compile(
-            "(?s)(?:Процедура|Procedure)\\s+([\\p{L}0-9_]+).*?(?:КонецПроцедуры|EndProcedure)"); //$NON-NLS-1$
+    private static final Pattern PROCEDURE_PATTERN = com.codepilot1c.core.edit.BslProcedureMatcher.PROCEDURE_PATTERN;
 
     private static final String SCHEMA = """
             {

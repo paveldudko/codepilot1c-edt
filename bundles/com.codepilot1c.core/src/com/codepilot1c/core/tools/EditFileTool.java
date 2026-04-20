@@ -17,8 +17,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IResource;
@@ -28,6 +26,7 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Path;
 
+import com.codepilot1c.core.edit.BslBoundaryGuard;
 import com.codepilot1c.core.edit.EditBlock;
 import com.codepilot1c.core.edit.FileEditApplier;
 import com.codepilot1c.core.edit.FuzzyMatcher;
@@ -89,12 +88,6 @@ public class EditFileTool implements ITool {
                 "required": ["path"]
             }
             """; //$NON-NLS-1$
-
-    private static final Pattern BSL_METHOD_OPEN = Pattern.compile(
-            "(?im)^\\s*(?:&[\\p{L}_][\\p{L}\\d_]*\\s*(?:\\([^)]*\\))?\\s*)?(Процедура|Функция|Procedure|Function)\\b"); //$NON-NLS-1$
-
-    private static final Pattern BSL_METHOD_CLOSE = Pattern.compile(
-            "(?im)^\\s*(КонецПроцедуры|КонецФункции|EndProcedure|EndFunction)\\b"); //$NON-NLS-1$
 
     private final FuzzyMatcher fuzzyMatcher = new FuzzyMatcher();
     private final SearchReplaceFormat searchReplaceFormat = new SearchReplaceFormat();
@@ -451,65 +444,14 @@ public class EditFileTool implements ITool {
         if (file == null) {
             return null;
         }
-        return validateBslBoundariesFor(file.getName(), before, after);
-    }
-
-    /**
-     * BSL boundary guard: ensures the edit does not break the balance of
-     * Процедура/Функция ↔ КонецПроцедуры/КонецФункции. Returns an error message
-     * if the balance is violated, or null if the edit is safe (or the file is not BSL).
-     *
-     * <p>Package-private for unit tests; does not require an IFile instance.</p>
-     */
-    static String validateBslBoundariesFor(String fileName, String before, String after) {
-        if (before == null || after == null) {
-            return null;
-        }
-        if (fileName == null || !fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".bsl")) { //$NON-NLS-1$
-            return null;
-        }
-
-        int openBefore = countMatches(BSL_METHOD_OPEN, before);
-        int closeBefore = countMatches(BSL_METHOD_CLOSE, before);
-        int openAfter = countMatches(BSL_METHOD_OPEN, after);
-        int closeAfter = countMatches(BSL_METHOD_CLOSE, after);
-
-        int deltaOpen = openAfter - openBefore;
-        int deltaClose = closeAfter - closeBefore;
-
-        if (deltaOpen != deltaClose) {
-            return String.format(
-                    "❌ BSL boundary guard: edit отклонён — нарушен баланс границ методов.%n" //$NON-NLS-1$
-                            + "  Процедура/Функция: %+d (было %d → стало %d)%n" //$NON-NLS-1$
-                            + "  КонецПроцедуры/КонецФункции: %+d (было %d → стало %d)%n" //$NON-NLS-1$
-                            + "Скорее всего, fuzzy-поиск зацепил соседний метод. " //$NON-NLS-1$
-                            + "Попробуйте более уникальный old_text (добавьте строку сигнатуры), " //$NON-NLS-1$
-                            + "предпросмотр через dry_run=true, " //$NON-NLS-1$
-                            + "либо обход: skip_bsl_boundary_guard=true (опасно) или write_module_source.", //$NON-NLS-1$
-                    deltaOpen, openBefore, openAfter, deltaClose, closeBefore, closeAfter);
-        }
-        if (openAfter != closeAfter) {
-            return String.format(
-                    "❌ BSL boundary guard: после edit-а %d объявлений методов vs %d закрытий. Edit отклонён.", //$NON-NLS-1$
-                    openAfter, closeAfter);
-        }
-        return null;
-    }
-
-    private static int countMatches(Pattern pattern, String text) {
-        int count = 0;
-        Matcher m = pattern.matcher(text);
-        while (m.find()) {
-            count++;
-        }
-        return count;
+        return BslBoundaryGuard.validate(file.getName(), before, after);
     }
 
     private String buildDryRunSummary(IFile file, String before, String after, String summary) {
-        int openBefore = countMatches(BSL_METHOD_OPEN, before);
-        int openAfter = countMatches(BSL_METHOD_OPEN, after);
-        int closeBefore = countMatches(BSL_METHOD_CLOSE, before);
-        int closeAfter = countMatches(BSL_METHOD_CLOSE, after);
+        int openBefore = BslBoundaryGuard.countOpenings(before);
+        int openAfter = BslBoundaryGuard.countOpenings(after);
+        int closeBefore = BslBoundaryGuard.countClosings(before);
+        int closeAfter = BslBoundaryGuard.countClosings(after);
         int delta = after.length() - before.length();
         return String.format(
                 "[dry_run] НЕ ЗАПИСАНО. %s%n" //$NON-NLS-1$

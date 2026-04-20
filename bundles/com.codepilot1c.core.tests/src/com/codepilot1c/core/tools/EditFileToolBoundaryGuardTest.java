@@ -10,6 +10,8 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import com.codepilot1c.core.edit.BslBoundaryGuard;
+
 /**
  * Tests for the BSL boundary guard in {@link EditFileTool}.
  *
@@ -31,7 +33,7 @@ public class EditFileToolBoundaryGuardTest {
 
     @Test
     public void nonBslFileReturnsNullEvenIfUnbalanced() {
-        String result = EditFileTool.validateBslBoundariesFor(
+        String result = BslBoundaryGuard.validate(
                 "Form.xml", //$NON-NLS-1$
                 "Процедура A() КонецПроцедуры", //$NON-NLS-1$
                 "Процедура A()"); // intentionally missing EndProcedure //$NON-NLS-1$
@@ -40,7 +42,7 @@ public class EditFileToolBoundaryGuardTest {
 
     @Test
     public void nullFileNameBypassesGuard() {
-        assertNull(EditFileTool.validateBslBoundariesFor(
+        assertNull(BslBoundaryGuard.validate(
                 null, MODULE_BSL, "Процедура X()")); //$NON-NLS-1$
     }
 
@@ -49,7 +51,7 @@ public class EditFileToolBoundaryGuardTest {
         String edited = MODULE_BSL.replace("Сообщить(\"первая\");", //$NON-NLS-1$
                 "Сообщить(\"первая - обновлено\");"); //$NON-NLS-1$
         assertNull("Edit inside method body must not trigger the guard", //$NON-NLS-1$
-                EditFileTool.validateBslBoundariesFor("ManagerModule.bsl", MODULE_BSL, edited)); //$NON-NLS-1$
+                BslBoundaryGuard.validate("ManagerModule.bsl", MODULE_BSL, edited)); //$NON-NLS-1$
     }
 
     @Test
@@ -58,7 +60,7 @@ public class EditFileToolBoundaryGuardTest {
                 + "    Сообщить(\"первая\");\n" //$NON-NLS-1$
                 + "КонецПроцедуры\n"; //$NON-NLS-1$
         assertNull("Removing a full Procedure/EndProcedure pair keeps the balance", //$NON-NLS-1$
-                EditFileTool.validateBslBoundariesFor("ManagerModule.bsl", MODULE_BSL, edited)); //$NON-NLS-1$
+                BslBoundaryGuard.validate("ManagerModule.bsl", MODULE_BSL, edited)); //$NON-NLS-1$
     }
 
     @Test
@@ -67,7 +69,7 @@ public class EditFileToolBoundaryGuardTest {
         String corrupted = MODULE_BSL.replace("    Сообщить(\"первая\");\n" //$NON-NLS-1$
                 + "КонецПроцедуры\n", //$NON-NLS-1$
                 "    Сообщить(\"первая - обновлено\");\n"); // no EndProcedure //$NON-NLS-1$
-        String err = EditFileTool.validateBslBoundariesFor(
+        String err = BslBoundaryGuard.validate(
                 "ManagerModule.bsl", MODULE_BSL, corrupted); //$NON-NLS-1$
         assertNotNull("Guard must reject edit that drops EndProcedure", err); //$NON-NLS-1$
         assertTrue("Error must mention boundary balance", //$NON-NLS-1$
@@ -77,7 +79,7 @@ public class EditFileToolBoundaryGuardTest {
     @Test
     public void extraEndProcedureIsRejected() {
         String corrupted = MODULE_BSL + "КонецПроцедуры\n"; //$NON-NLS-1$
-        String err = EditFileTool.validateBslBoundariesFor(
+        String err = BslBoundaryGuard.validate(
                 "ManagerModule.bsl", MODULE_BSL, corrupted); //$NON-NLS-1$
         assertNotNull("Guard must reject stray EndProcedure", err); //$NON-NLS-1$
     }
@@ -87,7 +89,7 @@ public class EditFileToolBoundaryGuardTest {
         String before = "Procedure A()\nEndProcedure\n"; //$NON-NLS-1$
         String afterUnbalanced = "Procedure A()\n"; //$NON-NLS-1$
         assertNotNull("English Procedure/EndProcedure must be counted", //$NON-NLS-1$
-                EditFileTool.validateBslBoundariesFor("Module.bsl", before, afterUnbalanced)); //$NON-NLS-1$
+                BslBoundaryGuard.validate("Module.bsl", before, afterUnbalanced)); //$NON-NLS-1$
     }
 
     @Test
@@ -95,7 +97,7 @@ public class EditFileToolBoundaryGuardTest {
         String before = "Функция Сумма(А, Б)\n    Возврат А + Б;\nКонецФункции\n"; //$NON-NLS-1$
         String afterUnbalanced = "Функция Сумма(А, Б)\n    Возврат А + Б;\n"; //$NON-NLS-1$
         assertNotNull("Функция/КонецФункции must be counted", //$NON-NLS-1$
-                EditFileTool.validateBslBoundariesFor("Module.bsl", before, afterUnbalanced)); //$NON-NLS-1$
+                BslBoundaryGuard.validate("Module.bsl", before, afterUnbalanced)); //$NON-NLS-1$
     }
 
     @Test
@@ -103,7 +105,7 @@ public class EditFileToolBoundaryGuardTest {
         String before = "процедура low()\nконецпроцедуры\n"; //$NON-NLS-1$
         String afterUnbalanced = "процедура low()\n"; //$NON-NLS-1$
         assertNotNull("Lowercase keywords must be recognized", //$NON-NLS-1$
-                EditFileTool.validateBslBoundariesFor("Module.bsl", before, afterUnbalanced)); //$NON-NLS-1$
+                BslBoundaryGuard.validate("Module.bsl", before, afterUnbalanced)); //$NON-NLS-1$
     }
 
     @Test
@@ -111,7 +113,7 @@ public class EditFileToolBoundaryGuardTest {
         // &НаСервере annotation on a separate line must not cause double-counting.
         String before = "&НаСервере\nПроцедура A()\nКонецПроцедуры\n"; //$NON-NLS-1$
         String edited = "&НаСервере\nПроцедура A()\n    Сообщить(1);\nКонецПроцедуры\n"; //$NON-NLS-1$
-        assertNull(EditFileTool.validateBslBoundariesFor("Module.bsl", before, edited)); //$NON-NLS-1$
+        assertNull(BslBoundaryGuard.validate("Module.bsl", before, edited)); //$NON-NLS-1$
     }
 
     @Test
@@ -120,12 +122,12 @@ public class EditFileToolBoundaryGuardTest {
         // anchors at line start, comments start with //.
         String before = "Процедура A()\n    // тут КонецПроцедуры упомянут в комментарии\nКонецПроцедуры\n"; //$NON-NLS-1$
         String edited = "Процедура A()\n    // тут КонецПроцедуры упомянут в комментарии\n    Сообщить(1);\nКонецПроцедуры\n"; //$NON-NLS-1$
-        assertNull(EditFileTool.validateBslBoundariesFor("Module.bsl", before, edited)); //$NON-NLS-1$
+        assertNull(BslBoundaryGuard.validate("Module.bsl", before, edited)); //$NON-NLS-1$
     }
 
     @Test
     public void nullBeforeOrAfterReturnsNull() {
-        assertNull(EditFileTool.validateBslBoundariesFor("Module.bsl", null, "Процедура A()")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertNull(EditFileTool.validateBslBoundariesFor("Module.bsl", "Процедура A()", null)); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNull(BslBoundaryGuard.validate("Module.bsl", null, "Процедура A()")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNull(BslBoundaryGuard.validate("Module.bsl", "Процедура A()", null)); //$NON-NLS-1$ //$NON-NLS-2$
     }
 }
