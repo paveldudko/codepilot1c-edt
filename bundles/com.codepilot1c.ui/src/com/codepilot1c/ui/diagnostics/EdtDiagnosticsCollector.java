@@ -61,6 +61,7 @@ import com.e1c.g5.dt.applications.IApplicationManager;
 import com.e1c.g5.v8.dt.check.settings.CheckUid;
 import com.e1c.g5.v8.dt.check.settings.ICheckDescription;
 import com.e1c.g5.v8.dt.check.settings.ICheckRepository;
+import com.codepilot1c.core.diagnostics.DiagnosticsLineFilter;
 import com.codepilot1c.core.diagnostics.PathMatchTokens;
 import com.codepilot1c.core.diagnostics.RelativePathCandidates;
 import com.codepilot1c.core.logging.VibeLogger;
@@ -106,14 +107,16 @@ public class EdtDiagnosticsCollector {
             int maxItems,
             boolean includeSnippets,
             long waitMs,
-            boolean includeRuntimeMarkers) {
+            boolean includeRuntimeMarkers,
+            int lineFrom,
+            int lineTo) {
 
         public static DiagnosticsQuery defaults() {
-            return new DiagnosticsQuery(Severity.INFO, 0, true, 0, true);
+            return new DiagnosticsQuery(Severity.INFO, 0, true, 0, true, 0, 0);
         }
 
         public static DiagnosticsQuery withSeverity(Severity minSeverity) {
-            return new DiagnosticsQuery(minSeverity, 0, true, 0, true);
+            return new DiagnosticsQuery(minSeverity, 0, true, 0, true, 0, 0);
         }
     }
 
@@ -225,7 +228,8 @@ public class EdtDiagnosticsCollector {
                             .comparing((EdtDiagnostic d) -> d.severity().getLevel()).reversed()
                             .thenComparing(EdtDiagnostic::lineNumber));
 
-                    // Limit results (ensure maxItems is positive)
+                    // Filter by line range (no-op when lineFrom=lineTo=0) then limit
+                    diagnostics = applyLineFilter(diagnostics, q);
                     diagnostics = applyResultLimit(diagnostics, q.maxItems());
 
                     // Count by severity
@@ -285,6 +289,7 @@ public class EdtDiagnosticsCollector {
                         .thenComparing(EdtDiagnostic::filePath, Comparator.nullsLast(String::compareTo))
                         .thenComparing(EdtDiagnostic::lineNumber));
 
+                diagnostics = applyLineFilter(diagnostics, query);
                 diagnostics = applyResultLimit(diagnostics, query.maxItems());
 
                 int errors = (int) diagnostics.stream().filter(d -> d.severity() == Severity.ERROR).count();
@@ -610,6 +615,25 @@ public class EdtDiagnosticsCollector {
         return new ArrayList<>(diagnostics.subList(0, maxItems));
     }
 
+    private List<EdtDiagnostic> applyLineFilter(List<EdtDiagnostic> diagnostics, DiagnosticsQuery query) {
+        if (diagnostics == null || diagnostics.isEmpty() || query == null) {
+            return diagnostics;
+        }
+        if (DiagnosticsLineFilter.isDisabled(query.lineFrom(), query.lineTo())) {
+            return diagnostics;
+        }
+        int[] range = DiagnosticsLineFilter.normalize(query.lineFrom(), query.lineTo());
+        int from = range[0];
+        int to = range[1];
+        List<EdtDiagnostic> filtered = new ArrayList<>(diagnostics.size());
+        for (EdtDiagnostic d : diagnostics) {
+            if (DiagnosticsLineFilter.matches(d.lineNumber(), from, to)) {
+                filtered.add(d);
+            }
+        }
+        return filtered;
+    }
+
     private int getSoftScanLimit(int maxItems, int multiplier) {
         if (maxItems <= 0) {
             return Integer.MAX_VALUE;
@@ -659,6 +683,7 @@ public class EdtDiagnosticsCollector {
                         .thenComparing(EdtDiagnostic::filePath, Comparator.nullsLast(String::compareTo))
                         .thenComparing(EdtDiagnostic::lineNumber));
 
+                diagnostics = applyLineFilter(diagnostics, query);
                 diagnostics = applyResultLimit(diagnostics, query.maxItems());
 
                 int errors = (int) diagnostics.stream().filter(d -> d.severity() == Severity.ERROR).count();
@@ -712,6 +737,7 @@ public class EdtDiagnosticsCollector {
                         .thenComparing(EdtDiagnostic::filePath, Comparator.nullsLast(String::compareTo))
                         .thenComparing(EdtDiagnostic::lineNumber));
 
+                diagnostics = applyLineFilter(diagnostics, query);
                 diagnostics = applyResultLimit(diagnostics, query.maxItems());
 
                 int errors = (int) diagnostics.stream().filter(d -> d.severity() == Severity.ERROR).count();

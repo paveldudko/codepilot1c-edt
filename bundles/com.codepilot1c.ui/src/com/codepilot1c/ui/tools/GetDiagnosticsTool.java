@@ -68,6 +68,14 @@ public class GetDiagnosticsTool implements ITool {
                     "include_runtime_markers": {
                         "type": "boolean",
                         "description": "Включить дополнительные диагностики из EDT marker manager (для scope=project). По умолчанию: true"
+                    },
+                    "line_from": {
+                        "type": "integer",
+                        "description": "Нижняя граница диапазона строк (1-based, включительно). 0 = без ограничения. Полезно для получения диагностик конкретного метода/выделения."
+                    },
+                    "line_to": {
+                        "type": "integer",
+                        "description": "Верхняя граница диапазона строк (1-based, включительно). 0 = без ограничения. Диагностики без точной строки (lineNumber<=0) отсеиваются, если диапазон задан."
                     }
                 },
                 "required": []
@@ -112,16 +120,22 @@ public class GetDiagnosticsTool implements ITool {
         // pass include_runtime_markers:false explicitly when they want
         // workspace markers only.
         boolean includeRuntimeMarkers = getBooleanParam(parameters, "include_runtime_markers", true); //$NON-NLS-1$
+        int lineFrom = getIntParam(parameters, "line_from", 0); //$NON-NLS-1$
+        int lineTo = getIntParam(parameters, "line_to", 0); //$NON-NLS-1$
 
         // Validate parameters
         if (maxItems < 0) maxItems = 0;
         if (waitMs < 0) waitMs = 0;
         if (waitMs > 2000) waitMs = 2000;
+        int[] range = com.codepilot1c.core.diagnostics.DiagnosticsLineFilter.normalize(lineFrom, lineTo);
+        lineFrom = range[0];
+        lineTo = range[1];
 
         // Parse severity
         Severity minSeverity = parseSeverity(severityStr);
 
-        DiagnosticsQuery query = new DiagnosticsQuery(minSeverity, maxItems, true, waitMs, includeRuntimeMarkers);
+        DiagnosticsQuery query = new DiagnosticsQuery(
+                minSeverity, maxItems, true, waitMs, includeRuntimeMarkers, lineFrom, lineTo);
         EdtDiagnosticsCollector collector = EdtDiagnosticsCollector.getInstance();
 
         String normalizedScope = normalizeScope(scope, path, projectName);
