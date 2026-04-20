@@ -17,6 +17,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IResource;
@@ -74,11 +76,25 @@ public class EditFileTool implements ITool {
                     "allow_metadata_descriptor_edit": {
                         "type": "boolean",
                         "description": "Аварийный override: разрешить редактирование .mdo (не рекомендуется, используйте только когда BM API не покрывает кейс)."
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Если true — рассчитать итоговый контент и валидации (включая BSL boundary guard), но НЕ записывать файл. Вернуть preview: стратегию матчинга, location, дельту символов. Рекомендуется перед реальным edit-ом BSL-модулей."
+                    },
+                    "skip_bsl_boundary_guard": {
+                        "type": "boolean",
+                        "description": "Отключить проверку баланса Процедура/Функция ↔ КонецПроцедуры/КонецФункции для .bsl. По умолчанию false. Используйте только если точно знаете, что правка меняет баланс намеренно."
                     }
                 },
                 "required": ["path"]
             }
             """; //$NON-NLS-1$
+
+    private static final Pattern BSL_METHOD_OPEN = Pattern.compile(
+            "(?im)^\\s*(?:&[\\p{L}_][\\p{L}\\d_]*\\s*(?:\\([^)]*\\))?\\s*)?(Процедура|Функция|Procedure|Function)\\b"); //$NON-NLS-1$
+
+    private static final Pattern BSL_METHOD_CLOSE = Pattern.compile(
+            "(?im)^\\s*(КонецПроцедуры|КонецФункции|EndProcedure|EndFunction)\\b"); //$NON-NLS-1$
 
     private final FuzzyMatcher fuzzyMatcher = new FuzzyMatcher();
     private final SearchReplaceFormat searchReplaceFormat = new SearchReplaceFormat();
@@ -129,9 +145,11 @@ public class EditFileTool implements ITool {
             String edits = (String) parameters.get("edits"); //$NON-NLS-1$
             boolean create = Boolean.TRUE.equals(parameters.get("create")); //$NON-NLS-1$
             boolean allowMetadataDescriptorEdit = Boolean.TRUE.equals(parameters.get("allow_metadata_descriptor_edit")); //$NON-NLS-1$
+            boolean dryRun = Boolean.TRUE.equals(parameters.get("dry_run")); //$NON-NLS-1$
+            boolean skipBoundaryGuard = Boolean.TRUE.equals(parameters.get("skip_bsl_boundary_guard")); //$NON-NLS-1$
 
-            LOG.debug("edit_file: path=%s, hasContent=%b, hasOldText=%b, hasEdits=%b, create=%b", //$NON-NLS-1$
-                    LogSanitizer.truncatePath(pathStr), content != null, oldText != null, edits != null, create);
+            LOG.debug("edit_file: path=%s, hasContent=%b, hasOldText=%b, hasEdits=%b, create=%b, dryRun=%b", //$NON-NLS-1$
+                    LogSanitizer.truncatePath(pathStr), content != null, oldText != null, edits != null, create, dryRun);
 
             try {
                 // Normalize path for cross-platform compatibility
@@ -168,17 +186,17 @@ public class EditFileTool implements ITool {
                     // Replace entire file content
                     LOG.info("edit_file: замена содержимого файла %s (%d символов)", //$NON-NLS-1$
                             file.getFullPath(), content.length());
-                    result = replaceContent(file, content);
+                    result = replaceContent(file, content, dryRun, skipBoundaryGuard);
                 } else if (edits != null && !edits.isEmpty()) {
                     // SEARCH/REPLACE blocks format
                     LOG.info("edit_file: SEARCH/REPLACE редактирование %s", //$NON-NLS-1$
                             file.getFullPath());
-                    result = applySearchReplaceEdits(file, edits);
+                    result = applySearchReplaceEdits(file, edits, dryRun, skipBoundaryGuard);
                 } else if (oldText != null && newText != null) {
                     // Search and replace with fuzzy matching
                     LOG.info("edit_file: fuzzy search-replace в %s (oldText=%d символов)", //$NON-NLS-1$
                             file.getFullPath(), oldText.length());
-                    result = fuzzySearchAndReplace(file, oldText, newText);
+                    result = fuzzySearchAndReplace(file, oldText, newText, dryRun, skipBoundaryGuard);
                 } else {
                     LOG.warn("edit_file: недостаточно параметров для редактирования"); //$NON-NLS-1$
                     return ToolResult.failure(
@@ -270,10 +288,26 @@ public class EditFileTool implements ITool {
         return lower.endsWith(".mdo"); //$NON-NLS-1$
     }
 
-    private ToolResult replaceContent(IFile file, String content) throws CoreException {
+    private ToolResult replaceContent(IFile file, String content, boolean dryRun, boolean skipBoundaryGuard)
+            throws CoreException {
         String currentContent = readFileContent(file);
         String lineSeparator = detectLineSeparator(currentContent);
         String normalizedContent = normalizeLineEndings(content, lineSeparator);
+
+        String guardError = skipBoundaryGuard ? null
+                : validateBslBoundaries(file, currentContent, normalizedContent);
+        if (guardError != null) {
+            return ToolResult.failure(guardError);
+        }
+
+        String summary = "Updated file: " + file.getFullPath().toString() //$NON-NLS-1$
+                + " (location: " + file.getLocation() + ")"; //$NON-NLS-1$ //$NON-NLS-2$
+
+        if (dryRun) {
+            return ToolResult.success(buildDryRunSummary(file, currentContent, normalizedContent, summary),
+                    ToolResult.ToolResultType.CONFIRMATION);
+        }
+
         Charset charset = getFileCharset(file);
         ByteArrayInputStream stream = new ByteArrayInputStream(
                 normalizedContent.getBytes(charset));
@@ -285,16 +319,14 @@ public class EditFileTool implements ITool {
         LOG.info("edit_file: содержимое записано в %s (%d байт)", //$NON-NLS-1$
                 file.getFullPath(), normalizedContent.length());
 
-        return ToolResult.success(
-                "Updated file: " + file.getFullPath().toString() + //$NON-NLS-1$
-                " (location: " + file.getLocation() + ")", //$NON-NLS-1$ //$NON-NLS-2$
-                ToolResult.ToolResultType.CONFIRMATION);
+        return ToolResult.success(summary, ToolResult.ToolResultType.CONFIRMATION);
     }
 
     /**
      * Applies SEARCH/REPLACE blocks to a file using the FileEditApplier.
      */
-    private ToolResult applySearchReplaceEdits(IFile file, String edits) throws CoreException {
+    private ToolResult applySearchReplaceEdits(IFile file, String edits, boolean dryRun, boolean skipBoundaryGuard)
+            throws CoreException {
         // Read current content
         String currentContent = readFileContent(file);
         if (currentContent == null) {
@@ -327,20 +359,33 @@ public class EditFileTool implements ITool {
 
         // Write the modified content preserving line endings
         String normalizedContent = normalizeLineEndings(applyResult.afterContent(), lineSeparator);
+
+        String guardError = skipBoundaryGuard ? null
+                : validateBslBoundaries(file, currentContent, normalizedContent);
+        if (guardError != null) {
+            return ToolResult.failure(guardError);
+        }
+
+        String summary = applyResult.getSummary() + " в: " + file.getFullPath().toString(); //$NON-NLS-1$
+
+        if (dryRun) {
+            return ToolResult.success(buildDryRunSummary(file, currentContent, normalizedContent, summary),
+                    ToolResult.ToolResultType.CONFIRMATION);
+        }
+
         Charset charset = getFileCharset(file);
         ByteArrayInputStream stream = new ByteArrayInputStream(
                 normalizedContent.getBytes(charset));
         file.setContents(stream, true, true, new NullProgressMonitor());
 
-        return ToolResult.success(
-                applyResult.getSummary() + " в: " + file.getFullPath().toString(), //$NON-NLS-1$
-                ToolResult.ToolResultType.CONFIRMATION);
+        return ToolResult.success(summary, ToolResult.ToolResultType.CONFIRMATION);
     }
 
     /**
      * Search and replace with fuzzy matching support.
      */
-    private ToolResult fuzzySearchAndReplace(IFile file, String oldText, String newText) throws CoreException {
+    private ToolResult fuzzySearchAndReplace(IFile file, String oldText, String newText,
+            boolean dryRun, boolean skipBoundaryGuard) throws CoreException {
         // Read current content
         String currentContent = readFileContent(file);
         if (currentContent == null) {
@@ -367,20 +412,102 @@ public class EditFileTool implements ITool {
         String normalizedNewText = normalizeLineEndings(newText, lineSeparator);
         String newContent = before + normalizedNewText + after;
 
+        String strategyInfo = matchResult.getStrategy() != null
+                ? " (стратегия: " + matchResult.getStrategy().getDisplayName() + ")" //$NON-NLS-1$ //$NON-NLS-2$
+                : ""; //$NON-NLS-1$
+
+        String guardError = skipBoundaryGuard ? null
+                : validateBslBoundaries(file, currentContent, newContent);
+        if (guardError != null) {
+            LOG.warn("edit_file: BSL boundary guard отклонил изменение в %s (strategy=%s)", //$NON-NLS-1$
+                    file.getFullPath(), matchResult.getStrategy());
+            return ToolResult.failure(guardError);
+        }
+
+        if (matchResult.getStrategy() != null && matchResult.getStrategy() != com.codepilot1c.core.edit.MatchStrategy.EXACT) {
+            LOG.info("edit_file: non-exact match strategy=%s similarity=%.2f lines=%d-%d in %s", //$NON-NLS-1$
+                    matchResult.getStrategy(), matchResult.getSimilarity(),
+                    location.getStartLine(), location.getEndLine(), file.getFullPath());
+        }
+
+        String summary = "Заменено в строках " + location.getStartLine() + "-" + location.getEndLine() //$NON-NLS-1$ //$NON-NLS-2$
+                + strategyInfo + " в: " + file.getFullPath().toString(); //$NON-NLS-1$
+
+        if (dryRun) {
+            return ToolResult.success(buildDryRunSummary(file, currentContent, newContent, summary),
+                    ToolResult.ToolResultType.CONFIRMATION);
+        }
+
         // Write with same charset
         Charset charset = getFileCharset(file);
         ByteArrayInputStream stream = new ByteArrayInputStream(
                 newContent.getBytes(charset));
         file.setContents(stream, true, true, new NullProgressMonitor());
 
-        String strategyInfo = matchResult.getStrategy() != null
-                ? " (стратегия: " + matchResult.getStrategy().getDisplayName() + ")" //$NON-NLS-1$ //$NON-NLS-2$
-                : ""; //$NON-NLS-1$
+        return ToolResult.success(summary, ToolResult.ToolResultType.CONFIRMATION);
+    }
 
-        return ToolResult.success(
-                "Заменено в строках " + location.getStartLine() + "-" + location.getEndLine() + //$NON-NLS-1$ //$NON-NLS-2$
-                        strategyInfo + " в: " + file.getFullPath().toString(), //$NON-NLS-1$
-                ToolResult.ToolResultType.CONFIRMATION);
+    /**
+     * BSL boundary guard: ensures the edit does not break the balance of
+     * Процедура/Функция ↔ КонецПроцедуры/КонецФункции. Returns an error message
+     * if the balance is violated, or null if the edit is safe (or the file is not BSL).
+     */
+    private String validateBslBoundaries(IFile file, String before, String after) {
+        if (file == null || before == null || after == null) {
+            return null;
+        }
+        String name = file.getName();
+        if (name == null || !name.toLowerCase(java.util.Locale.ROOT).endsWith(".bsl")) { //$NON-NLS-1$
+            return null;
+        }
+
+        int openBefore = countMatches(BSL_METHOD_OPEN, before);
+        int closeBefore = countMatches(BSL_METHOD_CLOSE, before);
+        int openAfter = countMatches(BSL_METHOD_OPEN, after);
+        int closeAfter = countMatches(BSL_METHOD_CLOSE, after);
+
+        int deltaOpen = openAfter - openBefore;
+        int deltaClose = closeAfter - closeBefore;
+
+        if (deltaOpen != deltaClose) {
+            return String.format(
+                    "❌ BSL boundary guard: edit отклонён — нарушен баланс границ методов.%n" //$NON-NLS-1$
+                            + "  Процедура/Функция: %+d (было %d → стало %d)%n" //$NON-NLS-1$
+                            + "  КонецПроцедуры/КонецФункции: %+d (было %d → стало %d)%n" //$NON-NLS-1$
+                            + "Скорее всего, fuzzy-поиск зацепил соседний метод. " //$NON-NLS-1$
+                            + "Попробуйте более уникальный old_text (добавьте строку сигнатуры), " //$NON-NLS-1$
+                            + "предпросмотр через dry_run=true, " //$NON-NLS-1$
+                            + "либо обход: skip_bsl_boundary_guard=true (опасно) или write_module_source.", //$NON-NLS-1$
+                    deltaOpen, openBefore, openAfter, deltaClose, closeBefore, closeAfter);
+        }
+        if (openAfter != closeAfter) {
+            return String.format(
+                    "❌ BSL boundary guard: после edit-а %d объявлений методов vs %d закрытий. Edit отклонён.", //$NON-NLS-1$
+                    openAfter, closeAfter);
+        }
+        return null;
+    }
+
+    private static int countMatches(Pattern pattern, String text) {
+        int count = 0;
+        Matcher m = pattern.matcher(text);
+        while (m.find()) {
+            count++;
+        }
+        return count;
+    }
+
+    private String buildDryRunSummary(IFile file, String before, String after, String summary) {
+        int openBefore = countMatches(BSL_METHOD_OPEN, before);
+        int openAfter = countMatches(BSL_METHOD_OPEN, after);
+        int closeBefore = countMatches(BSL_METHOD_CLOSE, before);
+        int closeAfter = countMatches(BSL_METHOD_CLOSE, after);
+        int delta = after.length() - before.length();
+        return String.format(
+                "[dry_run] НЕ ЗАПИСАНО. %s%n" //$NON-NLS-1$
+                        + "  Δ символов: %+d%n" //$NON-NLS-1$
+                        + "  Границы BSL: Процедура/Функция %d→%d, КонецПроцедуры/КонецФункции %d→%d", //$NON-NLS-1$
+                summary, delta, openBefore, openAfter, closeBefore, closeAfter);
     }
 
     /**
