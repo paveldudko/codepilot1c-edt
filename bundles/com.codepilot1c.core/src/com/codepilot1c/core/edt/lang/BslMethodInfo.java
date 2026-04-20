@@ -34,7 +34,8 @@ public class BslMethodInfo {
         this.export = export;
         this.async = async;
         this.event = event;
-        this.params = new ArrayList<>(params != null ? params : List.of());
+        // Keep null to signal "omitted" (compact mode) — Gson will drop the field.
+        this.params = params == null ? null : new ArrayList<>(params);
     }
 
     public String getName() {
@@ -66,6 +67,6 @@ public class BslMethodInfo {
     }
 
     public List<BslMethodParamInfo> getParams() {
-        return Collections.unmodifiableList(params);
+        return params == null ? null : Collections.unmodifiableList(params);
     }
 }

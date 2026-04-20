@@ -204,9 +204,10 @@ public class BslSemanticService {
         int total = filtered.size();
         int from = Math.min(request.getOffset(), total);
         int to = Math.min(from + request.getLimit(), total);
+        boolean compact = request.isCompact();
         List<BslMethodInfo> page = new ArrayList<>();
         for (int i = from; i < to; i++) {
-            page.add(filtered.get(i).toInfo());
+            page.add(filtered.get(i).toInfo(compact));
         }
 
         return new BslModuleMethodsResult(
@@ -918,6 +919,10 @@ public class BslSemanticService {
             boolean eventFlag,
             List<BslMethodParamInfo> params) {
         BslMethodInfo toInfo() {
+            return toInfo(false);
+        }
+
+        BslMethodInfo toInfo(boolean compact) {
             return new BslMethodInfo(
                     name,
                     kind,
@@ -926,7 +931,7 @@ public class BslSemanticService {
                     exportFlag,
                     asyncFlag,
                     eventFlag,
-                    params);
+                    compact ? null : params);
         }
     }
 

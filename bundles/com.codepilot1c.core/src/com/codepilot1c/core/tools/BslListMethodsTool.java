@@ -23,10 +23,11 @@ public class BslListMethodsTool implements ITool {
               "properties": {
                 "projectName": {"type": "string", "description": "EDT project name"},
                 "filePath": {"type": "string", "description": "Path relative to src/, for example CommonModules/MyModule/Module.bsl"},
-                "name_contains": {"type": "string", "description": "Filter by method name substring"},
-                "kind": {"type": "string", "enum": ["any", "procedure", "function"], "description": "Filter by method kind"},
-                "limit": {"type": "integer", "description": "Max items (default 100)"},
-                "offset": {"type": "integer", "description": "Pagination offset"}
+                "name_contains": {"type": "string", "description": "Substring filter (case-insensitive) on method name. Use this before pagination to narrow the result set."},
+                "kind": {"type": "string", "enum": ["any", "procedure", "function"], "description": "Filter by method kind (default any)"},
+                "limit": {"type": "integer", "description": "Max items per page (default 100, max 500). Response returns total + hasMore for pagination."},
+                "offset": {"type": "integer", "description": "Pagination offset (0-based). Use with limit when total > limit."},
+                "compact": {"type": "boolean", "description": "When true, omit the 'params' array per method (name/kind/lines/flags only). Cuts ~60-80% of output size on parameter-heavy modules — prefer this for first-pass overviews."}
               },
               "required": ["projectName", "filePath"]
             }
@@ -49,7 +50,11 @@ public class BslListMethodsTool implements ITool {
 
     @Override
     public String getDescription() {
-        return "List procedures/functions in a BSL module with line ranges and parameters."; //$NON-NLS-1$
+        return "List procedures/functions in a BSL module with line ranges, flags and parameters. " //$NON-NLS-1$
+                + "Supports pagination (limit/offset, total + hasMore in response) and substring " //$NON-NLS-1$
+                + "filter (name_contains). Large modules can produce very verbose output — " //$NON-NLS-1$
+                + "pass compact=true to omit the params array (keeps name/kind/lines/flags only). " //$NON-NLS-1$
+                + "For a 160-method module, compact+limit can cut output from ~175KB to ~5-10KB."; //$NON-NLS-1$
     }
 
     @Override

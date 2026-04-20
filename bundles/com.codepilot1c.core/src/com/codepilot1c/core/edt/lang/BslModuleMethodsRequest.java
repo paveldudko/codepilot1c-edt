@@ -20,6 +20,7 @@ public class BslModuleMethodsRequest {
     private final String kind;
     private final int limit;
     private final int offset;
+    private final boolean compact;
 
     public BslModuleMethodsRequest(
             String projectName,
@@ -27,13 +28,15 @@ public class BslModuleMethodsRequest {
             String nameContains,
             String kind,
             int limit,
-            int offset) {
+            int offset,
+            boolean compact) {
         this.projectName = projectName;
         this.filePath = filePath;
         this.nameContains = nameContains;
         this.kind = kind;
         this.limit = limit;
         this.offset = offset;
+        this.compact = compact;
     }
 
     public static BslModuleMethodsRequest fromParameters(Map<String, Object> parameters) {
@@ -43,7 +46,8 @@ public class BslModuleMethodsRequest {
         String kind = asString(parameters.get("kind")); //$NON-NLS-1$
         int limit = asInt(parameters.get("limit"), DEFAULT_LIMIT); //$NON-NLS-1$
         int offset = asInt(parameters.get("offset"), 0); //$NON-NLS-1$
-        return new BslModuleMethodsRequest(projectName, filePath, nameContains, kind, limit, offset);
+        boolean compact = asBoolean(parameters.get("compact"), false); //$NON-NLS-1$
+        return new BslModuleMethodsRequest(projectName, filePath, nameContains, kind, limit, offset, compact);
     }
 
     public void validate() {
@@ -96,6 +100,10 @@ public class BslModuleMethodsRequest {
         return offset;
     }
 
+    public boolean isCompact() {
+        return compact;
+    }
+
     public String normalizedKind() {
         if (kind == null || kind.isBlank()) {
             return "any"; //$NON-NLS-1$
@@ -130,5 +138,19 @@ public class BslModuleMethodsRequest {
         } catch (NumberFormatException e) {
             return defaultValue;
         }
+    }
+
+    private static boolean asBoolean(Object value, boolean defaultValue) {
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value == null) {
+            return defaultValue;
+        }
+        String text = String.valueOf(value).trim();
+        if (text.isEmpty()) {
+            return defaultValue;
+        }
+        return Boolean.parseBoolean(text);
     }
 }
