@@ -447,17 +447,25 @@ public class EditFileTool implements ITool {
         return ToolResult.success(summary, ToolResult.ToolResultType.CONFIRMATION);
     }
 
+    private String validateBslBoundaries(IFile file, String before, String after) {
+        if (file == null) {
+            return null;
+        }
+        return validateBslBoundariesFor(file.getName(), before, after);
+    }
+
     /**
      * BSL boundary guard: ensures the edit does not break the balance of
      * Процедура/Функция ↔ КонецПроцедуры/КонецФункции. Returns an error message
      * if the balance is violated, or null if the edit is safe (or the file is not BSL).
+     *
+     * <p>Package-private for unit tests; does not require an IFile instance.</p>
      */
-    private String validateBslBoundaries(IFile file, String before, String after) {
-        if (file == null || before == null || after == null) {
+    static String validateBslBoundariesFor(String fileName, String before, String after) {
+        if (before == null || after == null) {
             return null;
         }
-        String name = file.getName();
-        if (name == null || !name.toLowerCase(java.util.Locale.ROOT).endsWith(".bsl")) { //$NON-NLS-1$
+        if (fileName == null || !fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".bsl")) { //$NON-NLS-1$
             return null;
         }
 
