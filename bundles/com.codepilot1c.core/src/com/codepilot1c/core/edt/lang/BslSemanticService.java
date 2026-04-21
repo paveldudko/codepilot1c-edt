@@ -45,6 +45,7 @@ import com.codepilot1c.core.edt.platformdoc.PlatformDocumentationException;
 import com.codepilot1c.core.edt.platformdoc.PlatformDocumentationRequest;
 import com.codepilot1c.core.edt.platformdoc.PlatformDocumentationResult;
 import com.codepilot1c.core.edt.platformdoc.PlatformMemberFilter;
+import com.codepilot1c.core.util.TimeBoundedCall;
 
 /**
  * Semantic BSL model service for symbol/type/scope extraction at source position.
@@ -53,6 +54,7 @@ public class BslSemanticService {
 
     private static final int RESOURCE_SET_RETRY_ATTEMPTS = 10;
     private static final long RESOURCE_SET_RETRY_DELAY_MS = 300L;
+    private static final long CONTENT_ASSIST_FALLBACK_TIMEOUT_MS = 5_000L;
 
     private final EdtServiceGateway gateway;
     private final ProjectReadinessChecker readinessChecker;
@@ -560,7 +562,13 @@ public class BslSemanticService {
                 0,
                 request.getContains(),
                 false);
-        ContentAssistResult result = contentAssistService.getContentAssist(assistRequest);
+        ContentAssistResult result = TimeBoundedCall.callWithin(
+                () -> contentAssistService.getContentAssist(assistRequest),
+                CONTENT_ASSIST_FALLBACK_TIMEOUT_MS,
+                null);
+        if (result == null) {
+            return List.of();
+        }
         List<BslScopeMembersResult.MemberItem> items = new ArrayList<>();
         for (ContentAssistResult.Item item : result.getItems()) {
             items.add(new BslScopeMembersResult.MemberItem(
