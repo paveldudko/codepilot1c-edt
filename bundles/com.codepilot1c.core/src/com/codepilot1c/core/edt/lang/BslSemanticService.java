@@ -45,12 +45,15 @@ import com.codepilot1c.core.edt.platformdoc.PlatformDocumentationException;
 import com.codepilot1c.core.edt.platformdoc.PlatformDocumentationRequest;
 import com.codepilot1c.core.edt.platformdoc.PlatformDocumentationResult;
 import com.codepilot1c.core.edt.platformdoc.PlatformMemberFilter;
+import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.util.TimeBoundedCall;
 
 /**
  * Semantic BSL model service for symbol/type/scope extraction at source position.
  */
 public class BslSemanticService {
+
+    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(BslSemanticService.class);
 
     private static final int RESOURCE_SET_RETRY_ATTEMPTS = 10;
     private static final long RESOURCE_SET_RETRY_DELAY_MS = 300L;
@@ -141,11 +144,24 @@ public class BslSemanticService {
 
     public BslScopeMembersResult getScopeMembers(BslScopeMembersRequest request) {
         request.validate();
+        long tStart = System.nanoTime();
+        LOG.debug("getScopeMembers: project=%s file=%s pos=%d:%d limit=%d", //$NON-NLS-1$
+                request.getProjectName(), request.getFilePath(),
+                request.getLine(), request.getColumn(), request.getLimit());
+
         List<BslTypeResult.TypeInfo> types = List.of();
+        long tCtx = System.nanoTime();
         try {
             PositionContext context = resolveContext(request.toPositionRequest());
+            LOG.debug("getScopeMembers: resolveContext took %d ms", //$NON-NLS-1$
+                    (System.nanoTime() - tCtx) / 1_000_000);
+            long tTypes = System.nanoTime();
             types = computeTypes(context);
+            LOG.debug("getScopeMembers: computeTypes took %d ms, types.size=%d", //$NON-NLS-1$
+                    (System.nanoTime() - tTypes) / 1_000_000, types.size());
         } catch (EdtAstException e) {
+            LOG.debug("getScopeMembers: resolveContext/computeTypes threw %s: %s", //$NON-NLS-1$
+                    e.getCode(), e.getMessage());
             if (!canFallbackToContentAssist(e)) {
                 throw e;
             }
@@ -159,11 +175,19 @@ public class BslSemanticService {
             }
         }
 
+        long tDoc = System.nanoTime();
         List<BslScopeMembersResult.MemberItem> all = new ArrayList<>();
         all.addAll(collectMembersFromPlatformDoc(request, types));
+        LOG.debug("getScopeMembers: collectMembersFromPlatformDoc took %d ms, n=%d", //$NON-NLS-1$
+                (System.nanoTime() - tDoc) / 1_000_000, all.size());
         if (all.isEmpty()) {
+            long tCa = System.nanoTime();
             all.addAll(collectMembersFromContentAssist(request));
+            LOG.debug("getScopeMembers: content-assist fallback took %d ms, n=%d", //$NON-NLS-1$
+                    (System.nanoTime() - tCa) / 1_000_000, all.size());
         }
+        LOG.debug("getScopeMembers: total elapsed %d ms", //$NON-NLS-1$
+                (System.nanoTime() - tStart) / 1_000_000);
 
         int total = all.size();
         int from = Math.min(request.getOffset(), total);
@@ -468,12 +492,18 @@ public class BslSemanticService {
         // StaticFeatureAccess.feature / Invocation resolutions to build the type
         // graph — if those xrefs are still proxies, it silently returns no
         // types. Force resolution of the module's xrefs before inference.
+        long t0 = System.nanoTime();
         try {
             EcoreUtil.resolveAll(context.resource());
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException e) {
+            LOG.debug("computeTypes: resolveAll threw %s: %s", //$NON-NLS-1$
+                    e.getClass().getSimpleName(), e.getMessage());
             // If resolution itself fails (e.g. missing platform index), fall
             // through — TypesComputer will return its own empty result.
         }
+        LOG.debug("computeTypes: resolveAll took %d ms on element eClass=%s", //$NON-NLS-1$
+                (System.nanoTime() - t0) / 1_000_000,
+                context.element().eClass().getName());
 
         List<TypeItem> typeItems;
         try {
@@ -780,39 +810,71 @@ public class BslSemanticService {
      */
     private List<EObject> collectMethodElements(EObject module) {
         if (module == null) {
+            LOG.debug("collectMethodElements: module=null, returning empty"); //$NON-NLS-1$
             return List.of();
         }
+        String moduleClass = module.eClass().getName();
+        int totalChildren = module.eContents().size();
+        LOG.debug("collectMethodElements: module eClass=%s, eContents.size=%d", //$NON-NLS-1$
+                moduleClass, totalChildren);
+
         List<EObject> methods = getEObjectList(module, "methods"); //$NON-NLS-1$
         if (!methods.isEmpty()) {
+            LOG.debug("collectMethodElements: via feature 'methods' n=%d", methods.size()); //$NON-NLS-1$
             return methods;
         }
         methods = getEObjectList(module, "allMethods"); //$NON-NLS-1$
         if (!methods.isEmpty()) {
+            LOG.debug("collectMethodElements: via feature 'allMethods' n=%d", methods.size()); //$NON-NLS-1$
             return methods;
         }
         List<EObject> fromChildren = filterMethodChildren(module);
         if (!fromChildren.isEmpty()) {
+            LOG.debug("collectMethodElements: via eContents() filter n=%d", fromChildren.size()); //$NON-NLS-1$
             return fromChildren;
         }
+        LOG.debug("collectMethodElements: all fast paths empty — invoking EcoreUtil.resolveAll"); //$NON-NLS-1$
         // Last-resort xref resolution — expensive on large modules, so only
         // applied when the cheaper strategies all returned empty.
         Resource resource = module.eResource();
         if (resource != null) {
+            long t0 = System.nanoTime();
             try {
                 EcoreUtil.resolveAll(resource);
-            } catch (RuntimeException ignored) {
+            } catch (RuntimeException e) {
+                LOG.debug("collectMethodElements: resolveAll threw %s: %s", //$NON-NLS-1$
+                        e.getClass().getSimpleName(), e.getMessage());
                 return List.of();
             }
+            LOG.debug("collectMethodElements: resolveAll took %d ms", //$NON-NLS-1$
+                    (System.nanoTime() - t0) / 1_000_000);
         }
         methods = getEObjectList(module, "methods"); //$NON-NLS-1$
         if (!methods.isEmpty()) {
+            LOG.debug("collectMethodElements: after resolveAll, 'methods' n=%d", methods.size()); //$NON-NLS-1$
             return methods;
         }
         methods = getEObjectList(module, "allMethods"); //$NON-NLS-1$
         if (!methods.isEmpty()) {
+            LOG.debug("collectMethodElements: after resolveAll, 'allMethods' n=%d", methods.size()); //$NON-NLS-1$
             return methods;
         }
-        return filterMethodChildren(module);
+        List<EObject> finalChildren = filterMethodChildren(module);
+        LOG.debug("collectMethodElements: after resolveAll, eContents() filter n=%d (dumping child eClass names): %s", //$NON-NLS-1$
+                finalChildren.size(), childEClassesSummary(module));
+        return finalChildren;
+    }
+
+    private String childEClassesSummary(EObject module) {
+        java.util.Map<String, Integer> counts = new java.util.LinkedHashMap<>();
+        for (EObject child : module.eContents()) {
+            if (child == null) {
+                continue;
+            }
+            String name = child.eClass().getName();
+            counts.merge(name, 1, Integer::sum);
+        }
+        return counts.toString();
     }
 
     private List<EObject> filterMethodChildren(EObject module) {
