@@ -719,10 +719,7 @@ public class BslSemanticService {
     }
 
     private List<ResolvedMethod> collectMethods(EObject module, String text, LineIndex lineIndex) {
-        List<EObject> methods = getEObjectList(module, "methods"); //$NON-NLS-1$
-        if (methods.isEmpty()) {
-            methods = getEObjectList(module, "allMethods"); //$NON-NLS-1$
-        }
+        List<EObject> methods = collectMethodElements(module);
 
         List<ResolvedMethod> result = new ArrayList<>();
         for (EObject method : methods) {
@@ -764,6 +761,76 @@ public class BslSemanticService {
                     isAsync,
                     isEvent,
                     params));
+        }
+        return result;
+    }
+
+    /**
+     * Collects Method/Procedure/Function children of the Module AST root.
+     * Tries multiple strategies in order of cost:
+     * <ol>
+     *   <li>Named feature {@code methods} (legacy BSL model).</li>
+     *   <li>Named feature {@code allMethods} (current BSL model, often
+     *       populated eagerly after parse).</li>
+     *   <li>Walking {@code eContents()} and filtering by eClass name — works
+     *       even when derived features are not populated.</li>
+     *   <li>As last resort, {@link EcoreUtil#resolveAll(Resource)} and retry
+     *       the named features — recovers on lazy-xref regressions.</li>
+     * </ol>
+     */
+    private List<EObject> collectMethodElements(EObject module) {
+        if (module == null) {
+            return List.of();
+        }
+        List<EObject> methods = getEObjectList(module, "methods"); //$NON-NLS-1$
+        if (!methods.isEmpty()) {
+            return methods;
+        }
+        methods = getEObjectList(module, "allMethods"); //$NON-NLS-1$
+        if (!methods.isEmpty()) {
+            return methods;
+        }
+        List<EObject> fromChildren = filterMethodChildren(module);
+        if (!fromChildren.isEmpty()) {
+            return fromChildren;
+        }
+        // Last-resort xref resolution — expensive on large modules, so only
+        // applied when the cheaper strategies all returned empty.
+        Resource resource = module.eResource();
+        if (resource != null) {
+            try {
+                EcoreUtil.resolveAll(resource);
+            } catch (RuntimeException ignored) {
+                return List.of();
+            }
+        }
+        methods = getEObjectList(module, "methods"); //$NON-NLS-1$
+        if (!methods.isEmpty()) {
+            return methods;
+        }
+        methods = getEObjectList(module, "allMethods"); //$NON-NLS-1$
+        if (!methods.isEmpty()) {
+            return methods;
+        }
+        return filterMethodChildren(module);
+    }
+
+    private List<EObject> filterMethodChildren(EObject module) {
+        List<EObject> result = new ArrayList<>();
+        for (EObject child : module.eContents()) {
+            if (child == null) {
+                continue;
+            }
+            String eClassName = child.eClass().getName();
+            if (eClassName == null) {
+                continue;
+            }
+            String lower = eClassName.toLowerCase(Locale.ROOT);
+            if (lower.contains("procedure") //$NON-NLS-1$
+                    || lower.contains("function") //$NON-NLS-1$
+                    || lower.equals("method")) { //$NON-NLS-1$
+                result.add(child);
+            }
         }
         return result;
     }
