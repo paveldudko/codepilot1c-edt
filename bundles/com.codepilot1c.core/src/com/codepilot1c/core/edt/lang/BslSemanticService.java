@@ -796,11 +796,16 @@ public class BslSemanticService {
     /**
      * Walks up from {@code usage} to the enclosing method (falls back to
      * resource root), then iterates descendants looking for the first
-     * {@code SimpleStatement} whose {@code left} is a
-     * Static/DynamicFeatureAccess resolving to {@code variable}. Returns
-     * the {@code right} side of that assignment, or {@code null}.
+     * {@code SimpleStatement} that assigns to {@code variable}. Match is
+     * done by variable name, not EMF identity — proxies and resolver
+     * quirks make {@code ==} unreliable across Xtext loads. Returns the
+     * {@code right} side of that assignment, or {@code null}.
      */
     private EObject findFirstAssignedRight(EObject usage, EObject variable) {
+        String targetName = variableName(variable);
+        if (targetName == null || targetName.isEmpty()) {
+            return null;
+        }
         EObject scope = usage;
         while (scope != null) {
             String name = scope.eClass().getName();
@@ -831,23 +836,55 @@ public class BslSemanticService {
             if (left == null) {
                 continue;
             }
-            // Match either:
-            //   (a) left IS the variable itself — happens when BSL parser
-            //       creates an implicit declaration on first `X = ...`
-            //       assignment: SimpleStatement.left = ImplicitVariable.
-            //   (b) left is a FeatureAccess whose resolved feature IS the
-            //       variable — happens on subsequent reads like
-            //       `X.something = ...` where X is parsed as a
-            //       StaticFeatureAccess with feature -> ImplicitVariable.
-            if (left == variable) {
-                return eGetChild(node, "right"); //$NON-NLS-1$
-            }
-            EObject leftFeature = eGetChild(left, "feature"); //$NON-NLS-1$
-            if (leftFeature == variable) {
+            // Name-based match covers all shapes we've observed:
+            //   - left IS the Variable (first-assignment implicit decl).
+            //   - left is a StaticFeatureAccess whose name/feature.name
+            //     equals the variable name (subsequent reads).
+            //   - left is a DynamicFeatureAccess (rare on LHS — e.g.
+            //     array element assignment with a different source).
+            String leftName = assignmentLeftName(left);
+            if (leftName != null && leftName.equalsIgnoreCase(targetName)) {
                 return eGetChild(node, "right"); //$NON-NLS-1$
             }
         }
         return null;
+    }
+
+    /** Extracts the name of a Variable (ImplicitVariable / ExplicitVariable / FormalParam). */
+    private String variableName(EObject variable) {
+        if (variable == null) {
+            return null;
+        }
+        String name = getStringFeature(variable, "name"); //$NON-NLS-1$
+        if (name == null || name.isEmpty()) {
+            name = getStringFeature(variable, "nameRu"); //$NON-NLS-1$
+        }
+        return name;
+    }
+
+    /**
+     * Extracts the textual name targeted by the LHS of an assignment.
+     * Tries, in order: a StaticFeatureAccess's direct "name" feature;
+     * the name of the resolved feature reference; the LHS node's own
+     * "name" (handles the implicit-declaration case where left IS
+     * the Variable).
+     */
+    private String assignmentLeftName(EObject left) {
+        String name = getStringFeature(left, "name"); //$NON-NLS-1$
+        if (name != null && !name.isEmpty()) {
+            return name;
+        }
+        EObject feature = eGetChild(left, "feature"); //$NON-NLS-1$
+        if (feature != null) {
+            String fName = getStringFeature(feature, "name"); //$NON-NLS-1$
+            if (fName == null || fName.isEmpty()) {
+                fName = getStringFeature(feature, "nameRu"); //$NON-NLS-1$
+            }
+            if (fName != null && !fName.isEmpty()) {
+                return fName;
+            }
+        }
+        return getStringFeature(left, "nameRu"); //$NON-NLS-1$
     }
 
     /**
