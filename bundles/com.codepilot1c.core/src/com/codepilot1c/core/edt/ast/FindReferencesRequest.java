@@ -20,7 +20,7 @@ public class FindReferencesRequest {
     public static FindReferencesRequest fromParameters(Map<String, Object> parameters) {
         String projectName = toString(parameters.get("projectName")); //$NON-NLS-1$
         String objectFqn = toString(parameters.get("objectFqn")); //$NON-NLS-1$
-        int limit = clamp(toInt(parameters.get("limit"), 100), 1, 1000); //$NON-NLS-1$
+        int limit = clamp(toInt(parameters.get("limit"), 20), 1, 1000); //$NON-NLS-1$
         return new FindReferencesRequest(projectName, objectFqn, limit);
     }
 

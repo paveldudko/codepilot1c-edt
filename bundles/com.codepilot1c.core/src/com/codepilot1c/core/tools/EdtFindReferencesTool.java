@@ -19,8 +19,8 @@ public class EdtFindReferencesTool implements ITool {
               "type": "object",
               "properties": {
                 "projectName": {"type": "string", "description": "EDT project name"},
-                "objectFqn": {"type": "string", "description": "Object FQN, for example Catalog.Products"},
-                "limit": {"type": "integer", "description": "Max references (default 100)"}
+                "objectFqn": {"type": "string", "description": "Metadata object FQN, e.g. Catalog.Products, Document.Invoice, Enum.Status"},
+                "limit": {"type": "integer", "description": "Max references (default 20). Large limits (>50) risk MCP timeout on big projects — prefer paging via lower limit if possible."}
               },
               "required": ["projectName", "objectFqn"]
             }
@@ -35,7 +35,12 @@ public class EdtFindReferencesTool implements ITool {
 
     @Override
     public String getDescription() {
-        return "Find references for metadata object and return markdown report."; //$NON-NLS-1$
+        return "Find METADATA references for a metadata object (Catalog.X, Document.Y, " //$NON-NLS-1$
+                + "Enum.Z, etc.) and return a markdown report. Scans metadata files only — " //$NON-NLS-1$
+                + "Roles, Subsystems, forms, other metadata objects that reference the FQN. " //$NON-NLS-1$
+                + "Does NOT search BSL module source code for text usages of the object; " //$NON-NLS-1$
+                + "for that use the 'grep' tool with the object name as pattern. Keep " //$NON-NLS-1$
+                + "'limit' small (default 20) — higher limits can time out on large projects."; //$NON-NLS-1$
     }
 
     @Override
