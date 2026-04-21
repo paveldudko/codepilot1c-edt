@@ -36,10 +36,10 @@ public class EdtMetadataSmokeTool implements ITool {
             {
               "type": "object",
               "properties": {
-                "project": {"type": "string", "description": "Имя EDT проекта"},
-                "name_prefix": {"type": "string", "description": "Префикс для создаваемых объектов (default=Smoke)"},
-                "dry_run": {"type": "boolean", "description": "Если true, выполняются только readiness/BM probes без мутаций"},
-                "run_mutations": {"type": "boolean", "description": "Выполнять создающие операции (default=true)"}
+                "project": {"type": "string", "description": "Имя EDT проекта (ОБЯЗАТЕЛЬНЫЙ). Проект должен быть открыт в EDT и иметь готовую BM-модель."},
+                "name_prefix": {"type": "string", "description": "Префикс имён создаваемых объектов (default=Smoke). К префиксу добавляется timestamp для уникальности."},
+                "dry_run": {"type": "boolean", "description": "Если true — только readiness- и BM read-only probes, без создания/удаления метаданных. Рекомендуется как первый прогон для диагностики таймаутов."},
+                "run_mutations": {"type": "boolean", "description": "Выполнять создающие операции (default=true). Игнорируется, если dry_run=true."}
               },
               "required": ["project"]
             }
@@ -66,7 +66,12 @@ public class EdtMetadataSmokeTool implements ITool {
 
     @Override
     public String getDescription() {
-        return "Прогоняет smoke-сценарии create/add_child/duplicate/readiness для EDT metadata API."; //$NON-NLS-1$
+        return "Прогоняет smoke-сценарии create/add_child/duplicate/readiness для EDT " //$NON-NLS-1$
+                + "metadata API. Параметр 'project' ОБЯЗАТЕЛЕН. Деструктивный: создаёт " //$NON-NLS-1$
+                + "и затем удаляет временные Catalog/Document/Report — требует " //$NON-NLS-1$
+                + "подтверждения. Полный прогон с мутациями может занимать десятки секунд " //$NON-NLS-1$
+                + "на больших конфигурациях — при таймауте начинайте с dry_run=true, это " //$NON-NLS-1$
+                + "быстрая проверка readiness + BM read-only probe без мутаций."; //$NON-NLS-1$
     }
 
     @Override

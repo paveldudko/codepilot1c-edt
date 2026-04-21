@@ -23,12 +23,12 @@ public class EdtContentAssistTool implements ITool {
               "properties": {
                 "projectName": {"type": "string", "description": "EDT project name"},
                 "filePath": {"type": "string", "description": "Path relative to src/, for example CommonModules/MyModule/Module.bsl"},
-                "line": {"type": "integer", "description": "1-based line"},
-                "column": {"type": "integer", "description": "1-based column"},
-                "limit": {"type": "integer", "description": "Max proposals (default 20)"},
-                "offset": {"type": "integer", "description": "Pagination offset"},
-                "contains": {"type": "string", "description": "Comma-separated contains filters"},
-                "extendedDocumentation": {"type": "boolean", "description": "Include extended docs"}
+                "line": {"type": "integer", "description": "1-based line of the CURSOR position (the caret — not the identifier start). Empty result usually means the cursor is not in a position where the parser expects proposals (e.g. inside a comment, string literal, or at column 1 of a blank line)."},
+                "column": {"type": "integer", "description": "1-based column of the cursor. For member access on an object 'Obj.', set column to the character AFTER the dot. For identifier completion, set column to the position inside or right after the partial identifier. For empty in-body completion, place cursor inside a method body with valid indentation."},
+                "limit": {"type": "integer", "description": "Max proposals returned (default 20)"},
+                "offset": {"type": "integer", "description": "Pagination offset into the filtered proposals list"},
+                "contains": {"type": "string", "description": "Comma-separated substring filters on proposal display (case-insensitive). Narrow noisy results by keyword before paginating."},
+                "extendedDocumentation": {"type": "boolean", "description": "Include full proposal documentation (can be large). Default: false."}
               },
               "required": ["projectName", "filePath", "line", "column"]
             }
@@ -41,7 +41,14 @@ public class EdtContentAssistTool implements ITool {
 
     @Override
     public String getDescription() {
-        return "Get AST-aware content assist for BSL position inside EDT project."; //$NON-NLS-1$
+        return "Get AST-aware content assist (proposals) for a cursor position in a BSL " //$NON-NLS-1$
+                + "module. The line/column pair is the CURSOR, not the start of the partial " //$NON-NLS-1$
+                + "identifier. Empty result ≠ error: it means no proposals exist at that " //$NON-NLS-1$
+                + "position (common causes: inside a comment or string literal, column=1 of " //$NON-NLS-1$
+                + "a blank line, or in syntactically broken code). Typical productive " //$NON-NLS-1$
+                + "positions: right after a '.' on an object (member access), inside or " //$NON-NLS-1$
+                + "right after a partial identifier, or in a method body at a statement " //$NON-NLS-1$
+                + "boundary. Use 'contains' to narrow + 'limit'/'offset' to paginate."; //$NON-NLS-1$
     }
 
     @Override
