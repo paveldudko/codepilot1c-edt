@@ -334,33 +334,54 @@ public class BslSemanticService {
     }
 
     private PositionContext resolveContext(BslPositionRequest request) {
+        long tProj = System.nanoTime();
         IProject project = gateway.resolveProject(request.getProjectName());
-        readinessChecker.ensureReady(project);
+        long projMs = (System.nanoTime() - tProj) / 1_000_000;
 
+        long tReady = System.nanoTime();
+        readinessChecker.ensureReady(project);
+        long readyMs = (System.nanoTime() - tReady) / 1_000_000;
+
+        long tFile = System.nanoTime();
         IFile file = gateway.resolveSourceFile(project, request.getFilePath());
+        long fileMs = (System.nanoTime() - tFile) / 1_000_000;
         if (file == null || !file.exists()) {
             throw new EdtAstException(EdtAstErrorCode.FILE_NOT_FOUND,
                     "File not found: " + request.getFilePath(), false); //$NON-NLS-1$
         }
 
+        long tLoad = System.nanoTime();
         XtextResource resource = loadResource(project, file);
+        long loadMs = (System.nanoTime() - tLoad) / 1_000_000;
+
+        long tText = System.nanoTime();
         String text = readResourceText(resource, file);
+        long textMs = (System.nanoTime() - tText) / 1_000_000;
+
         int offset = calculateOffset(text, request.getLine(), request.getColumn());
 
+        long tRsp = System.nanoTime();
         IResourceServiceProvider rsp = resourceServiceProvider(file);
         EObjectAtOffsetHelper helper = rsp != null ? rsp.get(EObjectAtOffsetHelper.class) : null;
         if (helper == null) {
             helper = new EObjectAtOffsetHelper();
         }
+        long rspMs = (System.nanoTime() - tRsp) / 1_000_000;
 
+        long tResolve = System.nanoTime();
         EObject element = helper.resolveElementAt(resource, offset);
         if (element == null) {
             element = helper.resolveContainedElementAt(resource, offset);
         }
+        long resolveMs = (System.nanoTime() - tResolve) / 1_000_000;
         if (element == null) {
             throw new EdtAstException(EdtAstErrorCode.INVALID_POSITION,
                     "Cannot resolve BSL element at line/column", false); //$NON-NLS-1$
         }
+
+        LOG.debug("resolveContext phases ms: project=%d readiness=%d file=%d loadResource=%d" //$NON-NLS-1$
+                + " readText=%d rsp=%d resolveElementAt=%d", //$NON-NLS-1$
+                projMs, readyMs, fileMs, loadMs, textMs, rspMs, resolveMs);
 
         return new PositionContext(project, file, resource, rsp, element, offset, text);
     }
@@ -878,8 +899,17 @@ public class BslSemanticService {
     }
 
     private List<EObject> filterMethodChildren(EObject module) {
+        // Walk the full subtree: in AM-style modules, methods are nested under
+        // IfPreprocessorDeclareStatement (the #If Server Or ThickClient...
+        // Then / #EndIf wrapper that's mandatory for manager modules). A
+        // shallow eContents() scan misses them entirely. eAllContents() is
+        // depth-first and cheap — it doesn't trigger lazy xref resolution.
+        // We stop descending into a method once we've found it, to avoid
+        // counting nested declarations inside a method body as separate items.
         List<EObject> result = new ArrayList<>();
-        for (EObject child : module.eContents()) {
+        java.util.Iterator<EObject> it = module.eAllContents();
+        while (it.hasNext()) {
+            EObject child = it.next();
             if (child == null) {
                 continue;
             }
@@ -892,9 +922,31 @@ public class BslSemanticService {
                     || lower.contains("function") //$NON-NLS-1$
                     || lower.equals("method")) { //$NON-NLS-1$
                 result.add(child);
+                // Skip descent into the method's own body — any nested "method"-
+                // like constructs (e.g. lambdas, if EDT ever introduces them)
+                // should not be treated as top-level module methods.
+                it = skipSubtree(it, child);
             }
         }
         return result;
+    }
+
+    /**
+     * Returns an iterator positioned past the subtree of {@code current}.
+     * With {@code eAllContents()} we cannot directly prune — but we can
+     * advance the iterator by re-filtering using the root, since the cost is
+     * negligible compared to method-body contents. Kept as a thin seam so
+     * callers read naturally.
+     */
+    private java.util.Iterator<EObject> skipSubtree(java.util.Iterator<EObject> it, EObject current) {
+        // EMF's TreeIterator supports prune() which skips descent into the
+        // current node's children. Fall back to plain iteration if the
+        // concrete type differs.
+        if (it instanceof org.eclipse.emf.common.util.TreeIterator<EObject> tree) {
+            tree.prune();
+            return tree;
+        }
+        return it;
     }
 
     private List<BslMethodParamInfo> collectParams(EObject method) {
