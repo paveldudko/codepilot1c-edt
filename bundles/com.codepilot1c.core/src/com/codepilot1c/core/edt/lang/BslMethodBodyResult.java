@@ -12,6 +12,7 @@ public class BslMethodBodyResult {
     private final int startLine;
     private final int endLine;
     private final String text;
+    private final String docComment;
 
     public BslMethodBodyResult(
             String projectName,
@@ -20,7 +21,8 @@ public class BslMethodBodyResult {
             String kind,
             int startLine,
             int endLine,
-            String text) {
+            String text,
+            String docComment) {
         this.projectName = projectName;
         this.filePath = filePath;
         this.name = name;
@@ -28,6 +30,8 @@ public class BslMethodBodyResult {
         this.startLine = startLine;
         this.endLine = endLine;
         this.text = text;
+        // Preserve null vs empty: null means "no doc block found" and lets Gson drop the field.
+        this.docComment = (docComment == null || docComment.isEmpty()) ? null : docComment;
     }
 
     public String getProjectName() {
@@ -56,5 +60,14 @@ public class BslMethodBodyResult {
 
     public String getText() {
         return text;
+    }
+
+    /**
+     * Returns the doc comment block that immediately precedes the method
+     * declaration (contiguous {@code //} lines, annotations skipped), or
+     * {@code null} when the method has no doc block.
+     */
+    public String getDocComment() {
+        return docComment;
     }
 }

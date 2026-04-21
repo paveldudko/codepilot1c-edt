@@ -275,6 +275,11 @@ public class BslSemanticService {
         }
 
         ResolvedMethod method = matches.get(0);
+        // Extract the doc block from the method's declared start line, before any
+        // context_lines expansion — context_lines are a display convenience and
+        // should not change the "what is this method's doc comment" answer.
+        String docComment = BslDocCommentExtractor.extract(context.text(), method.startLine());
+
         int startLine = method.startLine();
         int endLine = method.endLine();
         int startOffset = method.startOffset();
@@ -298,7 +303,8 @@ public class BslSemanticService {
                 method.kind(),
                 startLine,
                 endLine,
-                text);
+                text,
+                docComment);
     }
 
     private PositionContext resolveContext(BslPositionRequest request) {

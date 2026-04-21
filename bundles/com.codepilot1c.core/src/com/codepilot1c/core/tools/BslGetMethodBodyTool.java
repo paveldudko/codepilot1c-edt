@@ -50,7 +50,12 @@ public class BslGetMethodBodyTool implements ITool {
 
     @Override
     public String getDescription() {
-        return "Return the BSL procedure/function body by name with exact line range."; //$NON-NLS-1$
+        return "Return the BSL procedure/function body by name with exact line range. " //$NON-NLS-1$
+                + "Response includes a separate 'docComment' field with the contiguous " //$NON-NLS-1$
+                + "'//'-block that precedes the method (annotations like &НаСервере are " //$NON-NLS-1$
+                + "skipped when locating it). Field is omitted when the method has no " //$NON-NLS-1$
+                + "doc block. Pass context_lines for extra lines around the method body " //$NON-NLS-1$
+                + "in 'text' — docComment is always taken from the exact declaration site."; //$NON-NLS-1$
     }
 
     @Override
