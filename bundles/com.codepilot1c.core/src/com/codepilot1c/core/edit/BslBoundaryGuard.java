@@ -17,11 +17,14 @@ import java.util.regex.Pattern;
  */
 public final class BslBoundaryGuard {
 
+    // (?U) enables UNICODE_CHARACTER_CLASS so \b treats Cyrillic as word chars.
+    // Without it, \b after "процедура" fails because Java's default ASCII-only
+    // \w sees Cyrillic 'а' as non-word, and the trailing space is also non-word.
     private static final Pattern METHOD_OPEN = Pattern.compile(
-            "(?im)^\\s*(?:&[\\p{L}_][\\p{L}\\d_]*\\s*(?:\\([^)]*\\))?\\s*)?(Процедура|Функция|Procedure|Function)\\b"); //$NON-NLS-1$
+            "(?imU)^\\s*(?:&[\\p{L}_][\\p{L}\\d_]*\\s*(?:\\([^)]*\\))?\\s*)?(Процедура|Функция|Procedure|Function)\\b"); //$NON-NLS-1$
 
     private static final Pattern METHOD_CLOSE = Pattern.compile(
-            "(?im)^\\s*(КонецПроцедуры|КонецФункции|EndProcedure|EndFunction)\\b"); //$NON-NLS-1$
+            "(?imU)^\\s*(КонецПроцедуры|КонецФункции|EndProcedure|EndFunction)\\b"); //$NON-NLS-1$
 
     private BslBoundaryGuard() {
     }
