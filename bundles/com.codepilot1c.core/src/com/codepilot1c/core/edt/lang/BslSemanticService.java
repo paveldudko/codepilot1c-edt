@@ -59,6 +59,7 @@ public class BslSemanticService {
     private static final int RESOURCE_SET_RETRY_ATTEMPTS = 10;
     private static final long RESOURCE_SET_RETRY_DELAY_MS = 300L;
     private static final long CONTENT_ASSIST_FALLBACK_TIMEOUT_MS = 5_000L;
+    private static final long PLATFORM_DOC_MEMBERS_TIMEOUT_MS = 5_000L;
 
     private final EdtServiceGateway gateway;
     private final ProjectReadinessChecker readinessChecker;
@@ -198,9 +199,20 @@ public class BslSemanticService {
 
         long tDoc = System.nanoTime();
         List<BslScopeMembersResult.MemberItem> all = new ArrayList<>();
-        all.addAll(collectMembersFromPlatformDoc(request, types));
-        LOG.debug("getScopeMembers: collectMembersFromPlatformDoc took %d ms, n=%d", //$NON-NLS-1$
-                (System.nanoTime() - tDoc) / 1_000_000, all.size());
+        // Budget the platform-doc lookup: on AM-scale projects it can hit
+        // the same ~30s BM-readiness wait that plagued resolveResourceSet
+        // (observed on the Alerts register's RecordManager resolved type).
+        // If we miss the budget, fall through to the content-assist
+        // fallback below — pragmatically better than a 30s stall.
+        List<BslTypeResult.TypeInfo> typesForDoc = types;
+        List<BslScopeMembersResult.MemberItem> docMembers = TimeBoundedCall.callWithin(
+                () -> collectMembersFromPlatformDoc(request, typesForDoc),
+                PLATFORM_DOC_MEMBERS_TIMEOUT_MS,
+                List.of());
+        all.addAll(docMembers);
+        long docMs = (System.nanoTime() - tDoc) / 1_000_000;
+        LOG.debug("getScopeMembers: collectMembersFromPlatformDoc took %d ms, n=%d (budget=%d ms)", //$NON-NLS-1$
+                docMs, all.size(), PLATFORM_DOC_MEMBERS_TIMEOUT_MS);
         if (all.isEmpty()) {
             long tCa = System.nanoTime();
             all.addAll(collectMembersFromContentAssist(request));
