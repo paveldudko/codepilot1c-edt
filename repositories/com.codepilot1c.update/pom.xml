@@ -7,7 +7,7 @@
     <parent>
         <groupId>com.codepilot1c</groupId>
         <artifactId>repositories</artifactId>
-        <version>0.1.15-SNAPSHOT</version>
+        <version>0.1.16-SNAPSHOT</version>
     </parent>
 
     <artifactId>com.codepilot1c.update</artifactId>

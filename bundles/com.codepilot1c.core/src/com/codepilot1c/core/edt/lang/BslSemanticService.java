@@ -820,6 +820,17 @@ public class BslSemanticService {
             if (left == null) {
                 continue;
             }
+            // Match either:
+            //   (a) left IS the variable itself — happens when BSL parser
+            //       creates an implicit declaration on first `X = ...`
+            //       assignment: SimpleStatement.left = ImplicitVariable.
+            //   (b) left is a FeatureAccess whose resolved feature IS the
+            //       variable — happens on subsequent reads like
+            //       `X.something = ...` where X is parsed as a
+            //       StaticFeatureAccess with feature -> ImplicitVariable.
+            if (left == variable) {
+                return eGetChild(node, "right"); //$NON-NLS-1$
+            }
             EObject leftFeature = eGetChild(left, "feature"); //$NON-NLS-1$
             if (leftFeature == variable) {
                 return eGetChild(node, "right"); //$NON-NLS-1$
