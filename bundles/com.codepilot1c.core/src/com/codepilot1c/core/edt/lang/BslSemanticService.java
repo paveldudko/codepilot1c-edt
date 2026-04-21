@@ -11,6 +11,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
 import org.eclipse.core.resources.IFile;
@@ -63,6 +64,19 @@ public class BslSemanticService {
     private final ProjectReadinessChecker readinessChecker;
     private final EdtPlatformDocumentationService platformDocService;
     private final EdtContentAssistService contentAssistService;
+
+    /**
+     * Per-project ResourceSet cache. {@code BmAwareResourceSetProvider.get(project)}
+     * blocks ~30 s in EDT 2025.1.4+ (observed on AM): apparently waits for a
+     * BmEditingContext readiness latch with a default 30 s timeout and returns
+     * a fresh ResourceSet each call (unique identityHash). Without caching,
+     * every MCP tool call paid the 30 s penalty even on warm workspaces.
+     * Caching the first successful ResourceSet per project brings repeated
+     * calls down to milliseconds. Invalidation on resource changes is not
+     * yet wired — Xtext keeps its own per-ResourceSet state fresh via the
+     * platform listeners attached to it at construction.
+     */
+    private final Map<IProject, ResourceSet> resourceSetCache = new ConcurrentHashMap<>();
 
     public BslSemanticService() {
         this(new EdtServiceGateway());
@@ -483,11 +497,34 @@ public class BslSemanticService {
     }
 
     private ResourceSet resolveResourceSet(IProject project) {
+        // Fast path: reuse the ResourceSet obtained on a prior call. The BM
+        // provider caches nothing and blocks ~30s in every .get() call on
+        // AM-scale workspaces, so without this cache every tool invocation
+        // paid the full timeout.
+        ResourceSet cached = project != null ? resourceSetCache.get(project) : null;
+        if (cached != null) {
+            LOG.debug("resolveResourceSet: cache HIT, rsId=%d", System.identityHashCode(cached)); //$NON-NLS-1$
+            return cached;
+        }
+
         EdtAstException providerUnavailable = null;
         try {
             for (int attempt = 1; attempt <= RESOURCE_SET_RETRY_ATTEMPTS; attempt++) {
                 ResourceSet resourceSet = gateway.getResourceSetProvider().get(project);
                 if (resourceSet != null) {
+                    if (project != null) {
+                        // Cache the first successful ResourceSet. Any later
+                        // vintage returned by the provider for the same
+                        // project would have the same underlying BM, so we
+                        // intentionally keep the first one to avoid a fresh
+                        // 30-sec wait on the next call.
+                        ResourceSet previous = resourceSetCache.putIfAbsent(project, resourceSet);
+                        if (previous != null) {
+                            resourceSet = previous;
+                        }
+                    }
+                    LOG.debug("resolveResourceSet: cache MISS, cached rsId=%d after %d attempt(s)", //$NON-NLS-1$
+                            System.identityHashCode(resourceSet), attempt);
                     return resourceSet;
                 }
                 if (attempt == RESOURCE_SET_RETRY_ATTEMPTS) {
@@ -509,12 +546,27 @@ public class BslSemanticService {
         }
         ResourceSet fallback = createStandaloneResourceSet();
         if (fallback != null) {
+            // Do NOT cache the fallback — it's a standalone set without BM
+            // context, used only when the real provider is unavailable. We
+            // want the next call to retry the real provider.
             return fallback;
         }
         if (providerUnavailable != null) {
             throw providerUnavailable;
         }
         return new ResourceSetImpl();
+    }
+
+    /**
+     * Drops the cached ResourceSet for the given project, forcing the next
+     * call to re-obtain it from the provider. Intended for workspace-change
+     * listeners once they are wired up — not currently invoked, kept for
+     * later completeness.
+     */
+    public void invalidateResourceSet(IProject project) {
+        if (project != null) {
+            resourceSetCache.remove(project);
+        }
     }
 
     private Resource tryLoadResource(ResourceSet resourceSet, URI uri) {
