@@ -659,7 +659,17 @@ public class BslSemanticService {
                     "Failed to compute BSL types: " + e.getMessage(), true, e); //$NON-NLS-1$
         }
         if (typeItems == null || typeItems.isEmpty()) {
-            return List.of();
+            // TypesComputer has no flow analysis for BSL implicit variable
+            // declarations (e.g. LHS of `X = SomeCall()`), nor for reads of
+            // such variables later in the method. Fall back to a local AST
+            // walk: compute types of the RHS of the enclosing/first
+            // assignment for this symbol.
+            typeItems = astWalkTypeFallback(context.element(), typesComputer);
+            if (typeItems == null || typeItems.isEmpty()) {
+                return List.of();
+            }
+            LOG.debug("computeTypes: AST-walk fallback produced %d type(s) for %s", //$NON-NLS-1$
+                    typeItems.size(), context.element().eClass().getName());
         }
 
         List<BslTypeResult.TypeInfo> result = new ArrayList<>();
@@ -678,6 +688,134 @@ public class BslSemanticService {
             result.add(new BslTypeResult.TypeInfo(name, nameRu, compositeId));
         }
         return result;
+    }
+
+    /**
+     * Flow-sensitive BSL type fallback.
+     *
+     * <p>EDT's TypesComputer is declaration-driven: it resolves types from
+     * the symbol table (explicit var declarations, formal params with doc
+     * types, etc.) but does not infer the type of an implicit local from
+     * its initialising assignment. In BSL almost every local variable is
+     * implicit, so in practice the computer returns an empty list for:
+     * <ul>
+     *   <li>{@code NewRecord} on the LHS of {@code NewRecord = CreateRecordManager()};</li>
+     *   <li>{@code NewRecord} on a subsequent read like {@code NewRecord.Date};</li>
+     *   <li>the method access part of an invocation chain.</li>
+     * </ul>
+     *
+     * <p>This fallback handles two common shapes using only the AST shape
+     * (no direct BSL-model imports — we navigate via eClass name + eGet):
+     * <ol>
+     *   <li>If the element is the LHS of a SimpleStatement (assignment),
+     *       compute types for the RHS.</li>
+     *   <li>If the element is a StaticFeatureAccess whose resolved feature
+     *       is a Variable, walk the enclosing method for the first
+     *       SimpleStatement that assigns to the same Variable, then
+     *       compute types for its RHS.</li>
+     * </ol>
+     */
+    private List<TypeItem> astWalkTypeFallback(EObject element, TypesComputer tc) {
+        if (element == null || tc == null) {
+            return List.of();
+        }
+
+        // Case 1: element is left side of an assignment (SimpleStatement).
+        EObject parent = element.eContainer();
+        if (parent != null && "SimpleStatement".equals(parent.eClass().getName())) { //$NON-NLS-1$
+            EObject left = eGetChild(parent, "left"); //$NON-NLS-1$
+            if (left == element) {
+                EObject right = eGetChild(parent, "right"); //$NON-NLS-1$
+                if (right != null) {
+                    List<TypeItem> types = safeComputeTypes(tc, right);
+                    if (!types.isEmpty()) {
+                        return types;
+                    }
+                }
+            }
+        }
+
+        // Case 2: element is a StaticFeatureAccess → find feature → find the
+        // first assignment to it inside the enclosing method (or module).
+        String eClass = element.eClass().getName();
+        if ("StaticFeatureAccess".equals(eClass) || "DynamicFeatureAccess".equals(eClass)) { //$NON-NLS-1$ //$NON-NLS-2$
+            EObject feature = eGetChild(element, "feature"); //$NON-NLS-1$
+            if (feature != null && !feature.eIsProxy()) {
+                EObject right = findFirstAssignedRight(element, feature);
+                if (right != null) {
+                    return safeComputeTypes(tc, right);
+                }
+            }
+        }
+
+        return List.of();
+    }
+
+    private List<TypeItem> safeComputeTypes(TypesComputer tc, EObject target) {
+        try {
+            List<TypeItem> t = tc.computeTypes(target, Environments.ALL);
+            return t != null ? t : List.of();
+        } catch (RuntimeException e) {
+            return List.of();
+        }
+    }
+
+    /**
+     * Walks up from {@code usage} to the enclosing method (falls back to
+     * resource root), then iterates descendants looking for the first
+     * {@code SimpleStatement} whose {@code left} is a
+     * Static/DynamicFeatureAccess resolving to {@code variable}. Returns
+     * the {@code right} side of that assignment, or {@code null}.
+     */
+    private EObject findFirstAssignedRight(EObject usage, EObject variable) {
+        EObject scope = usage;
+        while (scope != null) {
+            String name = scope.eClass().getName();
+            if (name != null) {
+                String lower = name.toLowerCase(Locale.ROOT);
+                if (lower.contains("procedure") || lower.contains("function") || lower.equals("method")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    break;
+                }
+            }
+            scope = scope.eContainer();
+        }
+        if (scope == null) {
+            scope = EcoreUtil.getRootContainer(usage);
+        }
+        if (scope == null) {
+            return null;
+        }
+        java.util.Iterator<EObject> it = scope.eAllContents();
+        while (it.hasNext()) {
+            EObject node = it.next();
+            if (node == null || node == usage) {
+                continue;
+            }
+            if (!"SimpleStatement".equals(node.eClass().getName())) { //$NON-NLS-1$
+                continue;
+            }
+            EObject left = eGetChild(node, "left"); //$NON-NLS-1$
+            if (left == null) {
+                continue;
+            }
+            EObject leftFeature = eGetChild(left, "feature"); //$NON-NLS-1$
+            if (leftFeature == variable) {
+                return eGetChild(node, "right"); //$NON-NLS-1$
+            }
+        }
+        return null;
+    }
+
+    private EObject eGetChild(EObject obj, String featureName) {
+        if (obj == null || featureName == null) {
+            return null;
+        }
+        EStructuralFeature feature = obj.eClass().getEStructuralFeature(featureName);
+        if (feature == null) {
+            return null;
+        }
+        Object value = obj.eGet(feature);
+        return value instanceof EObject eo ? eo : null;
     }
 
     private List<BslScopeMembersResult.MemberItem> collectMembersFromPlatformDoc(
