@@ -672,11 +672,22 @@ public class BslSemanticService {
             // walk: compute types of the RHS of the enclosing/first
             // assignment for this symbol.
             typeItems = astWalkTypeFallback(context.element(), typesComputer);
-            if (typeItems == null || typeItems.isEmpty()) {
+            if (typeItems != null && !typeItems.isEmpty()) {
+                LOG.debug("computeTypes: AST-walk fallback produced %d type(s) for %s", //$NON-NLS-1$
+                        typeItems.size(), context.element().eClass().getName());
+            } else {
+                // Last-resort fallback for FormalParam: parse the type(s)
+                // declared in the method's doc comment. Returns TypeInfo
+                // directly (bypasses TypeItem) because we do not need to
+                // re-resolve through EDT scope.
+                List<BslTypeResult.TypeInfo> docTypes = docCommentParamTypeFallback(context);
+                if (!docTypes.isEmpty()) {
+                    LOG.debug("computeTypes: doc-comment fallback produced %d type(s) for %s", //$NON-NLS-1$
+                            docTypes.size(), context.element().eClass().getName());
+                    return docTypes;
+                }
                 return List.of();
             }
-            LOG.debug("computeTypes: AST-walk fallback produced %d type(s) for %s", //$NON-NLS-1$
-                    typeItems.size(), context.element().eClass().getName());
         }
 
         List<BslTypeResult.TypeInfo> result = new ArrayList<>();
@@ -837,6 +848,63 @@ public class BslSemanticService {
             }
         }
         return null;
+    }
+
+    /**
+     * Doc-comment-driven type fallback for {@code FormalParam}.
+     *
+     * <p>When EDT's TypesComputer returns no types for a parameter
+     * reference and the AST walk finds no assignment either (typical for
+     * read-only method parameters), parse the owning method's doc
+     * comment: the 1C convention declares parameter types in a
+     * {@code Parameters:} / {@code Параметры:} block like
+     * {@code //   ParamName - Type - description}. Returns
+     * {@link BslTypeResult.TypeInfo} directly — we cannot synthesise a
+     * {@link TypeItem} without access to EDT's type registry from this
+     * path, so the caller must handle the short-circuit.</p>
+     */
+    private List<BslTypeResult.TypeInfo> docCommentParamTypeFallback(PositionContext context) {
+        EObject element = context.element();
+        if (element == null || !"FormalParam".equals(element.eClass().getName())) { //$NON-NLS-1$
+            return List.of();
+        }
+        String paramName = firstNonBlank(
+                getStringFeature(element, "name"), //$NON-NLS-1$
+                getStringFeature(element, "nameRu")); //$NON-NLS-1$
+        if (paramName == null || paramName.isBlank()) {
+            return List.of();
+        }
+        EObject method = element.eContainer();
+        while (method != null) {
+            String name = method.eClass().getName();
+            if (name != null) {
+                String lower = name.toLowerCase(Locale.ROOT);
+                if (lower.contains("procedure") || lower.contains("function") || lower.equals("method")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    break;
+                }
+            }
+            method = method.eContainer();
+        }
+        if (method == null) {
+            return List.of();
+        }
+        INode methodNode = NodeModelUtils.getNode(method);
+        if (methodNode == null) {
+            return List.of();
+        }
+        int methodStartLine = methodNode.getStartLine();
+        List<String> typeNames = BslDocParamExtractor.findParamTypes(context.text(), methodStartLine, paramName);
+        if (typeNames.isEmpty()) {
+            return List.of();
+        }
+        List<BslTypeResult.TypeInfo> result = new ArrayList<>();
+        for (String name : typeNames) {
+            // Cannot supply nameRu / compositeId from a free-form doc
+            // comment — the caller only needs `name` to display a type hint
+            // and the scope-members path will re-resolve via platform doc.
+            result.add(new BslTypeResult.TypeInfo(name, null, null));
+        }
+        return result;
     }
 
     private EObject eGetChild(EObject obj, String featureName) {
