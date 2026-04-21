@@ -20,6 +20,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
+import com.codepilot1c.core.tools.grep.GrepFormatters;
+
 import org.eclipse.core.resources.IContainer;
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IProject;
@@ -49,6 +51,10 @@ public class GrepTool implements ITool {
                         "type": "string",
                         "description": "File name pattern to filter (e.g., '*.bsl')"
                     },
+                    "object_name": {
+                        "type": "string",
+                        "description": "Narrow results to files whose workspace path contains this substring (case-insensitive). Useful for scoping to a single metadata object, e.g. 'BankStatementsLoader_v2' matches only that data processor."
+                    },
                     "regex": {
                         "type": "boolean",
                         "description": "Treat pattern as regex (default: false)"
@@ -60,13 +66,22 @@ public class GrepTool implements ITool {
                     "context_lines": {
                         "type": "integer",
                         "description": "Lines of context around matches (default: 0)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max matches to return (default 50, max 500). Response indicates when the cap is hit."
+                    },
+                    "compact": {
+                        "type": "boolean",
+                        "description": "When true, emit plain grep-like lines (path:line:text) with no markdown or code fences. ~40-60% smaller than default markdown output — prefer for large scans."
                     }
                 },
                 "required": ["pattern"]
             }
             """; //$NON-NLS-1$
 
-    private static final int MAX_RESULTS = 50;
+    private static final int DEFAULT_LIMIT = 50;
+    private static final int MAX_LIMIT = 500;
 
     @Override
     public String getName() {
@@ -75,8 +90,12 @@ public class GrepTool implements ITool {
 
     @Override
     public String getDescription() {
-        return "Search for text patterns in files. " + //$NON-NLS-1$
-               "Supports plain text and regex patterns."; //$NON-NLS-1$
+        return "Search for text patterns in workspace files. Supports plain text / regex, " //$NON-NLS-1$
+                + "file-pattern filter, case-sensitivity, context lines, and a configurable " //$NON-NLS-1$
+                + "limit (default 50, max 500). Pass object_name to narrow to files whose " //$NON-NLS-1$
+                + "path contains a metadata-object name (case-insensitive). Pass compact=true " //$NON-NLS-1$
+                + "for terse grep-style output (path:line:text, no markdown) — typically " //$NON-NLS-1$
+                + "40-60% smaller than the default markdown output."; //$NON-NLS-1$
     }
 
     @Override
@@ -94,13 +113,38 @@ public class GrepTool implements ITool {
 
             String path = (String) parameters.get("path"); //$NON-NLS-1$
             String filePattern = (String) parameters.get("file_pattern"); //$NON-NLS-1$
+            String objectName = (String) parameters.get("object_name"); //$NON-NLS-1$
+            if (objectName != null) {
+                objectName = objectName.trim();
+                if (objectName.isEmpty()) {
+                    objectName = null;
+                }
+            }
             boolean useRegex = Boolean.TRUE.equals(parameters.get("regex")); //$NON-NLS-1$
             boolean caseSensitive = Boolean.TRUE.equals(parameters.get("case_sensitive")); //$NON-NLS-1$
+            boolean compact = Boolean.TRUE.equals(parameters.get("compact")); //$NON-NLS-1$
 
             int contextLines = 0;
             Object contextParam = parameters.get("context_lines"); //$NON-NLS-1$
             if (contextParam instanceof Number) {
                 contextLines = ((Number) contextParam).intValue();
+            }
+
+            int limit = DEFAULT_LIMIT;
+            Object limitParam = parameters.get("limit"); //$NON-NLS-1$
+            if (limitParam instanceof Number) {
+                limit = ((Number) limitParam).intValue();
+            } else if (limitParam instanceof String s) {
+                try {
+                    limit = Integer.parseInt(s.trim());
+                } catch (NumberFormatException ignored) {
+                    // keep default
+                }
+            }
+            if (limit < 1) {
+                limit = 1;
+            } else if (limit > MAX_LIMIT) {
+                limit = MAX_LIMIT;
             }
 
             Pattern searchPattern;
@@ -133,9 +177,12 @@ public class GrepTool implements ITool {
                 }
 
                 List<SearchMatch> matches = new ArrayList<>();
-                searchInContainer(searchRoot, searchPattern, filePattern, contextLines, matches);
+                String objectNameLower = objectName == null ? null : objectName.toLowerCase(java.util.Locale.ROOT);
+                searchInContainer(searchRoot, searchPattern, filePattern, objectNameLower, contextLines, limit, matches);
 
-                return formatResults(patternStr, matches);
+                return compact
+                        ? formatResultsCompact(patternStr, matches, limit, contextLines)
+                        : formatResults(patternStr, matches, limit);
             } catch (CoreException e) {
                 return ToolResult.failure("Error searching: " + e.getMessage()); //$NON-NLS-1$
             }
@@ -179,9 +226,10 @@ public class GrepTool implements ITool {
     }
 
     private void searchInContainer(IContainer container, Pattern pattern,
-                                   String filePattern, int contextLines,
+                                   String filePattern, String objectNameLower,
+                                   int contextLines, int limit,
                                    List<SearchMatch> matches) throws CoreException {
-        if (matches.size() >= MAX_RESULTS) {
+        if (matches.size() >= limit) {
             return;
         }
 
@@ -190,7 +238,7 @@ public class GrepTool implements ITool {
             IProject[] projects = ((IWorkspaceRoot) container).getProjects();
             for (IProject project : projects) {
                 if (project.isOpen()) {
-                    searchInContainer(project, pattern, filePattern, contextLines, matches);
+                    searchInContainer(project, pattern, filePattern, objectNameLower, contextLines, limit, matches);
                 }
             }
             return;
@@ -198,17 +246,22 @@ public class GrepTool implements ITool {
 
         members = container.members();
         for (IResource member : members) {
-            if (matches.size() >= MAX_RESULTS) {
+            if (matches.size() >= limit) {
                 break;
             }
 
             if (member instanceof IContainer) {
-                searchInContainer((IContainer) member, pattern, filePattern, contextLines, matches);
+                searchInContainer((IContainer) member, pattern, filePattern, objectNameLower, contextLines, limit, matches);
             } else if (member instanceof IFile) {
                 IFile file = (IFile) member;
-                if (matchesFilePattern(file.getName(), filePattern)) {
-                    searchInFile(file, pattern, contextLines, matches);
+                if (!matchesFilePattern(file.getName(), filePattern)) {
+                    continue;
                 }
+                if (objectNameLower != null && !file.getFullPath().toString()
+                        .toLowerCase(java.util.Locale.ROOT).contains(objectNameLower)) {
+                    continue;
+                }
+                searchInFile(file, pattern, contextLines, limit, matches);
             }
         }
     }
@@ -227,8 +280,8 @@ public class GrepTool implements ITool {
     }
 
     private void searchInFile(IFile file, Pattern pattern, int contextLines,
-                              List<SearchMatch> matches) throws CoreException {
-        if (matches.size() >= MAX_RESULTS) {
+                              int limit, List<SearchMatch> matches) throws CoreException {
+        if (matches.size() >= limit) {
             return;
         }
 
@@ -250,24 +303,21 @@ public class GrepTool implements ITool {
                 lines.add(line);
             }
 
-            for (int i = 0; i < lines.size() && matches.size() < MAX_RESULTS; i++) {
+            for (int i = 0; i < lines.size() && matches.size() < limit; i++) {
                 Matcher matcher = pattern.matcher(lines.get(i));
                 if (matcher.find()) {
                     int startContext = Math.max(0, i - contextLines);
                     int endContext = Math.min(lines.size() - 1, i + contextLines);
-
-                    StringBuilder contextBuilder = new StringBuilder();
+                    List<String> span = new ArrayList<>(endContext - startContext + 1);
                     for (int j = startContext; j <= endContext; j++) {
-                        String prefix = (j == i) ? ">" : " "; //$NON-NLS-1$ //$NON-NLS-2$
-                        contextBuilder.append(String.format("%s%4d | %s%n", prefix, j + 1, lines.get(j))); //$NON-NLS-1$
+                        span.add(lines.get(j));
                     }
-
                     matches.add(new SearchMatch(
                             file.getFullPath().toString(),
                             i + 1,
                             lines.get(i).trim(),
-                            contextBuilder.toString().trim()
-                    ));
+                            startContext + 1,
+                            span));
                 }
             }
         } catch (java.io.IOException e) {
@@ -290,34 +340,40 @@ public class GrepTool implements ITool {
         return StandardCharsets.UTF_8;
     }
 
-    private ToolResult formatResults(String pattern, List<SearchMatch> matches) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("**Search results for:** `").append(pattern).append("`\n"); //$NON-NLS-1$ //$NON-NLS-2$
-        sb.append("**Found:** ").append(matches.size()); //$NON-NLS-1$
-        if (matches.size() == MAX_RESULTS) {
-            sb.append("+ (limited)"); //$NON-NLS-1$
-        }
-        sb.append(" matches\n\n"); //$NON-NLS-1$
+    private ToolResult formatResults(String pattern, List<SearchMatch> matches, int limit) {
+        return ToolResult.success(
+                GrepFormatters.markdown(pattern, toHits(matches), limit),
+                ToolResult.ToolResultType.SEARCH_RESULTS);
+    }
 
-        for (SearchMatch match : matches) {
-            sb.append("**").append(match.filePath).append(":").append(match.lineNumber).append("**\n"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            sb.append("```\n").append(match.context).append("\n```\n\n"); //$NON-NLS-1$ //$NON-NLS-2$
-        }
+    private ToolResult formatResultsCompact(String pattern, List<SearchMatch> matches, int limit, int contextLines) {
+        return ToolResult.success(
+                GrepFormatters.compact(pattern, toHits(matches), limit, contextLines),
+                ToolResult.ToolResultType.SEARCH_RESULTS);
+    }
 
-        return ToolResult.success(sb.toString(), ToolResult.ToolResultType.SEARCH_RESULTS);
+    private static List<GrepFormatters.Hit> toHits(List<SearchMatch> matches) {
+        List<GrepFormatters.Hit> hits = new ArrayList<>(matches.size());
+        for (SearchMatch m : matches) {
+            hits.add(new GrepFormatters.Hit(m.filePath, m.lineNumber, m.contextStartLine, m.contextLines));
+        }
+        return hits;
     }
 
     private static class SearchMatch {
         final String filePath;
         final int lineNumber;
         final String matchLine;
-        final String context;
+        final int contextStartLine;
+        final List<String> contextLines;
 
-        SearchMatch(String filePath, int lineNumber, String matchLine, String context) {
+        SearchMatch(String filePath, int lineNumber, String matchLine,
+                int contextStartLine, List<String> contextLines) {
             this.filePath = filePath;
             this.lineNumber = lineNumber;
             this.matchLine = matchLine;
-            this.context = context;
+            this.contextStartLine = contextStartLine;
+            this.contextLines = contextLines;
         }
     }
 }
