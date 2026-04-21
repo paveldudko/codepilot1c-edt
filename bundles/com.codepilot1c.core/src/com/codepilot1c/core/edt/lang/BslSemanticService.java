@@ -508,22 +508,26 @@ public class BslSemanticService {
         }
 
         EdtAstException providerUnavailable = null;
+        RuntimeException providerException = null;
+        int attemptsTaken = 0;
         try {
             for (int attempt = 1; attempt <= RESOURCE_SET_RETRY_ATTEMPTS; attempt++) {
-                ResourceSet resourceSet = gateway.getResourceSetProvider().get(project);
+                attemptsTaken = attempt;
+                ResourceSet resourceSet;
+                try {
+                    resourceSet = gateway.getResourceSetProvider().get(project);
+                } catch (RuntimeException e) {
+                    providerException = e;
+                    break;
+                }
                 if (resourceSet != null) {
                     if (project != null) {
-                        // Cache the first successful ResourceSet. Any later
-                        // vintage returned by the provider for the same
-                        // project would have the same underlying BM, so we
-                        // intentionally keep the first one to avoid a fresh
-                        // 30-sec wait on the next call.
                         ResourceSet previous = resourceSetCache.putIfAbsent(project, resourceSet);
                         if (previous != null) {
                             resourceSet = previous;
                         }
                     }
-                    LOG.debug("resolveResourceSet: cache MISS, cached rsId=%d after %d attempt(s)", //$NON-NLS-1$
+                    LOG.debug("resolveResourceSet: cache MISS path=provider, rsId=%d after %d attempt(s)", //$NON-NLS-1$
                             System.identityHashCode(resourceSet), attempt);
                     return resourceSet;
                 }
@@ -544,15 +548,34 @@ public class BslSemanticService {
             }
             providerUnavailable = e;
         }
+
+        // Provider returned null or threw — fall back to a standalone
+        // XtextResourceSet. Cache it too: the BM provider path is evidently
+        // not working in this EDT instance, so calling it again just burns
+        // another 30 seconds for the same empty result.
+        String reason = providerException != null
+                ? providerException.getClass().getSimpleName() + ": " + providerException.getMessage() //$NON-NLS-1$
+                : providerUnavailable != null
+                        ? "EdtAstException: " + providerUnavailable.getMessage() //$NON-NLS-1$
+                        : "provider returned null after " + attemptsTaken + " attempt(s)"; //$NON-NLS-1$ //$NON-NLS-2$
         ResourceSet fallback = createStandaloneResourceSet();
         if (fallback != null) {
-            // Do NOT cache the fallback — it's a standalone set without BM
-            // context, used only when the real provider is unavailable. We
-            // want the next call to retry the real provider.
+            if (project != null) {
+                ResourceSet previous = resourceSetCache.putIfAbsent(project, fallback);
+                if (previous != null) {
+                    fallback = previous;
+                }
+            }
+            LOG.debug("resolveResourceSet: cache MISS path=fallback, rsId=%d reason=%s", //$NON-NLS-1$
+                    System.identityHashCode(fallback), reason);
             return fallback;
         }
+        LOG.debug("resolveResourceSet: fallback FAILED, reason=%s", reason); //$NON-NLS-1$
         if (providerUnavailable != null) {
             throw providerUnavailable;
+        }
+        if (providerException != null) {
+            throw providerException;
         }
         return new ResourceSetImpl();
     }
