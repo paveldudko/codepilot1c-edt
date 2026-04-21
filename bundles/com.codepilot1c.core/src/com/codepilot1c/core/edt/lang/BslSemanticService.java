@@ -71,12 +71,19 @@ public class BslSemanticService {
      * BmEditingContext readiness latch with a default 30 s timeout and returns
      * a fresh ResourceSet each call (unique identityHash). Without caching,
      * every MCP tool call paid the 30 s penalty even on warm workspaces.
-     * Caching the first successful ResourceSet per project brings repeated
+     *
+     * <p>Static so the cache is shared across every {@code BslSemanticService}
+     * instance — each MCP tool (list_methods, get_method_body,
+     * type_at_position, scope_members, …) constructs its own service, and a
+     * per-instance cache made the first call of each tool re-pay the 30 s
+     * timeout. Static shares the warm ResourceSet across all tools.</p>
+     *
+     * <p>Caching the first successful ResourceSet per project brings repeated
      * calls down to milliseconds. Invalidation on resource changes is not
      * yet wired — Xtext keeps its own per-ResourceSet state fresh via the
-     * platform listeners attached to it at construction.
+     * platform listeners attached to it at construction.</p>
      */
-    private final Map<IProject, ResourceSet> resourceSetCache = new ConcurrentHashMap<>();
+    private static final Map<IProject, ResourceSet> resourceSetCache = new ConcurrentHashMap<>();
 
     public BslSemanticService() {
         this(new EdtServiceGateway());
@@ -586,7 +593,7 @@ public class BslSemanticService {
      * listeners once they are wired up — not currently invoked, kept for
      * later completeness.
      */
-    public void invalidateResourceSet(IProject project) {
+    public static void invalidateResourceSet(IProject project) {
         if (project != null) {
             resourceSetCache.remove(project);
         }
@@ -745,6 +752,21 @@ public class BslSemanticService {
                 if (right != null) {
                     return safeComputeTypes(tc, right);
                 }
+            }
+        }
+
+        // Case 3: element IS the Variable (ImplicitVariable / ExplicitVariable).
+        // Happens when Xtext resolves a FeatureAccess xref down to the
+        // declaration node — e.g. bsl_type_at_position on `NewRecord` in
+        // `NewRecord.Date = Date` returns the ImplicitVariable directly.
+        // Similarly, scope_members on the `.` after `NewRecord.` resolves
+        // the `source` of the DynamicFeatureAccess to the ImplicitVariable.
+        // Look for the first assignment to this variable.
+        if ("ImplicitVariable".equals(eClass) || "ExplicitVariable".equals(eClass) //$NON-NLS-1$ //$NON-NLS-2$
+                || "Variable".equals(eClass)) { //$NON-NLS-1$
+            EObject right = findFirstAssignedRight(element, element);
+            if (right != null) {
+                return safeComputeTypes(tc, right);
             }
         }
 
