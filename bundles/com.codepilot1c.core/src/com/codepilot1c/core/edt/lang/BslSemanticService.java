@@ -208,7 +208,9 @@ public class BslSemanticService {
         List<BslScopeMembersResult.MemberItem> docMembers = TimeBoundedCall.callWithin(
                 () -> collectMembersFromPlatformDoc(request, typesForDoc),
                 PLATFORM_DOC_MEMBERS_TIMEOUT_MS,
-                List.of());
+                List.of(),
+                "platformDoc", //$NON-NLS-1$
+                LOG::debug);
         all.addAll(docMembers);
         long docMs = (System.nanoTime() - tDoc) / 1_000_000;
         LOG.debug("getScopeMembers: collectMembersFromPlatformDoc took %d ms, n=%d (budget=%d ms)", //$NON-NLS-1$
@@ -1040,7 +1042,9 @@ public class BslSemanticService {
         ContentAssistResult result = TimeBoundedCall.callWithin(
                 () -> contentAssistService.getContentAssist(assistRequest),
                 CONTENT_ASSIST_FALLBACK_TIMEOUT_MS,
-                null);
+                null,
+                "contentAssist", //$NON-NLS-1$
+                LOG::debug);
         if (result == null) {
             return List.of();
         }
