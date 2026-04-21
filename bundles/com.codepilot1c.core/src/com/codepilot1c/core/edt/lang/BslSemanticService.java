@@ -387,20 +387,36 @@ public class BslSemanticService {
     }
 
     private ModuleContext resolveModuleContext(String projectName, String filePath) {
+        long tProj = System.nanoTime();
         IProject project = gateway.resolveProject(projectName);
-        readinessChecker.ensureReady(project);
+        long projMs = (System.nanoTime() - tProj) / 1_000_000;
 
+        long tReady = System.nanoTime();
+        readinessChecker.ensureReady(project);
+        long readyMs = (System.nanoTime() - tReady) / 1_000_000;
+
+        long tFile = System.nanoTime();
         IFile file = gateway.resolveSourceFile(project, filePath);
+        long fileMs = (System.nanoTime() - tFile) / 1_000_000;
         if (file == null || !file.exists()) {
             throw new EdtAstException(EdtAstErrorCode.FILE_NOT_FOUND,
                     "File not found: " + filePath, false); //$NON-NLS-1$
         }
 
+        long tLoad = System.nanoTime();
         XtextResource resource = loadResource(project, file);
+        long loadMs = (System.nanoTime() - tLoad) / 1_000_000;
+        long tText = System.nanoTime();
         String text = readResourceText(resource, file);
+        long textMs = (System.nanoTime() - tText) / 1_000_000;
+        long tParse = System.nanoTime();
         EObject root = resource.getParseResult() != null
                 ? resource.getParseResult().getRootASTElement()
                 : null;
+        long parseMs = (System.nanoTime() - tParse) / 1_000_000;
+        LOG.debug("resolveModuleContext phases ms: project=%d readiness=%d file=%d loadResource=%d" //$NON-NLS-1$
+                + " readText=%d getRoot=%d", //$NON-NLS-1$
+                projMs, readyMs, fileMs, loadMs, textMs, parseMs);
         if (root == null) {
             throw new EdtAstException(EdtAstErrorCode.MODULE_PARSE_ERROR,
                     "Failed to parse BSL module: " + filePath, true); //$NON-NLS-1$
@@ -415,12 +431,46 @@ public class BslSemanticService {
     }
 
     private XtextResource loadResource(IProject project, IFile file) {
+        long tRs = System.nanoTime();
         ResourceSet resourceSet = resolveResourceSet(project);
+        long rsMs = (System.nanoTime() - tRs) / 1_000_000;
         URI uri = URI.createPlatformResourceURI(file.getFullPath().toString(), true);
-        Resource resource = tryLoadResource(resourceSet, uri);
+
+        // Fast path: resource may already be in the ResourceSet (cached from a
+        // prior call). getResource(uri, false) does NOT trigger load — returns
+        // null if missing. Skipping load when already present avoids the BM
+        // wait-for-ready blocking inside Xtext linker.
+        long tCached = System.nanoTime();
+        Resource cached = null;
+        try {
+            cached = resourceSet.getResource(uri, false);
+        } catch (RuntimeException e) {
+            LOG.debug("loadResource: getResource(false) threw %s: %s", //$NON-NLS-1$
+                    e.getClass().getSimpleName(), e.getMessage());
+        }
+        long cachedMs = (System.nanoTime() - tCached) / 1_000_000;
+        boolean wasCached = cached != null && cached.isLoaded();
+        int rsId = System.identityHashCode(resourceSet);
+
+        Resource resource = cached;
+        long tLoad = 0;
+        long loadMs = 0;
+        if (!wasCached) {
+            tLoad = System.nanoTime();
+            resource = tryLoadResource(resourceSet, uri);
+            loadMs = (System.nanoTime() - tLoad) / 1_000_000;
+        }
+        long tFallback = System.nanoTime();
+        long fallbackMs = 0;
         if (resource == null) {
             resource = tryLoadResource(createStandaloneResourceSet(), uri);
+            fallbackMs = (System.nanoTime() - tFallback) / 1_000_000;
         }
+
+        LOG.debug("loadResource phases ms: resolveRs=%d cachedLookup=%d (wasCached=%s) load=%d" //$NON-NLS-1$
+                + " fallback=%d rsId=%d", //$NON-NLS-1$
+                rsMs, cachedMs, wasCached, loadMs, fallbackMs, rsId);
+
         if (resource == null) {
             throw new EdtAstException(EdtAstErrorCode.EDT_SERVICE_UNAVAILABLE,
                     "Failed to load BSL resource from EDT resource sets", true); //$NON-NLS-1$
