@@ -464,6 +464,17 @@ public class BslSemanticService {
                     "TypesComputer is unavailable for BSL resource", false); //$NON-NLS-1$
         }
 
+        // Xtext lazy-resolves cross-references on demand. TypesComputer walks
+        // StaticFeatureAccess.feature / Invocation resolutions to build the type
+        // graph — if those xrefs are still proxies, it silently returns no
+        // types. Force resolution of the module's xrefs before inference.
+        try {
+            EcoreUtil.resolveAll(context.resource());
+        } catch (RuntimeException ignored) {
+            // If resolution itself fails (e.g. missing platform index), fall
+            // through — TypesComputer will return its own empty result.
+        }
+
         List<TypeItem> typeItems;
         try {
             typeItems = typesComputer.computeTypes(context.element(), Environments.ALL);
