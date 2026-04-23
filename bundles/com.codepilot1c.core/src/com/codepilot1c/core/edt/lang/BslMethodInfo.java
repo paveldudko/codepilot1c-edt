@@ -16,7 +16,10 @@ public class BslMethodInfo {
     private final boolean export;
     private final boolean async;
     private final boolean event;
+    private final boolean used;
     private final List<BslMethodParamInfo> params;
+    private final List<String> pragmas;
+    private final String documentation;
 
     public BslMethodInfo(
             String name,
@@ -26,7 +29,10 @@ public class BslMethodInfo {
             boolean export,
             boolean async,
             boolean event,
-            List<BslMethodParamInfo> params) {
+            boolean used,
+            List<BslMethodParamInfo> params,
+            List<String> pragmas,
+            String documentation) {
         this.name = name;
         this.kind = kind;
         this.startLine = startLine;
@@ -34,8 +40,10 @@ public class BslMethodInfo {
         this.export = export;
         this.async = async;
         this.event = event;
-        // Keep null to signal "omitted" (compact mode) — Gson will drop the field.
+        this.used = used;
         this.params = params == null ? null : new ArrayList<>(params);
+        this.pragmas = new ArrayList<>(pragmas != null ? pragmas : List.of());
+        this.documentation = documentation;
     }
 
     public String getName() {
@@ -66,7 +74,19 @@ public class BslMethodInfo {
         return event;
     }
 
+    public boolean isUsed() {
+        return used;
+    }
+
     public List<BslMethodParamInfo> getParams() {
         return params == null ? null : Collections.unmodifiableList(params);
+    }
+
+    public List<String> getPragmas() {
+        return Collections.unmodifiableList(pragmas);
+    }
+
+    public String getDocumentation() {
+        return documentation;
     }
 }
