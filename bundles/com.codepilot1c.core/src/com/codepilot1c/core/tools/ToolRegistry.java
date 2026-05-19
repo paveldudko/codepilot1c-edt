@@ -118,6 +118,7 @@ public class ToolRegistry {
         register(new BslAnalyzeMethodTool());
         register(new BslModuleContextTool());
         register(new BslModuleExportsTool());
+        register(new BslObjectContextTool());
         register(new EdtValidateRequestTool());
         register(new CreateMetadataTool());
         register(new CreateFormTool());
