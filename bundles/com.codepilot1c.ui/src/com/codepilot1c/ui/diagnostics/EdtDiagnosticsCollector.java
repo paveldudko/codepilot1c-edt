@@ -59,6 +59,7 @@ import com.e1c.g5.v8.dt.check.settings.CheckUid;
 import com.e1c.g5.v8.dt.check.settings.ICheckDescription;
 import com.e1c.g5.v8.dt.check.settings.ICheckRepository;
 import com.codepilot1c.core.diagnostics.PathMatchTokens;
+import com.codepilot1c.core.diagnostics.RelativePathCandidates;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.codepilot1c.ui.diagnostics.EdtDiagnostic.Severity;
@@ -406,20 +407,30 @@ public class EdtDiagnosticsCollector {
     }
 
     private List<String> buildRelativePathCandidates(String pathWithoutLeadingSlash) {
-        LinkedHashSet<String> candidates = new LinkedHashSet<>();
-        String normalized = normalizePath(pathWithoutLeadingSlash);
-        if (!normalized.isBlank()) {
-            candidates.add(normalized);
-        }
+        // Delegates to the pure-Java RelativePathCandidates utility so the
+        // project-name-stripping rule can be unit-tested without an open
+        // workspace. See 2026-05-19-diagnostics-space-in-project-name.md:
+        // without project-name stripping, the project segment becomes a
+        // non-generic token that the ALL-tokens marker filter requires to
+        // be present in every haystack — but EDT marker haystacks never
+        // carry the workspace project name, so every file-scope diagnostics
+        // call silently returned 0/0/0 for any 3+ char project name.
+        return RelativePathCandidates.build(pathWithoutLeadingSlash, knownWorkspaceProjectNames());
+    }
 
-        String lower = normalized.toLowerCase(Locale.ROOT);
-        if (lower.startsWith("configuration/")) { //$NON-NLS-1$
-            candidates.add(normalized.substring("configuration/".length())); //$NON-NLS-1$
+    private Set<String> knownWorkspaceProjectNames() {
+        IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
+        IProject[] projects = root.getProjects();
+        if (projects == null || projects.length == 0) {
+            return Set.of();
         }
-        if (lower.startsWith("конфигурация/")) { //$NON-NLS-1$
-            candidates.add(normalized.substring("конфигурация/".length())); //$NON-NLS-1$
+        Set<String> out = new LinkedHashSet<>();
+        for (IProject project : projects) {
+            if (project != null && project.getName() != null && !project.getName().isBlank()) {
+                out.add(project.getName());
+            }
         }
-        return List.copyOf(candidates);
+        return out;
     }
 
     private String preferredRelativePath(List<String> relativeCandidates) {
