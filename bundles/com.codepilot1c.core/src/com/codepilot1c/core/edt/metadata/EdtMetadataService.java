@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.ByteArrayInputStream;
 import java.lang.reflect.Method;
+import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
@@ -32,6 +33,7 @@ import org.eclipse.emf.common.util.EMap;
 import org.eclipse.emf.common.util.TreeIterator;
 import org.eclipse.emf.common.util.URI;
 import org.eclipse.emf.ecore.EClass;
+import org.eclipse.emf.common.util.EList;
 import org.eclipse.emf.ecore.EObject;
 import org.eclipse.emf.ecore.EAttribute;
 import org.eclipse.emf.ecore.EDataType;
@@ -56,17 +58,43 @@ import com._1c.g5.v8.dt.core.platform.IExternalObjectProject;
 import com._1c.g5.v8.dt.core.platform.IDtProject;
 import com._1c.g5.v8.dt.core.platform.IDtProjectManager;
 import com._1c.g5.v8.dt.form.model.AbstractDataPath;
+import com._1c.g5.v8.dt.form.model.Addition;
+import com._1c.g5.v8.dt.form.model.AutoCommandBar;
+import com._1c.g5.v8.dt.form.model.ContextMenu;
+import com._1c.g5.v8.dt.form.model.ContextMenuHolder;
+import com._1c.g5.v8.dt.form.model.DynamicListTableExtInfo;
+import com._1c.g5.v8.dt.form.model.ExtendedTooltip;
+import com._1c.g5.v8.dt.form.model.ItemHorizontalAlignment;
+import com._1c.g5.v8.dt.form.model.ManagedFormAdditionType;
+import com._1c.g5.v8.dt.form.model.Table;
 import com._1c.g5.v8.dt.form.model.AbstractFormAttribute;
 import com._1c.g5.v8.dt.form.model.Button;
 import com._1c.g5.v8.dt.form.model.CommandHandler;
 import com._1c.g5.v8.dt.form.model.DataPath;
+import com._1c.g5.v8.dt.form.model.Decoration;
+import com._1c.g5.v8.dt.form.model.DecorationExtInfo;
 import com._1c.g5.v8.dt.form.model.DynamicListExtInfo;
+import com._1c.g5.v8.dt.form.model.LabelDecorationExtInfo;
+import com._1c.g5.v8.dt.form.model.ManagedFormDecorationType;
+import com._1c.g5.v8.dt.form.model.PictureDecorationExtInfo;
+import com._1c.g5.v8.dt.form.model.EventHandler;
+import com._1c.g5.v8.dt.form.model.EventHandlerContainer;
+import com._1c.g5.v8.dt.form.model.ExtInfo;
+import com._1c.g5.v8.dt.form.model.FormVisualEntity;
+import com._1c.g5.v8.dt.form.service.FormItemInformationService;
+import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormAttribute;
 import com._1c.g5.v8.dt.form.model.FormCommand;
 import com._1c.g5.v8.dt.form.model.FormCommandHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormFactory;
+import com._1c.g5.v8.dt.form.model.FieldExtInfo;
 import com._1c.g5.v8.dt.form.model.FormField;
+import com._1c.g5.v8.dt.form.model.CheckBoxFieldExtInfo;
+import com._1c.g5.v8.dt.form.model.InputFieldExtInfo;
+import com._1c.g5.v8.dt.form.model.LabelFieldExtInfo;
+import com._1c.g5.v8.dt.form.model.ManagedFormFieldType;
+import com._1c.g5.v8.dt.form.model.RadioButtonsFieldExtInfo;
 import com._1c.g5.v8.dt.form.model.ButtonGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.CommandBarExtInfo;
 import com._1c.g5.v8.dt.form.model.ColumnGroupExtInfo;
@@ -77,8 +105,12 @@ import com._1c.g5.v8.dt.form.model.ManagedFormGroupType;
 import com._1c.g5.v8.dt.form.model.PageGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.PagesGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.PopupGroupExtInfo;
+import com._1c.g5.v8.dt.form.model.CurrentRowUse;
+import com._1c.g5.v8.dt.form.model.FormChildrenGroup;
+import com._1c.g5.v8.dt.form.model.UsualGroupBehavior;
 import com._1c.g5.v8.dt.form.model.UsualGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.UsualGroupRepresentation;
+import com._1c.g5.v8.dt.form.model.UsualGroupThroughAlign;
 import com._1c.g5.v8.dt.form.model.FormItem;
 import com._1c.g5.v8.dt.form.model.FormItemContainer;
 import com._1c.g5.v8.dt.form.model.Titled;
@@ -92,14 +124,17 @@ import com._1c.g5.v8.dt.mcore.McoreFactory;
 import com._1c.g5.v8.dt.mcore.McorePackage;
 import com._1c.g5.v8.dt.mcore.NamedElement;
 import com._1c.g5.v8.dt.mcore.NumberQualifiers;
+import com._1c.g5.v8.dt.mcore.NumberValue;
 import com._1c.g5.v8.dt.mcore.StringQualifiers;
 import com._1c.g5.v8.dt.mcore.TypeDescription;
 import com._1c.g5.v8.dt.mcore.TypeItem;
 import com._1c.g5.v8.dt.mcore.util.McoreUtil;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicFeature;
+import com._1c.g5.v8.dt.metadata.common.ApplicationUsePurpose;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicForm;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicTemplate;
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
+import com._1c.g5.v8.dt.metadata.mdclass.Language;
 import com._1c.g5.v8.dt.metadata.mdclass.DataProcessor;
 import com._1c.g5.v8.dt.metadata.mdclass.Document;
 import com._1c.g5.v8.dt.metadata.mdclass.FormType;
@@ -189,6 +224,7 @@ public class EdtMetadataService {
     private final EdtMetadataGateway gateway;
     private final MetadataProjectReadinessChecker readinessChecker;
     private final FormOwnerStrategy formOwnerStrategy;
+    private volatile FormItemInformationService formItemInformationService;
 
     private record TypeSpec(
             String typeQuery,
@@ -576,6 +612,11 @@ public class EdtMetadataService {
             List<String> summaries = hasLayoutOps
                     ? applyFormModelOperations(formModel, request.layoutOperations())
                     : List.of();
+            // Normalize platform-required defaults after both attribute and
+            // layout passes — handles the attributes-only path that does
+            // not go through applyFormModelOperations. Idempotent when
+            // applyFormModelOperations already ran the normalize.
+            normalizeFormSerializationDefaults(formModel);
             if (Boolean.TRUE.equals(request.setAsDefault())) {
                 boolean bindDefault = resolveDefaultBinding(Boolean.TRUE, usageForDefault, applyOwnerFqn, externalProject);
                 if (bindDefault) {
@@ -813,6 +854,7 @@ public class EdtMetadataService {
                                 "Invalid group name: " + name, false); //$NON-NLS-1$
                     }
                     Map<String, Object> set = asMap(operation.get("set")); //$NON-NLS-1$
+                    rejectTableAsAddGroupType(operation, set, name);
                     ManagedFormGroupType groupType = resolveRequestedGroupType(operation, set);
                     Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
                     FormGroup group = addGroupItem(
@@ -824,11 +866,16 @@ public class EdtMetadataService {
                             index,
                             itemManagementService);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title", "group_type"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    // Category #7: hoist UsualGroupExtInfo layout properties out of the
+                    // effective set before the generic feature resolver runs — these
+                    // live on the ExtInfo, not on FormGroup, so applyFormPropertySet
+                    // would otherwise reject them as unknown features.
+                    ensureFormGroupExtInfo(group);
+                    applyUsualGroupLayoutProperties(group, effectiveSet);
                     if (!effectiveSet.isEmpty()) {
                         applyFormPropertySet(group, effectiveSet);
                     }
                     applyDefaultVisibility(group, effectiveSet);
-                    ensureFormGroupExtInfo(group);
                     summaries.add("add_group[" + operationIndex + "]: name=" + group.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
                             + safeItemId(group)); //$NON-NLS-1$
                 }
@@ -840,6 +887,8 @@ public class EdtMetadataService {
                                 MetadataOperationCode.INVALID_METADATA_NAME,
                                 "Invalid field name: " + name, false); //$NON-NLS-1$
                     }
+                    rejectTableIncompatibleFieldType(parentContainer, operation, name);
+                    rejectDecorationAsFieldType(operation, name);
                     Map<String, Object> set = extractAddFieldSet(operation);
                     Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
                     FormField field = addFieldItem(
@@ -854,8 +903,63 @@ public class EdtMetadataService {
                         applyFormPropertySet(field, effectiveSet);
                     }
                     applyDefaultVisibility(field, effectiveSet);
+                    ensureFormFieldExtInfo(field);
                     summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
                             + safeItemId(field)); //$NON-NLS-1$
+                }
+                case "addtable", "createtable" -> {
+                    FormItemContainer parentContainer = resolveTargetContainer(formModel, operation);
+                    String name = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (!MetadataNameValidator.isValidName(name)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid table name: " + name, false); //$NON-NLS-1$
+                    }
+                    Map<String, Object> set = extractOperationSet(operation);
+                    Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
+                    Table table = addTableItem(formModel, parentContainer, operation, name, index,
+                            itemManagementService);
+                    applyTableDefaults(formModel, table, operation, set);
+                    Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title", //$NON-NLS-1$ //$NON-NLS-2$
+                            "data_path", "dataPath", //$NON-NLS-1$ //$NON-NLS-2$
+                            "change_row_set", "changeRowSet", //$NON-NLS-1$ //$NON-NLS-2$
+                            "change_row_order", "changeRowOrder", //$NON-NLS-1$ //$NON-NLS-2$
+                            "header", "headerHeight", "header_height", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                            "auto_command_bar", "autoCommandBar"); //$NON-NLS-1$ //$NON-NLS-2$
+                    if (!effectiveSet.isEmpty()) {
+                        applyFormPropertySet(table, effectiveSet);
+                    }
+                    applyDefaultVisibility(table, effectiveSet);
+                    summaries.add("add_table[" + operationIndex + "]: name=" + table.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
+                            + safeItemId(table)); //$NON-NLS-1$
+                }
+                case "adddecoration", "createdecoration" -> {
+                    FormItemContainer parentContainer = resolveTargetContainer(formModel, operation);
+                    String name = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (!MetadataNameValidator.isValidName(name)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid decoration name: " + name, false); //$NON-NLS-1$
+                    }
+                    Map<String, Object> set = extractOperationSet(operation);
+                    ManagedFormDecorationType decorationType = resolveRequestedDecorationType(operation, set);
+                    Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
+                    Decoration decoration = addDecorationItem(
+                            formModel,
+                            parentContainer,
+                            operation,
+                            name,
+                            decorationType,
+                            index,
+                            itemManagementService);
+                    Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title", "decoration_type", "decorationType", "kind"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+                    if (!effectiveSet.isEmpty()) {
+                        applyFormPropertySet(decoration, effectiveSet);
+                    }
+                    applyDefaultVisibility(decoration, effectiveSet);
+                    ensureFormDecorationExtInfo(decoration);
+                    summaries.add("add_decoration[" + operationIndex + "]: name=" + decoration.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
+                            + safeItemId(decoration)); //$NON-NLS-1$
                 }
                 case "setitemprops", "setitem", "updateitem", "set" -> {
                     FormItem item = resolveRequiredItem(formModel, operation);
@@ -864,6 +968,11 @@ public class EdtMetadataService {
                         throw new MetadataOperationException(
                                 MetadataOperationCode.INVALID_METADATA_CHANGE,
                                 "set_item operation requires non-empty 'set' or 'properties' map", false); //$NON-NLS-1$
+                    }
+                    rejectTableAsSetItemType(operation, set, item);
+                    applyGroupKindMutation(item, set);
+                    if (item instanceof FormGroup formGroup) {
+                        applyUsualGroupLayoutProperties(formGroup, set);
                     }
                     applyFormPropertySet(item, set);
                     summaries.add("set_item[" + operationIndex + "]: id=" + item.getId()); //$NON-NLS-1$ //$NON-NLS-2$
@@ -963,7 +1072,287 @@ public class EdtMetadataService {
             }
             operationIndex++;
         }
+        normalizeFormSerializationDefaults(formModel);
         return summaries;
+    }
+
+    /**
+     * Materialize the EMF features that the 1С platform requires explicitly
+     * present on a serialized {@code .form} resource — even though their
+     * default values would otherwise be elided by the BM API's strict
+     * {@code eIsSet()}-driven serializer.
+     *
+     * <p>Without this pass, mutations done through {@code mutate_form_model}
+     * and {@code apply_form_recipe} accumulate lossy round-trips: each
+     * pass strips the platform-required sub-elements that the EDT
+     * designer needs to render the form, until the designer eventually
+     * fails silently (zero diagnostics, empty preview). See
+     * {@code 2026-05-18-bm-serialization-lossy.md} in the AM-side
+     * feedback notes for the incident report that motivated this pass.</p>
+     *
+     * <p>The pass is idempotent: every materialization checks for
+     * {@code null} first, so an explicit value set by the agent always
+     * wins. The pass covers categories #1-6 of the report; category #7
+     * (UsualGroup layout properties) is handled at first-emit on
+     * {@code add_group} / {@code set_item}, not here.</p>
+     *
+     * <p>The decision tables (which events live in
+     * {@code InputFieldExtInfo}, which attribute names are exempt from
+     * implicit {@code view}/{@code edit}, how the auto-generated sub-
+     * elements are named) live in {@link FormDefaultsRules}.</p>
+     */
+    private void normalizeFormSerializationDefaults(Form formModel) {
+        if (formModel == null) {
+            return;
+        }
+        int[] nextId = { nextFormItemId(formModel) };
+
+        // Category #4: every form attribute (except `Object`, which is
+        // implicit) gets <view><common>true</common></view> +
+        // <edit><common>true</common></edit>.
+        for (FormAttribute attribute : formModel.getAttributes()) {
+            if (attribute == null) {
+                continue;
+            }
+            if (!FormDefaultsRules.shouldMaterializeAttributeViewEdit(attribute.getName())) {
+                continue;
+            }
+            if (attribute.getView() == null) {
+                attribute.setView(adjustableBooleanTrue());
+            }
+            if (attribute.getEdit() == null) {
+                attribute.setEdit(adjustableBooleanTrue());
+            }
+        }
+
+        // Category #5: every form command gets <use><common>true</common></use>.
+        for (FormCommand command : formModel.getFormCommands()) {
+            if (command == null) {
+                continue;
+            }
+            if (command.getUse() == null) {
+                command.setUse(adjustableBooleanTrue());
+            }
+        }
+
+        // Categories #1, #3, #6, #2: walk every visual item and materialize
+        // table helpers, context menus, rowFilter, and re-bucket handlers.
+        // Snapshot the EObject set first because the iteration mutates the
+        // tree (newly added Addition / ContextMenu sub-objects).
+        List<EObject> snapshot = new ArrayList<>();
+        TreeIterator<EObject> iterator = formModel.eAllContents();
+        while (iterator.hasNext()) {
+            snapshot.add(iterator.next());
+        }
+        for (EObject obj : snapshot) {
+            if (obj instanceof Table table) {
+                ensureTableHelpers(table, nextId);
+            } else if (obj instanceof ExtendedTooltip tip) {
+                // ExtendedTooltip extends Decoration in the form EMF model — it's
+                // the Label-class child nested inside every visual item's
+                // <extendedTooltip> block. The 1С platform / Configurator does
+                // NOT emit a ContextMenu on ExtendedTooltip; the 2026-05-19
+                // verification ("normalize-pass over-emit") showed that emitting
+                // one (27 phantom ContextMenus on the playground form) breaks
+                // the EDT designer's form-item registry — the actual root
+                // cause behind the 3-day designer-blank-preview saga.
+                //
+                // Skip every ExtendedTooltip before the Decoration branch matches
+                // it. The parent visual item already gets its own ContextMenu
+                // via the Decoration / FormField / Table branches.
+                //
+                // Also actively strip any pre-existing ContextMenu on an
+                // ExtendedTooltip — earlier builds (0.1.7.20260518-{1933,2204,
+                // 2248}) over-emitted them; this cleanup undoes inherited
+                // damage on the next mutation without requiring a Configurator
+                // round-trip.
+                if (tip.getContextMenu() != null) {
+                    tip.setContextMenu(null);
+                }
+                continue;
+            } else if (obj instanceof Decoration decoration) {
+                ensureContextMenu(decoration, nextId);
+            } else if (obj instanceof FormField field) {
+                ensureContextMenu(field, nextId);
+                rebucketInputFieldHandlers(field);
+            }
+        }
+    }
+
+    /**
+     * Category #1: ensure the three Addition helpers + #6 rowFilter
+     * + #3 contextMenu are materialized on the table. Skips any that
+     * are already present so an explicit agent-supplied value is
+     * preserved.
+     */
+    private void ensureTableHelpers(Table table, int[] nextId) {
+        if (table == null) {
+            return;
+        }
+        String tableName = safeName(table.getName());
+        if (table.getSearchStringAddition() == null) {
+            table.setSearchStringAddition(buildAddition(
+                    table, tableName, FormDefaultsRules.AdditionKind.SEARCH_STRING, nextId));
+        }
+        if (table.getViewStatusAddition() == null) {
+            table.setViewStatusAddition(buildAddition(
+                    table, tableName, FormDefaultsRules.AdditionKind.VIEW_STATUS, nextId));
+        }
+        if (table.getSearchControlAddition() == null) {
+            table.setSearchControlAddition(buildAddition(
+                    table, tableName, FormDefaultsRules.AdditionKind.SEARCH_CONTROL, nextId));
+        }
+        // Cat-C: <rowFilter xsi:type="core:UndefinedValue"/> is a property of
+        // a regular Table bound to a ValueTable/TabularSection. For Tables
+        // bound to a DynamicList, filtering lives on the DynamicList settings
+        // — a top-level <rowFilter> is redundant and Configurator strips it
+        // on round-trip. Materialize only on non-DynamicList tables.
+        if (table.getRowFilter() == null && !(table.getExtInfo() instanceof DynamicListTableExtInfo)) {
+            table.setRowFilter(McoreFactory.eINSTANCE.createUndefinedValue());
+        }
+        ensureContextMenu(table, nextId);
+    }
+
+    /**
+     * Build a single Addition sub-element (searchStringAddition,
+     * viewStatusAddition, or searchControlAddition). Wires up the EMF
+     * {@code source} back-reference, the matching {@code extInfo}
+     * discriminator, and the ContextMenu that the Configurator always
+     * emits on each Addition.
+     */
+    private Addition buildAddition(
+            Table parent,
+            String parentName,
+            FormDefaultsRules.AdditionKind kind,
+            int[] nextId) {
+        Addition addition = FormFactory.eINSTANCE.createAddition();
+        addition.setId(nextId[0]++);
+        addition.setName(kind.nameFor(parentName));
+        addition.setSource(parent);
+        switch (kind) {
+            case SEARCH_STRING -> {
+                addition.setType(ManagedFormAdditionType.SEARCH_STRING_ADDITION);
+                addition.setExtInfo(FormFactory.eINSTANCE.createSearchStringAdditionExtInfo());
+            }
+            case VIEW_STATUS -> {
+                addition.setType(ManagedFormAdditionType.VIEW_STATUS_ADDITION);
+                addition.setExtInfo(FormFactory.eINSTANCE.createViewStatusAdditionExtInfo());
+            }
+            case SEARCH_CONTROL -> {
+                addition.setType(ManagedFormAdditionType.SEARCH_CONTROL_ADDITION);
+                addition.setExtInfo(FormFactory.eINSTANCE.createSearchControlAdditionExtInfo());
+            }
+        }
+        // Cat-B (2026-05-19 verification): Configurator emits
+        // <enabled>false</enabled> + a nested <extendedTooltip> Label on every
+        // Addition. Adding both for round-trip cosmetic stability. The nested
+        // ExtendedTooltip is itself a Decoration but must NOT receive a
+        // ContextMenu — Cat-A filter in the normalize loop handles that.
+        addition.setEnabled(false);
+        if (addition.getExtendedTooltip() == null) {
+            ExtendedTooltip tip = FormFactory.eINSTANCE.createExtendedTooltip();
+            tip.setId(nextId[0]++);
+            tip.setName(addition.getName() + FormDefaultsRules.EXTENDED_TOOLTIP_SUFFIX);
+            tip.setType(ManagedFormDecorationType.LABEL);
+            tip.setAutoMaxWidth(true);
+            tip.setAutoMaxHeight(true);
+            LabelDecorationExtInfo tipExtInfo = FormFactory.eINSTANCE.createLabelDecorationExtInfo();
+            tipExtInfo.setHorizontalAlign(ItemHorizontalAlignment.LEFT);
+            tip.setExtInfo(tipExtInfo);
+            addition.setExtendedTooltip(tip);
+        }
+        // Addition extends ContextMenuHolder — Configurator emits a
+        // ContextMenu on every Addition. Materialize it here so the
+        // designer doesn't have to fill it in lazily.
+        if (addition.getContextMenu() == null) {
+            addition.setContextMenu(buildContextMenu(addition.getName(), nextId));
+        }
+        return addition;
+    }
+
+    /**
+     * Category #3: ensure the visual item has an explicit ContextMenu.
+     * The platform fills one in at runtime when absent, but the EDT
+     * designer expects it present in the serialized model.
+     */
+    private void ensureContextMenu(ContextMenuHolder holder, int[] nextId) {
+        if (holder == null || holder.getContextMenu() != null) {
+            return;
+        }
+        String parentName = null;
+        if (holder instanceof NamedElement named) {
+            parentName = named.getName();
+        }
+        holder.setContextMenu(buildContextMenu(safeName(parentName), nextId));
+    }
+
+    /**
+     * Build a fresh ContextMenu with the conventional
+     * {@code <parentName>ContextMenu} name pattern, a unique id, and
+     * {@code autoFill=true} (matches Configurator's emit).
+     */
+    private ContextMenu buildContextMenu(String parentName, int[] nextId) {
+        ContextMenu menu = FormFactory.eINSTANCE.createContextMenu();
+        menu.setId(nextId[0]++);
+        menu.setName(FormDefaultsRules.contextMenuNameFor(parentName));
+        menu.setAutoFill(true);
+        return menu;
+    }
+
+    /**
+     * Category #2: move event handlers from the FormField top-level
+     * container into the {@code InputFieldExtInfo} container for events
+     * that Configurator round-trips inside {@code <extInfo>}. The
+     * decision is encoded in
+     * {@link FormDefaultsRules#preferExtInfoForInputField(String)}.
+     *
+     * <p>Only operates when the field carries an InputFieldExtInfo —
+     * other field kinds (CheckBoxField, RadioButtonField, …) keep their
+     * handlers where the original EDT API placed them.</p>
+     */
+    private void rebucketInputFieldHandlers(FormField field) {
+        if (field == null) {
+            return;
+        }
+        if (!(field.getExtInfo() instanceof InputFieldExtInfo extInfo)) {
+            return;
+        }
+        if (!(extInfo instanceof EventHandlerContainer extInfoContainer)) {
+            return;
+        }
+        List<EventHandler> toMove = new ArrayList<>();
+        for (EventHandler handler : field.getHandlers()) {
+            if (handler == null) {
+                continue;
+            }
+            Event event = handler.getEvent();
+            String eventName = event == null ? null : event.getName();
+            if (FormDefaultsRules.preferExtInfoForInputField(eventName)) {
+                toMove.add(handler);
+            }
+        }
+        if (toMove.isEmpty()) {
+            return;
+        }
+        field.getHandlers().removeAll(toMove);
+        extInfoContainer.getHandlers().addAll(toMove);
+    }
+
+    /**
+     * Build an {@code AdjustableBoolean} with {@code common=true} — the
+     * standard {@code <view><common>true</common></view>}-style block
+     * that the 1С platform expects on attribute view/edit and command
+     * use slots.
+     */
+    private AdjustableBoolean adjustableBooleanTrue() {
+        AdjustableBoolean adjusted = MdClassFactory.eINSTANCE.createAdjustableBoolean();
+        adjusted.setCommon(true);
+        adjusted.getFor().clear();
+        return adjusted;
+    }
+
+    private static String safeName(String value) {
+        return value == null ? "" : value; //$NON-NLS-1$
     }
 
     private Map<String, Object> extractOperationSet(Map<String, Object> operation) {
@@ -1005,6 +1394,33 @@ public class EdtMetadataService {
         return set;
     }
 
+    /**
+     * Lazy-resolve {@link FormItemInformationService} via the form bundle's Guice injector.
+     * A bare {@code new FormItemInformationService()} leaves the service's {@code @Inject}
+     * collaborators (notably {@code IRuntimeVersionSupport}) null, which trips an NPE inside
+     * {@code getAllowedEvents(...)} when EDT walks the runtime-version filter. Cached so we
+     * don't hit the OSGi bundle / injector lookup on every event-handler bind.
+     */
+    private FormItemInformationService resolveFormItemInformationService() {
+        FormItemInformationService cached = formItemInformationService;
+        if (cached != null) {
+            return cached;
+        }
+        try {
+            Bundle formBundle = requireBundle(FORM_BUNDLE_ID);
+            Object injector = resolveFormInjector(formBundle);
+            cached = (FormItemInformationService) resolveInjectorService(injector,
+                    FormItemInformationService.class);
+        } catch (MetadataOperationException | ReflectiveOperationException e) {
+            LOG.warn("FormItemInformationService injector lookup failed, falling back to a bare instance " //$NON-NLS-1$
+                    + "(event-handler binding may NPE inside EDT runtime-version filtering): %s", //$NON-NLS-1$
+                    e.getMessage());
+            cached = new FormItemInformationService();
+        }
+        formItemInformationService = cached;
+        return cached;
+    }
+
     private IFormItemManagementService resolveOptionalFormItemManagementService() {
         try {
             Bundle formBundle = requireBundle(FORM_BUNDLE_ID);
@@ -1017,6 +1433,49 @@ public class EdtMetadataService {
         }
     }
 
+    /**
+     * Force-reassign a new top-level form item's id <em>and</em> the
+     * ids of every FormItem auto-attached as a containment child by
+     * {@code IFormItemManagementService.addXxx} (the
+     * {@code ExtendedTooltip}, the direct {@code ContextMenu}, the
+     * {@code ContextMenu} nested inside the {@code ExtendedTooltip},
+     * the {@code AutoCommandBar} a Table gets, etc.) via the upgraded
+     * {@link #nextFormItemId(FormItemContainer)} allocator that walks
+     * {@code eAllContents()} on a Form root.
+     *
+     * <p>EDT's {@code IFormItemManagementService.addXxx} uses an
+     * internal allocator that scans only the {@code getItems()} tree —
+     * it does <em>not</em> see FormItem ids living inside the
+     * {@code Addition} / {@code ContextMenu} / {@code ExtendedTooltip}
+     * sub-element blocks the normalize pass (and prior {@code add_*}
+     * calls) materialized. Reassigning only the top-level id fixes
+     * collisions on the parent but not on its sub-elements — the
+     * 2026-05-19 verification of build {@code 20260518-2204} caught
+     * exactly that: the new FormGroup's id was safe (624) but its
+     * EDT-allocated {@code ExtendedTooltip} got id 623, colliding with
+     * a prior Decoration's nested ContextMenu also at 623.</p>
+     *
+     * <p>This recursive pass renumbers the entire sub-tree of the
+     * newly-added item with consecutive ids past the current global
+     * max, making collisions impossible. Idempotent for items already
+     * holding safe ids (each {@code setId} just re-issues the next
+     * fresh value).</p>
+     */
+    private void assignSafeFormItemId(Form formModel, FormItem item) {
+        if (formModel == null || item == null) {
+            return;
+        }
+        int[] nextId = { nextFormItemId(formModel) };
+        item.setId(nextId[0]++);
+        TreeIterator<EObject> iterator = item.eAllContents();
+        while (iterator.hasNext()) {
+            EObject obj = iterator.next();
+            if (obj instanceof FormItem nested) {
+                nested.setId(nextId[0]++);
+            }
+        }
+    }
+
     private FormGroup addGroupItem(
             Form formModel,
             FormItemContainer parentContainer,
@@ -1026,19 +1485,266 @@ public class EdtMetadataService {
             Integer index,
             IFormItemManagementService itemManagementService) {
         FormNewItemDescriptor descriptor = buildFormNewItemDescriptor(operation, name);
+        FormGroup group;
         if (itemManagementService != null) {
             if (index != null && index.intValue() >= 0 && index.intValue() <= parentContainer.getItems().size()) {
-                return itemManagementService.addGroup(parentContainer, index.intValue(), groupType, formModel, descriptor);
+                group = itemManagementService.addGroup(parentContainer, index.intValue(), groupType, formModel, descriptor);
+            } else {
+                group = itemManagementService.addGroup(parentContainer, groupType, formModel, descriptor);
             }
-            return itemManagementService.addGroup(parentContainer, groupType, formModel, descriptor);
+        } else {
+            group = FormFactory.eINSTANCE.createFormGroup();
+            group.setId(nextFormItemId(formModel));
+            group.setName(name);
+            applyTitleValue(group, getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
+            applySimpleFeatureValue(group, "type", groupType.name()); //$NON-NLS-1$
+            insertItemIntoContainer(parentContainer, group, index);
         }
-        FormGroup group = FormFactory.eINSTANCE.createFormGroup();
-        group.setId(nextFormItemId(formModel));
-        group.setName(name);
-        applyTitleValue(group, getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
-        applySimpleFeatureValue(group, "type", groupType.name()); //$NON-NLS-1$
-        insertItemIntoContainer(parentContainer, group, index);
+        // IFormItemManagementService.addGroup returns a UsualGroup-typed group regardless of
+        // the requested ManagedFormGroupType when the caller asks for PAGES/PAGE. Force the
+        // type to match the request so ensureFormGroupExtInfo (called by the dispatcher right
+        // after) builds the matching PagesGroupExtInfo / PageGroupExtInfo companion block.
+        if (group != null && groupType != null && group.getType() != groupType) {
+            group.setType(groupType);
+        }
+        assignSafeFormItemId(formModel, group);
         return group;
+    }
+
+    private Table addTableItem(
+            Form formModel,
+            FormItemContainer parentContainer,
+            Map<String, Object> operation,
+            String name,
+            Integer index,
+            IFormItemManagementService itemManagementService) {
+        FormNewItemDescriptor descriptor = buildFormNewItemDescriptor(operation, name);
+        Table table;
+        if (itemManagementService != null) {
+            int insertIndex = index != null && index.intValue() >= 0
+                    && index.intValue() <= parentContainer.getItems().size()
+                            ? index.intValue() : parentContainer.getItems().size();
+            table = itemManagementService.addTable(parentContainer, insertIndex, formModel, descriptor);
+        } else {
+            table = FormFactory.eINSTANCE.createTable();
+            table.setId(nextFormItemId(formModel));
+            table.setName(name);
+            applyTitleValue(table, getMapValueIgnoreCase(operation, "title"), //$NON-NLS-1$
+                    resolveProjectDefaultLanguageCode(formModel));
+            insertItemIntoContainer(parentContainer, table, index);
+        }
+        assignSafeFormItemId(formModel, table);
+        return table;
+    }
+
+    /**
+     * Apply Table-specific defaults from the {@code add_table} operation: dataPath, changeRowSet,
+     * header (with the SU107-mandated headerHeight=1 when header=true), and the
+     * autoCommandBar attachment. Mirror the conventions the 2026-05-18 broken-cases report
+     * lists as expected defaults for non-DynamicList tables on data-input forms.
+     */
+    private void applyTableDefaults(Form formModel, Table table, Map<String, Object> operation, Map<String, Object> set) {
+        if (table == null) {
+            return;
+        }
+        Object dataPathValue = getMapValueIgnoreCase(operation, "data_path"); //$NON-NLS-1$
+        if (dataPathValue == null) {
+            dataPathValue = getMapValueIgnoreCase(operation, "dataPath"); //$NON-NLS-1$
+        }
+        if (dataPathValue == null) {
+            dataPathValue = getMapValueIgnoreCase(set, "data_path"); //$NON-NLS-1$
+        }
+        if (dataPathValue == null) {
+            dataPathValue = getMapValueIgnoreCase(set, "dataPath"); //$NON-NLS-1$
+        }
+        if (dataPathValue != null) {
+            table.setDataPath(toDataPath(dataPathValue, "data_path")); //$NON-NLS-1$
+        }
+        // changeRowSet — default true (matches the platform's "user can Add / Move up / Move down"
+        // expectation on non-DynamicList input tables). Default explicit only when caller did not
+        // provide a value, so an explicit false from the agent still wins.
+        Object changeRowSet = firstNonNull(
+                getMapValueIgnoreCase(operation, "change_row_set"), //$NON-NLS-1$
+                getMapValueIgnoreCase(operation, "changeRowSet"), //$NON-NLS-1$
+                getMapValueIgnoreCase(set, "change_row_set"), //$NON-NLS-1$
+                getMapValueIgnoreCase(set, "changeRowSet")); //$NON-NLS-1$
+        if (changeRowSet != null) {
+            Boolean parsed = parseBoolean(changeRowSet);
+            if (parsed != null) {
+                table.setChangeRowSet(parsed.booleanValue());
+            }
+        } else {
+            table.setChangeRowSet(true);
+        }
+        // changeRowOrder — no default, only when caller asks.
+        Object changeRowOrder = firstNonNull(
+                getMapValueIgnoreCase(operation, "change_row_order"), //$NON-NLS-1$
+                getMapValueIgnoreCase(operation, "changeRowOrder"), //$NON-NLS-1$
+                getMapValueIgnoreCase(set, "change_row_order"), //$NON-NLS-1$
+                getMapValueIgnoreCase(set, "changeRowOrder")); //$NON-NLS-1$
+        if (changeRowOrder != null) {
+            Boolean parsed = parseBoolean(changeRowOrder);
+            if (parsed != null) {
+                table.setChangeRowOrder(parsed.booleanValue());
+            }
+        }
+        // header / headerHeight — default header=true. Whenever header is enabled, headerHeight
+        // must be >=1 (SU107). Default to 1 if caller didn't specify.
+        Object headerVal = firstNonNull(
+                getMapValueIgnoreCase(operation, "header"), //$NON-NLS-1$
+                getMapValueIgnoreCase(set, "header")); //$NON-NLS-1$
+        boolean headerOn;
+        if (headerVal == null) {
+            headerOn = true;
+            table.setHeader(true);
+        } else {
+            Boolean parsed = parseBoolean(headerVal);
+            headerOn = parsed != null && parsed.booleanValue();
+            table.setHeader(headerOn);
+        }
+        if (headerOn) {
+            Object headerHeightVal = firstNonNull(
+                    getMapValueIgnoreCase(operation, "header_height"), //$NON-NLS-1$
+                    getMapValueIgnoreCase(operation, "headerHeight"), //$NON-NLS-1$
+                    getMapValueIgnoreCase(set, "header_height"), //$NON-NLS-1$
+                    getMapValueIgnoreCase(set, "headerHeight")); //$NON-NLS-1$
+            Integer height = headerHeightVal == null ? null : parseInteger(headerHeightVal);
+            table.setHeaderHeight(height != null && height.intValue() >= 1 ? height.intValue() : 1);
+        }
+        // autoCommandBar — default true (attach a fresh AutoCommandBar so the platform shows the
+        // standard Add / Delete / Move toolbar). Skip when the table already has one or the
+        // agent explicitly opts out.
+        Object autoCommandBar = firstNonNull(
+                getMapValueIgnoreCase(operation, "auto_command_bar"), //$NON-NLS-1$
+                getMapValueIgnoreCase(operation, "autoCommandBar"), //$NON-NLS-1$
+                getMapValueIgnoreCase(set, "auto_command_bar"), //$NON-NLS-1$
+                getMapValueIgnoreCase(set, "autoCommandBar")); //$NON-NLS-1$
+        boolean wantAutoCommandBar = true;
+        if (autoCommandBar != null) {
+            Boolean parsed = parseBoolean(autoCommandBar);
+            wantAutoCommandBar = parsed == null || parsed.booleanValue();
+        }
+        if (wantAutoCommandBar) {
+            if (table.getAutoCommandBar() == null) {
+                AutoCommandBar bar = FormFactory.eINSTANCE.createAutoCommandBar();
+                if (formModel != null) {
+                    bar.setId(nextFormItemId(formModel));
+                }
+                bar.setAutoFill(true);
+                table.setAutoCommandBar(bar);
+            }
+        } else if (table.getAutoCommandBar() != null) {
+            // EDT's IFormItemManagementService.addTable creates an AutoCommandBar internally
+            // regardless of caller intent; explicit auto_command_bar:false must detach it.
+            table.setAutoCommandBar(null);
+        }
+    }
+
+    private Decoration addDecorationItem(
+            Form formModel,
+            FormItemContainer parentContainer,
+            Map<String, Object> operation,
+            String name,
+            ManagedFormDecorationType decorationType,
+            Integer index,
+            IFormItemManagementService itemManagementService) {
+        FormNewItemDescriptor descriptor = buildFormNewItemDescriptor(operation, name);
+        Decoration decoration;
+        if (itemManagementService != null) {
+            if (index != null && index.intValue() >= 0 && index.intValue() <= parentContainer.getItems().size()) {
+                decoration = itemManagementService.addDecoration(parentContainer, index.intValue(),
+                        decorationType, formModel, descriptor);
+            } else {
+                decoration = itemManagementService.addDecoration(parentContainer, decorationType, formModel, descriptor);
+            }
+        } else {
+            decoration = FormFactory.eINSTANCE.createDecoration();
+            decoration.setId(nextFormItemId(formModel));
+            decoration.setName(name);
+            applyTitleValue(decoration, getMapValueIgnoreCase(operation, "title"), //$NON-NLS-1$
+                    resolveProjectDefaultLanguageCode(formModel));
+            insertItemIntoContainer(parentContainer, decoration, index);
+        }
+        // IFormItemManagementService.addDecoration uses the supplied decorationType internally,
+        // but mirror the addGroup pattern: force-set after the call so a future EDT regression
+        // can't silently downgrade us. ensureFormDecorationExtInfo (called by the dispatcher
+        // right after) rebuilds the matching LabelDecorationExtInfo / PictureDecorationExtInfo.
+        if (decoration != null && decorationType != null && decoration.getType() != decorationType) {
+            decoration.setType(decorationType);
+        }
+        assignSafeFormItemId(formModel, decoration);
+        return decoration;
+    }
+
+    private ManagedFormDecorationType resolveRequestedDecorationType(Map<String, Object> operation, Map<String, Object> set) {
+        // Accept decoration_type / decorationType / kind / type at top-level or inside set.
+        Object raw = getMapValueIgnoreCase(operation, "decoration_type"); //$NON-NLS-1$
+        if (raw == null) {
+            raw = getMapValueIgnoreCase(operation, "decorationType"); //$NON-NLS-1$
+        }
+        if (raw == null) {
+            raw = getMapValueIgnoreCase(operation, "kind"); //$NON-NLS-1$
+        }
+        if (raw == null) {
+            raw = getMapValueIgnoreCase(operation, "type"); //$NON-NLS-1$
+        }
+        if (raw == null) {
+            raw = getMapValueIgnoreCase(set, "decoration_type"); //$NON-NLS-1$
+        }
+        if (raw == null) {
+            raw = getMapValueIgnoreCase(set, "decorationType"); //$NON-NLS-1$
+        }
+        if (raw == null) {
+            raw = getMapValueIgnoreCase(set, "kind"); //$NON-NLS-1$
+        }
+        if (raw == null) {
+            raw = getMapValueIgnoreCase(set, "type"); //$NON-NLS-1$
+        }
+        if (raw instanceof ManagedFormDecorationType direct) {
+            return direct;
+        }
+        if (raw == null) {
+            return ManagedFormDecorationType.LABEL;
+        }
+        String normalized = String.valueOf(raw).trim().replace("-", "_").replace(" ", "_").toUpperCase(Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+        // Tolerate the LABEL_DECORATION / PICTURE_DECORATION form a previous error message
+        // recommended — they're equivalent to LABEL / PICTURE in this context.
+        if ("LABEL_DECORATION".equals(normalized)) { //$NON-NLS-1$
+            normalized = "LABEL"; //$NON-NLS-1$
+        } else if ("PICTURE_DECORATION".equals(normalized)) { //$NON-NLS-1$
+            normalized = "PICTURE"; //$NON-NLS-1$
+        }
+        try {
+            return ManagedFormDecorationType.valueOf(normalized);
+        } catch (IllegalArgumentException e) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Unknown decoration type '" + raw + "': expected LABEL or PICTURE", false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    private void ensureFormDecorationExtInfo(Decoration decoration) {
+        if (decoration == null) {
+            return;
+        }
+        ManagedFormDecorationType type = decoration.getType();
+        if (type == null) {
+            type = ManagedFormDecorationType.LABEL;
+            decoration.setType(type);
+        }
+        DecorationExtInfo extInfo = decoration.getExtInfo();
+        switch (type) {
+            case LABEL -> {
+                if (!(extInfo instanceof LabelDecorationExtInfo)) {
+                    decoration.setExtInfo(FormFactory.eINSTANCE.createLabelDecorationExtInfo());
+                }
+            }
+            case PICTURE -> {
+                if (!(extInfo instanceof PictureDecorationExtInfo)) {
+                    decoration.setExtInfo(FormFactory.eINSTANCE.createPictureDecorationExtInfo());
+                }
+            }
+        }
     }
 
     private FormField addFieldItem(
@@ -1049,17 +1755,21 @@ public class EdtMetadataService {
             Integer index,
             IFormItemManagementService itemManagementService) {
         FormNewItemDescriptor descriptor = buildFormNewItemDescriptor(operation, name);
+        FormField field;
         if (itemManagementService != null) {
             if (index != null && index.intValue() >= 0 && index.intValue() <= parentContainer.getItems().size()) {
-                return itemManagementService.addField(parentContainer, index.intValue(), formModel, descriptor);
+                field = itemManagementService.addField(parentContainer, index.intValue(), formModel, descriptor);
+            } else {
+                field = itemManagementService.addField(parentContainer, formModel, descriptor);
             }
-            return itemManagementService.addField(parentContainer, formModel, descriptor);
+        } else {
+            field = FormFactory.eINSTANCE.createFormField();
+            field.setId(nextFormItemId(formModel));
+            field.setName(name);
+            applyTitleValue(field, getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
+            insertItemIntoContainer(parentContainer, field, index);
         }
-        FormField field = FormFactory.eINSTANCE.createFormField();
-        field.setId(nextFormItemId(formModel));
-        field.setName(name);
-        applyTitleValue(field, getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
-        insertItemIntoContainer(parentContainer, field, index);
+        assignSafeFormItemId(formModel, field);
         return field;
     }
 
@@ -1073,11 +1783,12 @@ public class EdtMetadataService {
         // Assign a unique command ID (separate namespace from form items, but we reuse nextFormItemId for safety)
         int cmdId = nextFormCommandId(formModel);
         formCommand.setId(cmdId);
-        // Set title
-        applyTitleValue(formCommand, getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
+        // Set title — track project's default language so titles don't leak "ru" in English-locale projects.
+        String defaultLanguageCode = resolveProjectDefaultLanguageCode(formModel);
+        applyTitleValue(formCommand, getMapValueIgnoreCase(operation, "title"), defaultLanguageCode); //$NON-NLS-1$
         // If no title was set, use command name as default title
         if (formCommand.getTitle().isEmpty()) {
-            formCommand.getTitle().put(RU_LANGUAGE, name);
+            formCommand.getTitle().put(defaultLanguageCode, name);
         }
         // Build action handler chain: FormCommand -> FormCommandHandlerContainer -> CommandHandler
         CommandHandler handler = FormFactory.eINSTANCE.createCommandHandler();
@@ -1085,9 +1796,19 @@ public class EdtMetadataService {
         FormCommandHandlerContainer handlerContainer = FormFactory.eINSTANCE.createFormCommandHandlerContainer();
         handlerContainer.setHandler(handler);
         formCommand.setAction(handlerContainer);
-        // Apply optional properties
+        // Apply optional properties. modifies_stored_data may arrive snake_case or camelCase,
+        // at the top of the operation map or nested in `set` / `properties`; accept all forms.
         Map<String, Object> set = extractOperationSet(operation);
-        Object modifiesStoredData = getMapValueIgnoreCase(set, "modifiesStoredData"); //$NON-NLS-1$
+        Object modifiesStoredData = getMapValueIgnoreCase(operation, "modifies_stored_data"); //$NON-NLS-1$
+        if (modifiesStoredData == null) {
+            modifiesStoredData = getMapValueIgnoreCase(operation, "modifiesStoredData"); //$NON-NLS-1$
+        }
+        if (modifiesStoredData == null) {
+            modifiesStoredData = getMapValueIgnoreCase(set, "modifies_stored_data"); //$NON-NLS-1$
+        }
+        if (modifiesStoredData == null) {
+            modifiesStoredData = getMapValueIgnoreCase(set, "modifiesStoredData"); //$NON-NLS-1$
+        }
         if (modifiesStoredData instanceof Boolean b) {
             formCommand.setModifiesStoredData(b.booleanValue());
         }
@@ -1104,28 +1825,34 @@ public class EdtMetadataService {
             Integer index,
             IFormItemManagementService itemManagementService) {
         FormNewItemDescriptor descriptor = buildFormNewItemDescriptor(operation, name);
+        Button button = null;
         if (itemManagementService != null && command != null) {
             try {
                 if (index != null && index.intValue() >= 0 && index.intValue() <= parentContainer.getItems().size()) {
-                    return itemManagementService.addButton(parentContainer, index.intValue(), command, null, formModel, descriptor);
+                    button = itemManagementService.addButton(parentContainer, index.intValue(), command, null, formModel, descriptor);
+                } else {
+                    button = itemManagementService.addButton(parentContainer, command, null, formModel, descriptor);
                 }
-                return itemManagementService.addButton(parentContainer, command, null, formModel, descriptor);
             } catch (Exception e) {
                 LOG.warn("IFormItemManagementService.addButton() failed, using manual path: %s", e.getMessage()); //$NON-NLS-1$
+                button = null;
             }
         }
-        // Manual / fallback path
-        Button button = FormFactory.eINSTANCE.createButton();
-        button.setId(nextFormItemId(formModel));
-        button.setName(name);
-        applyTitleValue(button, getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
-        if (command != null) {
-            button.setCommandName(command);
+        if (button == null) {
+            // Manual / fallback path
+            button = FormFactory.eINSTANCE.createButton();
+            button.setId(nextFormItemId(formModel));
+            button.setName(name);
+            applyTitleValue(button, getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
+            if (command != null) {
+                button.setCommandName(command);
+            }
+            // Resolve button type
+            ManagedFormButtonType buttonType = resolveButtonType(operation);
+            button.setType(buttonType);
+            insertItemIntoContainer(parentContainer, button, index);
         }
-        // Resolve button type
-        ManagedFormButtonType buttonType = resolveButtonType(operation);
-        button.setType(buttonType);
-        insertItemIntoContainer(parentContainer, button, index);
+        assignSafeFormItemId(formModel, button);
         return button;
     }
 
@@ -1200,9 +1927,25 @@ public class EdtMetadataService {
     }
 
     private ManagedFormGroupType resolveRequestedGroupType(Map<String, Object> operation, Map<String, Object> set) {
+        // Look at the commonly-used positions in priority order:
+        // group_type (most specific), top-level kind, top-level type, set.type (legacy).
+        // `kind` was missing here and silently fell through to USUAL_GROUP — the same
+        // alias is already accepted by set_item, so add_group should match.
         Object rawType = hasMapKeyIgnoreCase(operation, "group_type") //$NON-NLS-1$
                 ? getMapValueIgnoreCase(operation, "group_type") //$NON-NLS-1$
-                : getMapValueIgnoreCase(set, "type"); //$NON-NLS-1$
+                : null;
+        if (rawType == null) {
+            rawType = getMapValueIgnoreCase(operation, "kind"); //$NON-NLS-1$
+        }
+        if (rawType == null) {
+            rawType = getMapValueIgnoreCase(operation, "type"); //$NON-NLS-1$
+        }
+        if (rawType == null) {
+            rawType = getMapValueIgnoreCase(set, "kind"); //$NON-NLS-1$
+        }
+        if (rawType == null) {
+            rawType = getMapValueIgnoreCase(set, "type"); //$NON-NLS-1$
+        }
         if (rawType instanceof ManagedFormGroupType groupType) {
             return groupType;
         }
@@ -1215,6 +1958,439 @@ public class EdtMetadataService {
             }
         }
         return ManagedFormGroupType.USUAL_GROUP;
+    }
+
+    /**
+     * Pre-flight reject {@code add_group type:"TABLE"} (and aliases).  Table
+     * is a distinct EMF model class, not a FormGroup variant, so the
+     * historical fallback to USUAL_GROUP silently produced a UsualGroup
+     * pretending to be a Table.  Until mutate_form_model grows a dedicated
+     * {@code add_table} op, fail fast with an actionable hint pointing the
+     * agent at direct .form XML editing.
+     */
+    private void rejectTableAsAddGroupType(
+            Map<String, Object> operation,
+            Map<String, Object> set,
+            String groupName
+    ) {
+        String rawType = FormGroupTypeIntent.extractRawType(operation, set);
+        if (rawType == null) {
+            return;
+        }
+        FormGroupTypeIntent.Verdict verdict = FormGroupTypeIntent.classify(rawType);
+        if (verdict == FormGroupTypeIntent.Verdict.TABLE_NOT_A_GROUP) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    FormGroupTypeIntent.tableNotAGroupMessage(rawType, groupName),
+                    false);
+        }
+    }
+
+    /**
+     * Pre-flight reject {@code set_item} attempting to flip an existing
+     * item's {@code type} field to {@code Table}.  The fallback path used
+     * to bubble up as {@code "Unsupported value type for field type: TABLE"}
+     * — technically correct but uninformative.  Mirror the wording used by
+     * {@code add_group} so the agent learns the same constraint from both
+     * entry points: Table is a different EMF class, you cannot flip
+     * xsi:type via set_item.
+     */
+    /**
+     * Accept {@code kind} / {@code group_type} on set_item for FormGroup items and route
+     * it to {@code FormGroup.setType(...)} + {@code ensureFormGroupExtInfo}. The applyFormPropertySet
+     * generic path would otherwise complain "Unknown form property: kind", because the EMF
+     * model has no {@code kind} feature — it is purely a tool-surface alias for the underlying
+     * {@code type} enum that {@code add_group} already accepts.
+     */
+    private void applyGroupKindMutation(FormItem item, Map<String, Object> set) {
+        if (!(item instanceof FormGroup group) || set == null || set.isEmpty()) {
+            return;
+        }
+        Object rawKind = removeMapValueIgnoreCase(set, "kind", "group_type", "groupType"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        if (rawKind == null) {
+            return;
+        }
+        ManagedFormGroupType groupType;
+        if (rawKind instanceof ManagedFormGroupType direct) {
+            groupType = direct;
+        } else {
+            String raw = String.valueOf(rawKind).trim();
+            if (raw.isBlank()) {
+                return;
+            }
+            String normalized = raw.replace("-", "_").replace(" ", "_").toUpperCase(Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+            try {
+                groupType = ManagedFormGroupType.valueOf(normalized);
+            } catch (IllegalArgumentException e) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Unknown group kind '" + raw + "': expected one of " //$NON-NLS-1$ //$NON-NLS-2$
+                                + "USUAL_GROUP, PAGES, PAGE, COLUMN_GROUP, BUTTON_GROUP, COMMAND_BAR, " //$NON-NLS-1$
+                                + "AUTO_COMMAND_BAR, POPUP", false); //$NON-NLS-1$
+            }
+        }
+        if (group.getType() != groupType) {
+            group.setType(groupType);
+        }
+        ensureFormGroupExtInfo(group);
+    }
+
+    /**
+     * Category #7: accept {@code add_group} / {@code set_item} layout
+     * properties ({@code group}, {@code united}, {@code behavior},
+     * {@code representation}, {@code show_left_margin},
+     * {@code show_title}, {@code through_align}, {@code current_row_use})
+     * and apply them to the FormGroup's {@code UsualGroupExtInfo}.
+     *
+     * <p>Before this hoist, the BM API emitted {@code <extInfo xsi:type="form:UsualGroupExtInfo"/>}
+     * empty self-closing, leaving the platform to fall back to EMF
+     * defaults at runtime ({@code group=Vertical}, {@code united=false}).
+     * The visual result was wide vertical spread on header groups that
+     * the agent intended to lay out inline. Accepting the layout
+     * properties at first-emit lets the resulting {@code .form} be
+     * unambiguous about layout intent.</p>
+     *
+     * <p>Recognized keys are removed from {@code set} so the downstream
+     * generic feature resolver does not retry them on the FormGroup
+     * itself (which has no matching EMF features).</p>
+     */
+    private void applyUsualGroupLayoutProperties(FormGroup group, Map<String, Object> set) {
+        if (group == null || set == null || set.isEmpty()) {
+            return;
+        }
+        if (!(group.getExtInfo() instanceof UsualGroupExtInfo usualExtInfo)) {
+            return;
+        }
+        Object groupValue = removeMapValueIgnoreCase(set, "group", "children_group", "childrenGroup"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        if (groupValue != null) {
+            String literal = FormDefaultsRules.parseFormChildrenGroupLiteral(groupValue);
+            if (literal == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Unknown UsualGroup 'group' value '" + groupValue //$NON-NLS-1$
+                                + "': expected Auto, Vertical, Horizontal, AlwaysHorizontal, " //$NON-NLS-1$
+                                + "HorizontalIfPossible, or AutoScreenTypeSensitive", false); //$NON-NLS-1$
+            }
+            // Switch on the canonical literal and resolve to the Java enum
+            // constant directly — bypasses any EMF getByName lookup quirk
+            // (the 2026-05-19 verification reported `AlwaysHorizontal` being
+            // silently rewritten as `HorizontalIfPossible` on serialize,
+            // which is consistent with getByName misrouting).
+            FormChildrenGroup parsed = switch (literal) {
+                case "Horizontal" -> FormChildrenGroup.HORIZONTAL; //$NON-NLS-1$
+                case "Vertical" -> FormChildrenGroup.VERTICAL; //$NON-NLS-1$
+                case "Auto" -> FormChildrenGroup.AUTO; //$NON-NLS-1$
+                case "AlwaysHorizontal" -> FormChildrenGroup.ALWAYS_HORIZONTAL; //$NON-NLS-1$
+                case "HorizontalIfPossible" -> FormChildrenGroup.HORIZONTAL_IF_POSSIBLE; //$NON-NLS-1$
+                case "AutoScreenTypeSensitive" -> FormChildrenGroup.AUTO_SCREEN_TYPE_SENSITIVE; //$NON-NLS-1$
+                default -> null;
+            };
+            if (parsed != null) {
+                usualExtInfo.setGroup(parsed);
+            }
+        }
+        Object united = removeMapValueIgnoreCase(set, "united"); //$NON-NLS-1$
+        if (united != null) {
+            Boolean parsed = parseBoolean(united);
+            if (parsed != null) {
+                usualExtInfo.setUnited(parsed.booleanValue());
+            }
+        }
+        Object showLeftMargin = removeMapValueIgnoreCase(set, "show_left_margin", "showLeftMargin"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (showLeftMargin != null) {
+            Boolean parsed = parseBoolean(showLeftMargin);
+            if (parsed != null) {
+                usualExtInfo.setShowLeftMargin(parsed.booleanValue());
+            }
+        }
+        Object showTitle = removeMapValueIgnoreCase(set, "show_title", "showTitle"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (showTitle != null) {
+            Boolean parsed = parseBoolean(showTitle);
+            if (parsed != null) {
+                usualExtInfo.setShowTitle(parsed.booleanValue());
+            }
+        }
+        Object behavior = removeMapValueIgnoreCase(set, "behavior"); //$NON-NLS-1$
+        if (behavior != null) {
+            String literal = FormDefaultsRules.parseUsualGroupBehaviorLiteral(behavior);
+            if (literal == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Unknown UsualGroup 'behavior' value '" + behavior //$NON-NLS-1$
+                                + "': expected Usual, Collapsible, PopUp, or Auto", false); //$NON-NLS-1$
+            }
+            UsualGroupBehavior parsed = switch (literal) {
+                case "Usual" -> UsualGroupBehavior.USUAL; //$NON-NLS-1$
+                case "Collapsible" -> UsualGroupBehavior.COLLAPSIBLE; //$NON-NLS-1$
+                case "PopUp" -> UsualGroupBehavior.POP_UP; //$NON-NLS-1$
+                case "Auto" -> UsualGroupBehavior.AUTO; //$NON-NLS-1$
+                default -> null;
+            };
+            if (parsed != null) {
+                usualExtInfo.setBehavior(parsed);
+            }
+        }
+        Object representation = removeMapValueIgnoreCase(set, "representation"); //$NON-NLS-1$
+        if (representation != null) {
+            String literal = FormDefaultsRules.parseUsualGroupRepresentationLiteral(representation);
+            if (literal == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Unknown UsualGroup 'representation' value '" + representation //$NON-NLS-1$
+                                + "': expected None, WeakSeparation, NormalSeparation, " //$NON-NLS-1$
+                                + "StrongSeparation, or Auto", false); //$NON-NLS-1$
+            }
+            UsualGroupRepresentation parsed = switch (literal) {
+                case "None" -> UsualGroupRepresentation.NONE; //$NON-NLS-1$
+                case "WeakSeparation" -> UsualGroupRepresentation.WEAK_SEPARATION; //$NON-NLS-1$
+                case "NormalSeparation" -> UsualGroupRepresentation.NORMAL_SEPARATION; //$NON-NLS-1$
+                case "StrongSeparation" -> UsualGroupRepresentation.STRONG_SEPARATION; //$NON-NLS-1$
+                case "Auto" -> UsualGroupRepresentation.AUTO; //$NON-NLS-1$
+                default -> null;
+            };
+            if (parsed != null) {
+                usualExtInfo.setRepresentation(parsed);
+            }
+        }
+        Object throughAlign = removeMapValueIgnoreCase(set, "through_align", "throughAlign"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (throughAlign != null) {
+            String literal = FormDefaultsRules.parseUsualGroupThroughAlignLiteral(throughAlign);
+            if (literal == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Unknown UsualGroup 'through_align' value '" + throughAlign //$NON-NLS-1$
+                                + "': expected Auto, Use, or DontUse", false); //$NON-NLS-1$
+            }
+            UsualGroupThroughAlign parsed = switch (literal) {
+                case "Auto" -> UsualGroupThroughAlign.AUTO; //$NON-NLS-1$
+                case "Use" -> UsualGroupThroughAlign.USE; //$NON-NLS-1$
+                case "DontUse" -> UsualGroupThroughAlign.DONT_USE; //$NON-NLS-1$
+                default -> null;
+            };
+            if (parsed != null) {
+                usualExtInfo.setThroughAlign(parsed);
+            }
+        }
+        Object currentRowUse = removeMapValueIgnoreCase(set, "current_row_use", "currentRowUse"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (currentRowUse != null) {
+            String literal = FormDefaultsRules.parseCurrentRowUseLiteral(currentRowUse);
+            if (literal == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Unknown UsualGroup 'current_row_use' value '" + currentRowUse //$NON-NLS-1$
+                                + "': expected Auto, Use, or DontUse", false); //$NON-NLS-1$
+            }
+            CurrentRowUse parsed = switch (literal) {
+                case "Auto" -> CurrentRowUse.AUTO; //$NON-NLS-1$
+                case "Use" -> CurrentRowUse.USE; //$NON-NLS-1$
+                case "DontUse" -> CurrentRowUse.DONT_USE; //$NON-NLS-1$
+                default -> null;
+            };
+            if (parsed != null) {
+                usualExtInfo.setCurrentRowUse(parsed);
+            }
+        }
+    }
+
+    /**
+     * Apply {@code set_item set:{handlers:[{event,name}, ...]}} on any EventHandlerContainer.
+     *
+     * <p>For each requested entry, the Event-name is resolved through
+     * {@link FormItemInformationService#getAllowedEvents(FormVisualEntity)} (top-level
+     * events on the FormItem itself, e.g. OnChange) and/or
+     * {@link FormItemInformationService#getAllowedEvents(ExtInfo)} (type-specific events
+     * declared by the item's ExtInfo, e.g. CheckBoxField's OnClick). Each EventHandler is
+     * created via FormFactory, wired with the resolved Event reference + handler-procedure
+     * name, and appended to the container whose getAllowedEvents listed that Event. The
+     * supplied handlers list replaces any prior handlers on the container (and its ExtInfo
+     * sibling, when applicable) — that matches the set_item replace-not-merge convention
+     * already used by update_metadata's many-valued attribute writes.</p>
+     */
+    private void applyEventHandlersBinding(EObject target, EventHandlerContainer container, Object handlersValue) {
+        List<Map<String, Object>> entries = coerceHandlerEntries(handlersValue);
+        FormItemInformationService infoService = resolveFormItemInformationService();
+        // Establish the allowed-event scope. For FormVisualEntity targets we get top-level
+        // events (Form-as-a-whole, FormField directly, etc.). For ExtInfo targets (when the
+        // caller routes the extInfo) we get the type-specific events.
+        List<Event> topLevelEvents = List.of();
+        List<Event> extInfoEvents = List.of();
+        EventHandlerContainer extInfoContainer = null;
+        if (target instanceof FormVisualEntity fve) {
+            topLevelEvents = nonNullList(infoService.getAllowedEvents(fve));
+            ExtInfo extInfo = infoService.getExtensionInfo(target);
+            if (extInfo != null) {
+                extInfoEvents = nonNullList(infoService.getAllowedEvents(extInfo));
+                if (extInfo instanceof EventHandlerContainer ehc) {
+                    extInfoContainer = ehc;
+                }
+            }
+        } else if (target instanceof ExtInfo extInfo) {
+            extInfoEvents = nonNullList(infoService.getAllowedEvents(extInfo));
+            extInfoContainer = container;
+        }
+        if (topLevelEvents.isEmpty() && extInfoEvents.isEmpty()) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "No events declared for " + target.eClass().getName() //$NON-NLS-1$
+                            + ": this form-item kind does not host event handlers via the EDT API.", //$NON-NLS-1$
+                    false);
+        }
+        if (entries.isEmpty()) {
+            container.getHandlers().clear();
+            if (extInfoContainer != null && extInfoContainer != container) {
+                extInfoContainer.getHandlers().clear();
+            }
+            return;
+        }
+        // Pre-resolve every requested event so we can validate before clearing existing handlers.
+        record Bound(Event event, String handlerName, boolean atExtInfo) { }
+        List<Bound> bound = new ArrayList<>(entries.size());
+        for (Map<String, Object> entry : entries) {
+            String eventName = asString(getMapValueIgnoreCase(entry, "event")); //$NON-NLS-1$
+            if (eventName == null) {
+                eventName = asString(getMapValueIgnoreCase(entry, "name")); //$NON-NLS-1$
+                // Some callers put event name under "name" and handler under "handler"; allow that.
+            }
+            String handlerName = asString(getMapValueIgnoreCase(entry, "handler")); //$NON-NLS-1$
+            if (handlerName == null) {
+                handlerName = asString(getMapValueIgnoreCase(entry, "procedure")); //$NON-NLS-1$
+            }
+            if (handlerName == null) {
+                // Falling back to "name" only makes sense when "event" was provided explicitly.
+                Object explicitEvent = getMapValueIgnoreCase(entry, "event"); //$NON-NLS-1$
+                if (explicitEvent != null) {
+                    handlerName = asString(getMapValueIgnoreCase(entry, "name")); //$NON-NLS-1$
+                }
+            }
+            if (eventName == null || eventName.isBlank()) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "handler entry missing 'event' name: " + entry, false); //$NON-NLS-1$
+            }
+            if (handlerName == null || handlerName.isBlank()) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "handler entry missing 'handler' procedure name for event '" //$NON-NLS-1$
+                                + eventName + "'", false); //$NON-NLS-1$
+            }
+            Event resolved = findEventByName(topLevelEvents, eventName);
+            boolean atExtInfo = false;
+            if (resolved == null) {
+                resolved = findEventByName(extInfoEvents, eventName);
+                atExtInfo = resolved != null;
+            }
+            if (resolved == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Event '" + eventName + "' is not declared on " //$NON-NLS-1$ //$NON-NLS-2$
+                                + target.eClass().getName() + ". Allowed: " //$NON-NLS-1$
+                                + describeAllowedEvents(topLevelEvents, extInfoEvents), false);
+            }
+            bound.add(new Bound(resolved, handlerName, atExtInfo && extInfoContainer != null));
+        }
+        // All validated — now clear and rebuild.
+        container.getHandlers().clear();
+        if (extInfoContainer != null && extInfoContainer != container) {
+            extInfoContainer.getHandlers().clear();
+        }
+        for (Bound b : bound) {
+            EventHandler handler = FormFactory.eINSTANCE.createEventHandler();
+            handler.setEvent(b.event());
+            handler.setName(b.handlerName());
+            if (b.atExtInfo() && extInfoContainer != null) {
+                extInfoContainer.getHandlers().add(handler);
+            } else {
+                container.getHandlers().add(handler);
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> coerceHandlerEntries(Object value) {
+        if (value == null) {
+            return List.of();
+        }
+        if (value instanceof List<?> list) {
+            List<Map<String, Object>> result = new ArrayList<>(list.size());
+            for (Object element : list) {
+                if (element instanceof Map<?, ?> map) {
+                    result.add((Map<String, Object>) map);
+                } else if (element != null) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                            "handlers[] entry must be a map of {event, handler}, got: " //$NON-NLS-1$
+                                    + element.getClass().getSimpleName(), false);
+                }
+            }
+            return result;
+        }
+        if (value instanceof Map<?, ?> singleMap) {
+            return List.of((Map<String, Object>) singleMap);
+        }
+        throw new MetadataOperationException(
+                MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                "handlers expects a list of {event, handler} maps, got: " //$NON-NLS-1$
+                        + value.getClass().getSimpleName(), false);
+    }
+
+    private static List<Event> nonNullList(List<Event> source) {
+        return source == null ? List.of() : source;
+    }
+
+    private static Event findEventByName(List<Event> events, String name) {
+        if (events == null || name == null) {
+            return null;
+        }
+        for (Event event : events) {
+            if (event == null) {
+                continue;
+            }
+            if (name.equalsIgnoreCase(event.getName())) {
+                return event;
+            }
+            String ru = event.getNameRu();
+            if (ru != null && name.equalsIgnoreCase(ru)) {
+                return event;
+            }
+        }
+        return null;
+    }
+
+    private static String describeAllowedEvents(List<Event> topLevel, List<Event> extInfo) {
+        List<String> names = new ArrayList<>();
+        for (Event e : topLevel) {
+            if (e != null && e.getName() != null) {
+                names.add(e.getName());
+            }
+        }
+        for (Event e : extInfo) {
+            if (e != null && e.getName() != null && !names.contains(e.getName())) {
+                names.add(e.getName());
+            }
+        }
+        if (names.isEmpty()) {
+            return "(none)"; //$NON-NLS-1$
+        }
+        return String.join(", ", names); //$NON-NLS-1$
+    }
+
+    private void rejectTableAsSetItemType(
+            Map<String, Object> operation,
+            Map<String, Object> set,
+            FormItem item
+    ) {
+        String rawType = FormGroupTypeIntent.extractRawType(operation, set);
+        if (rawType == null) {
+            return;
+        }
+        FormGroupTypeIntent.Verdict verdict = FormGroupTypeIntent.classify(rawType);
+        if (verdict == FormGroupTypeIntent.Verdict.TABLE_NOT_A_GROUP) {
+            Object itemId = item == null ? null : Integer.valueOf(item.getId());
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    FormGroupTypeIntent.tableNotChangeableViaSetItemMessage(rawType, itemId),
+                    false);
+        }
     }
 
     private Map<String, Object> stripMapKeysIgnoreCase(Map<String, Object> source, String... keysToRemove) {
@@ -1337,6 +2513,48 @@ public class EdtMetadataService {
                     usual.setRepresentation(UsualGroupRepresentation.AUTO);
                     group.setExtInfo(usual);
                 }
+            }
+        }
+    }
+
+    private void ensureFormFieldExtInfo(FormField field) {
+        if (field == null) {
+            return;
+        }
+        ManagedFormFieldType type = field.getType();
+        if (type == null) {
+            return;
+        }
+        FieldExtInfo extInfo = field.getExtInfo();
+        // Map a known field type to its xsi:type companion. EDT's IFormItemManagementService
+        // produces InputFieldExtInfo by default; if the agent later flips the type to
+        // CheckBoxField / RadioButtonField / LabelField, the extInfo block stays as
+        // InputFieldExtInfo and the platform flags SU107 on the wrong xsi:type pairing.
+        switch (type) {
+            case CHECK_BOX_FIELD -> {
+                if (!(extInfo instanceof CheckBoxFieldExtInfo)) {
+                    field.setExtInfo(FormFactory.eINSTANCE.createCheckBoxFieldExtInfo());
+                }
+            }
+            case RADIO_BUTTON_FIELD -> {
+                if (!(extInfo instanceof RadioButtonsFieldExtInfo)) {
+                    field.setExtInfo(FormFactory.eINSTANCE.createRadioButtonsFieldExtInfo());
+                }
+            }
+            case LABEL_FIELD -> {
+                if (!(extInfo instanceof LabelFieldExtInfo)) {
+                    field.setExtInfo(FormFactory.eINSTANCE.createLabelFieldExtInfo());
+                }
+            }
+            case INPUT_FIELD -> {
+                if (!(extInfo instanceof InputFieldExtInfo)) {
+                    field.setExtInfo(FormFactory.eINSTANCE.createInputFieldExtInfo());
+                }
+            }
+            default -> {
+                // Other field types (CHART_FIELD, PROGRESS_BAR_FIELD, etc.) keep whatever
+                // extInfo IFormItemManagementService or applyFormPropertySet produced; this
+                // helper only rescues the common boolean/radio/label/input mismatch.
             }
         }
     }
@@ -1493,6 +2711,25 @@ public class EdtMetadataService {
     }
 
     private int nextFormItemId(FormItemContainer container) {
+        // When called on a Form (the root), use a global walk so we
+        // include FormItem ids that live OUTSIDE the items tree —
+        // ContextMenu blocks, Addition helpers, ExtendedTooltip labels,
+        // etc. all share the FormItem id namespace, and Configurator
+        // emits them with ids in the 500+ range. Without this the
+        // normalize pass can re-issue an id already taken by a
+        // Configurator-round-tripped form, producing duplicates on
+        // serialize.
+        if (container instanceof Form formModel) {
+            int maxId = 0;
+            TreeIterator<EObject> iterator = formModel.eAllContents();
+            while (iterator.hasNext()) {
+                EObject obj = iterator.next();
+                if (obj instanceof FormItem item) {
+                    maxId = Math.max(maxId, item.getId());
+                }
+            }
+            return maxId + 1;
+        }
         int maxId = 0;
         for (FormItem item : container.getItems()) {
             if (item == null) {
@@ -1515,7 +2752,11 @@ public class EdtMetadataService {
             Object value = entry.getValue();
             String normalized = normalizeToken(key);
             if ("title".equals(normalized) && target instanceof Titled titled) { //$NON-NLS-1$
-                applyTitleValue(titled, value);
+                applyTitleValue(titled, value, resolveProjectDefaultLanguageCode(target));
+                continue;
+            }
+            if ("handlers".equals(normalized) && target instanceof EventHandlerContainer container) { //$NON-NLS-1$
+                applyEventHandlersBinding(target, container, value);
                 continue;
             }
             if ("name".equals(normalized) && target instanceof NamedElement namedElement) { //$NON-NLS-1$
@@ -1559,10 +2800,37 @@ public class EdtMetadataService {
     }
 
     private void applyTitleValue(Titled titled, Object value) {
+        applyTitleValue(titled, value, RU_LANGUAGE);
+    }
+
+    private void applyTitleValue(Titled titled, Object value, String defaultLanguageCode) {
         if (titled == null || value == null) {
             return;
         }
         if (value instanceof Map<?, ?> map) {
+            // Recognize the explicit {locale: "en", value: "..."} envelope before treating the
+            // map as a multi-locale {en: "...", ru: "..."} payload. This matches the shape the
+            // 2026-05-18 broken-cases report asks for and makes single-locale overrides
+            // unambiguous when the project default differs from the agent's intent.
+            Object explicitLocale = getMapValueIgnoreCase(map, "locale"); //$NON-NLS-1$
+            if (explicitLocale == null) {
+                explicitLocale = getMapValueIgnoreCase(map, "lang"); //$NON-NLS-1$
+            }
+            if (explicitLocale == null) {
+                explicitLocale = getMapValueIgnoreCase(map, "language"); //$NON-NLS-1$
+            }
+            Object explicitValue = getMapValueIgnoreCase(map, "value"); //$NON-NLS-1$
+            if (explicitValue == null) {
+                explicitValue = getMapValueIgnoreCase(map, "text"); //$NON-NLS-1$
+            }
+            if (explicitLocale != null && explicitValue != null) {
+                String localeStr = String.valueOf(explicitLocale).trim();
+                String valueStr = String.valueOf(explicitValue);
+                if (!localeStr.isBlank() && !valueStr.isBlank()) {
+                    titled.getTitle().put(localeStr, valueStr);
+                }
+                return;
+            }
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 if (entry.getKey() == null || entry.getValue() == null) {
                     continue;
@@ -1577,8 +2845,26 @@ public class EdtMetadataService {
         }
         String title = asString(value);
         if (title != null && !title.isBlank()) {
-            titled.getTitle().put(RU_LANGUAGE, title);
+            String lang = defaultLanguageCode != null && !defaultLanguageCode.isBlank()
+                    ? defaultLanguageCode : RU_LANGUAGE;
+            titled.getTitle().put(lang, title);
         }
+    }
+
+    private String resolveProjectDefaultLanguageCode(EObject ctx) {
+        if (ctx != null) {
+            EObject root = EcoreUtil.getRootContainer(ctx);
+            if (root instanceof Configuration config) {
+                Language defLang = config.getDefaultLanguage();
+                if (defLang != null) {
+                    String code = defLang.getLanguageCode();
+                    if (code != null && !code.isBlank()) {
+                        return code;
+                    }
+                }
+            }
+        }
+        return RU_LANGUAGE;
     }
 
     private void applyDataPath(FormField field, Object value) {
@@ -1748,8 +3034,193 @@ public class EdtMetadataService {
             applyFormPropertySet(attribute.getExtInfo(), extInfoSet);
         }
 
+        applyFormAttributeTypeQualifiers(attribute, set);
+
         if (!set.isEmpty()) {
             applyFormPropertySet(attribute, set);
+        }
+    }
+
+    /**
+     * Hoist TypeDescription qualifier keys (stringQualifiers / numberQualifiers /
+     * dateQualifiers) out of an apply_form_recipe attribute patch and apply them to
+     * {@code attribute.valueType}. Without this, applyFormPropertySet's generic feature
+     * resolver fails with "Unknown form property: stringQualifiers", because FormAttribute
+     * has no such feature directly — the qualifier lives on the nested TypeDescription.
+     *
+     * <p>Consumes recognized keys from {@code set} in place so they are not retried by
+     * the downstream applyFormPropertySet pass.</p>
+     */
+    private void applyFormAttributeTypeQualifiers(FormAttribute attribute, Map<String, Object> set) {
+        if (attribute == null || set == null || set.isEmpty()) {
+            return;
+        }
+        Object stringQualifiers = removeMapValueIgnoreCase(set, "stringQualifiers", "string_qualifiers"); //$NON-NLS-1$ //$NON-NLS-2$
+        Object numberQualifiers = removeMapValueIgnoreCase(set, "numberQualifiers", "number_qualifiers"); //$NON-NLS-1$ //$NON-NLS-2$
+        Object dateQualifiers = removeMapValueIgnoreCase(set, "dateQualifiers", "date_qualifiers"); //$NON-NLS-1$ //$NON-NLS-2$
+        // Generic wrapper: {qualifiers:{string:{length:N}, number:{precision:N}, date:{...}}}
+        Object qualifiersWrapper = removeMapValueIgnoreCase(set, "qualifiers"); //$NON-NLS-1$
+        if (qualifiersWrapper instanceof Map<?, ?> wrap) {
+            if (stringQualifiers == null) {
+                stringQualifiers = getMapValueIgnoreCase(wrap, "string"); //$NON-NLS-1$
+                if (stringQualifiers == null) {
+                    stringQualifiers = getMapValueIgnoreCase(wrap, "stringQualifiers"); //$NON-NLS-1$
+                }
+            }
+            if (numberQualifiers == null) {
+                numberQualifiers = getMapValueIgnoreCase(wrap, "number"); //$NON-NLS-1$
+                if (numberQualifiers == null) {
+                    numberQualifiers = getMapValueIgnoreCase(wrap, "numberQualifiers"); //$NON-NLS-1$
+                }
+            }
+            if (dateQualifiers == null) {
+                dateQualifiers = getMapValueIgnoreCase(wrap, "date"); //$NON-NLS-1$
+                if (dateQualifiers == null) {
+                    dateQualifiers = getMapValueIgnoreCase(wrap, "dateQualifiers"); //$NON-NLS-1$
+                }
+            }
+        }
+        // Flat keys: hoist length/fixed → stringQualifiers, precision/scale/nonNegative →
+        // numberQualifiers, dateFractions/fractions → dateQualifiers. Same shape the
+        // BasicFeature path (normalizeSetChangesForTarget) already accepts for the
+        // update_metadata tool — apply_form_recipe should match.
+        Object flatLength = removeMapValueIgnoreCase(set, "length"); //$NON-NLS-1$
+        Object flatFixed = removeMapValueIgnoreCase(set, "fixed", "fixedLength"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (flatLength != null || flatFixed != null) {
+            Map<String, Object> merged = stringQualifiers instanceof Map<?, ?>
+                    ? new LinkedHashMap<>(asMap(stringQualifiers))
+                    : new LinkedHashMap<>();
+            if (flatLength != null) {
+                merged.put("length", flatLength); //$NON-NLS-1$
+            }
+            if (flatFixed != null) {
+                merged.put("fixed", flatFixed); //$NON-NLS-1$
+            }
+            stringQualifiers = merged;
+        }
+        Object flatPrecision = removeMapValueIgnoreCase(set, "precision"); //$NON-NLS-1$
+        Object flatScale = removeMapValueIgnoreCase(set, "scale"); //$NON-NLS-1$
+        Object flatNonNegative = removeMapValueIgnoreCase(set, "nonNegative", "non_negative"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (flatPrecision != null || flatScale != null || flatNonNegative != null) {
+            Map<String, Object> merged = numberQualifiers instanceof Map<?, ?>
+                    ? new LinkedHashMap<>(asMap(numberQualifiers))
+                    : new LinkedHashMap<>();
+            if (flatPrecision != null) {
+                merged.put("precision", flatPrecision); //$NON-NLS-1$
+            }
+            if (flatScale != null) {
+                merged.put("scale", flatScale); //$NON-NLS-1$
+            }
+            if (flatNonNegative != null) {
+                merged.put("nonNegative", flatNonNegative); //$NON-NLS-1$
+            }
+            numberQualifiers = merged;
+        }
+        Object flatDateFractions = removeMapValueIgnoreCase(set, "dateFractions", "date_fractions", "fractions"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        if (flatDateFractions != null) {
+            Map<String, Object> merged = dateQualifiers instanceof Map<?, ?>
+                    ? new LinkedHashMap<>(asMap(dateQualifiers))
+                    : new LinkedHashMap<>();
+            merged.put("dateFractions", flatDateFractions); //$NON-NLS-1$
+            dateQualifiers = merged;
+        }
+        if (stringQualifiers == null && numberQualifiers == null && dateQualifiers == null) {
+            return;
+        }
+        TypeDescription typeDesc = attribute.getValueType();
+        if (typeDesc == null) {
+            typeDesc = McoreFactory.eINSTANCE.createTypeDescription();
+            attribute.setValueType(typeDesc);
+        }
+        if (stringQualifiers != null) {
+            Map<String, Object> sq = asMap(stringQualifiers);
+            StringQualifiers existing = typeDesc.getStringQualifiers();
+            if (existing == null) {
+                existing = McoreFactory.eINSTANCE.createStringQualifiers();
+                typeDesc.setStringQualifiers(existing);
+            }
+            Object length = getMapValueIgnoreCase(sq, "length"); //$NON-NLS-1$
+            if (length != null) {
+                Integer parsed = parseInteger(length);
+                if (parsed != null) {
+                    existing.setLength(parsed.intValue());
+                }
+            }
+            Object fixed = getMapValueIgnoreCase(sq, "fixed"); //$NON-NLS-1$
+            if (fixed != null) {
+                Boolean parsed = parseBoolean(fixed);
+                if (parsed != null) {
+                    existing.setFixed(parsed.booleanValue());
+                }
+            }
+        }
+        if (numberQualifiers != null) {
+            Map<String, Object> nq = asMap(numberQualifiers);
+            NumberQualifiers existing = typeDesc.getNumberQualifiers();
+            if (existing == null) {
+                existing = McoreFactory.eINSTANCE.createNumberQualifiers();
+                typeDesc.setNumberQualifiers(existing);
+            }
+            Object precision = getMapValueIgnoreCase(nq, "precision"); //$NON-NLS-1$
+            if (precision != null) {
+                Integer parsed = parseInteger(precision);
+                if (parsed != null) {
+                    existing.setPrecision(parsed.intValue());
+                }
+            }
+            Object scale = getMapValueIgnoreCase(nq, "scale"); //$NON-NLS-1$
+            if (scale != null) {
+                Integer parsed = parseInteger(scale);
+                if (parsed != null) {
+                    existing.setScale(parsed.intValue());
+                }
+            }
+            Object nonNegative = getMapValueIgnoreCase(nq, "nonNegative"); //$NON-NLS-1$
+            if (nonNegative == null) {
+                nonNegative = getMapValueIgnoreCase(nq, "non_negative"); //$NON-NLS-1$
+            }
+            if (nonNegative != null) {
+                Boolean parsed = parseBoolean(nonNegative);
+                if (parsed != null) {
+                    existing.setNonNegative(parsed.booleanValue());
+                }
+            }
+        }
+        if (dateQualifiers != null) {
+            Map<String, Object> dq = asMap(dateQualifiers);
+            DateQualifiers existing = typeDesc.getDateQualifiers();
+            if (existing == null) {
+                existing = McoreFactory.eINSTANCE.createDateQualifiers();
+                typeDesc.setDateQualifiers(existing);
+            }
+            Object fractions = getMapValueIgnoreCase(dq, "dateFractions"); //$NON-NLS-1$
+            if (fractions == null) {
+                fractions = getMapValueIgnoreCase(dq, "date_fractions"); //$NON-NLS-1$
+            }
+            if (fractions == null) {
+                fractions = getMapValueIgnoreCase(dq, "fractions"); //$NON-NLS-1$
+            }
+            if (fractions != null) {
+                String raw = String.valueOf(fractions).trim();
+                if (!raw.isBlank()) {
+                    DateFractions enumValue;
+                    try {
+                        enumValue = DateFractions.valueOf(raw.toUpperCase(Locale.ROOT));
+                    } catch (IllegalArgumentException e) {
+                        DateFractions byName = DateFractions.getByName(raw);
+                        if (byName == null) {
+                            byName = DateFractions.get(raw);
+                        }
+                        if (byName == null) {
+                            throw new MetadataOperationException(
+                                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                                    "Unknown dateFractions value: " + raw, false); //$NON-NLS-1$
+                        }
+                        enumValue = byName;
+                    }
+                    existing.setDateFractions(enumValue);
+                }
+            }
         }
     }
 
@@ -2020,6 +3491,24 @@ public class EdtMetadataService {
             }
         }
         if (txTypeItem == null) {
+            String canonicalBuiltIn = canonicalPlatformBuiltInTypeName(typeQuery);
+            if (canonicalBuiltIn != null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        canonicalBuiltIn + " is a platform built-in type that is not yet referenced" //$NON-NLS-1$
+                                + " by any attribute in this project, so the configuration-scan" //$NON-NLS-1$
+                                + " fallback could not locate a matching TypeItem. The proper" //$NON-NLS-1$
+                                + " fix routes through TypeProviderService (xtext scoping)," //$NON-NLS-1$
+                                + " which is a larger change. Workaround for first-time use:" //$NON-NLS-1$
+                                + " create one form attribute of this type via direct .form XML" //$NON-NLS-1$
+                                + " edit (Edit/Write tools) using a sibling form's <attributes>" //$NON-NLS-1$
+                                + " <valueType><types>" + canonicalBuiltIn + "</types></valueType>" //$NON-NLS-1$ //$NON-NLS-2$
+                                + " block as a template; subsequent apply_form_recipe calls" //$NON-NLS-1$
+                                + " referencing " + canonicalBuiltIn + " will find the existing" //$NON-NLS-1$ //$NON-NLS-2$
+                                + " TypeItem and succeed. See playbook §21.6.4a for the" //$NON-NLS-1$
+                                + " tabular-section end-to-end pattern.", //$NON-NLS-1$
+                        false);
+            }
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_PROPERTY_VALUE,
                     "Type value cannot be resolved for form attribute: " + typeQuery, false); //$NON-NLS-1$
@@ -2152,7 +3641,7 @@ public class EdtMetadataService {
         executeRead(project, readTx -> {
             for (String typeString : typeStrings) {
                 TypeItem item = resolveTypeItem(typeString, readTx);
-                if (item == null && !isSimpleTypeQuery(typeString)) {
+                if (item == null && !isSimpleTypeQuery(typeString) && !isPlatformBuiltInType(typeString)) {
                     throw new MetadataOperationException(
                             MetadataOperationCode.INVALID_PROPERTY_VALUE,
                             "Type not found in BM: " + typeString, false); //$NON-NLS-1$
@@ -2328,6 +3817,114 @@ public class EdtMetadataService {
     }
 
     /**
+     * Pre-flight check: certain {@code field_type} values (CHECK_BOX_FIELD,
+     * RADIO_BUTTON_FIELD, PROGRESS_BAR_FIELD, TRACK_BAR_FIELD) are flagged by the
+     * 1C platform with diagnostic SU107 ("Illegal extension type for field type")
+     * when they appear inside a Table.  Boolean cells render via
+     * {@code INPUT_FIELD} automatically, so converting/replacing those is what the
+     * agent ultimately wants.  Surface a clear message before the BM transaction
+     * fires.
+     */
+    /**
+     * Pre-flight reject {@code add_field field_type:"LABEL_DECORATION"} /
+     * {@code "PICTURE_DECORATION"}. Decorations are a different EMF class (Decoration)
+     * with its own xsi:type and ManagedFormDecorationType enum — they are not FormFields.
+     * The generic enum-coercion path bubbles up as the unhelpful
+     * "Unsupported value type for field type: LABEL_DECORATION"; replace it with an
+     * actionable message pointing the agent at the right approach until mutate_form_model
+     * grows a dedicated add_decoration op.
+     */
+    private void rejectDecorationAsFieldType(Map<String, Object> operation, String fieldName) {
+        if (operation == null) {
+            return;
+        }
+        String rawFieldType = asString(getMapValueIgnoreCase(operation, "field_type")); //$NON-NLS-1$
+        if (rawFieldType == null) {
+            rawFieldType = asString(getMapValueIgnoreCase(operation, "fieldType")); //$NON-NLS-1$
+        }
+        if (rawFieldType == null) {
+            Map<String, Object> set = asMap(operation.get("set")); //$NON-NLS-1$
+            rawFieldType = asString(getMapValueIgnoreCase(set, "field_type")); //$NON-NLS-1$
+            if (rawFieldType == null) {
+                rawFieldType = asString(getMapValueIgnoreCase(set, "fieldType")); //$NON-NLS-1$
+            }
+        }
+        if (rawFieldType == null) {
+            return;
+        }
+        String normalized = rawFieldType.replace("-", "_").replace(" ", "_").toUpperCase(Locale.ROOT); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+        if ("TABLE".equals(normalized) || "FORMTABLE".equals(normalized) || "DATATABLE".equals(normalized)) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            StringBuilder tableMsg = new StringBuilder();
+            tableMsg.append("add_field field_type='").append(rawFieldType).append("' is not supported"); //$NON-NLS-1$ //$NON-NLS-2$
+            if (fieldName != null && !fieldName.isBlank()) {
+                tableMsg.append(" (name='").append(fieldName).append("')"); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            tableMsg.append(": Tables are a top-level form element" //$NON-NLS-1$
+                    + " (xsi:type=\"form:Table\" with a dataPath to a ValueTable/TabularSection" //$NON-NLS-1$
+                    + " attribute), not a FormField variant. Use {op:\"add_table\"," //$NON-NLS-1$
+                    + " name:\"<name>\", data_path:\"<attribute path>\"," //$NON-NLS-1$
+                    + " parent_item_id:<id>} instead. Then run inspect_form_layout to" //$NON-NLS-1$
+                    + " confirm kind=\"Table\". See playbook §21.6.4a for the tabular-section" //$NON-NLS-1$
+                    + " end-to-end pattern."); //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    tableMsg.toString(),
+                    false);
+        }
+        if (!"LABEL_DECORATION".equals(normalized) && !"PICTURE_DECORATION".equals(normalized)) { //$NON-NLS-1$ //$NON-NLS-2$
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("add_field field_type='").append(rawFieldType).append("' is not supported"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (fieldName != null && !fieldName.isBlank()) {
+            sb.append(" (name='").append(fieldName).append("')"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        sb.append(": decorations are a distinct form element type" //$NON-NLS-1$
+                + " (xsi:type=\"form:Decoration\" with type=Label/Picture)," //$NON-NLS-1$
+                + " not a FormField variant. Use {op:\"add_decoration\"," //$NON-NLS-1$
+                + " name:\"<name>\", decoration_type:\"LABEL\"|\"PICTURE\"," //$NON-NLS-1$
+                + " parent_item_id:<id>, title:\"<text>\"} instead. Then run" //$NON-NLS-1$
+                + " inspect_form_layout to confirm kind=\"Decoration\"."); //$NON-NLS-1$
+        throw new MetadataOperationException(
+                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                sb.toString(),
+                false);
+    }
+
+    private void rejectTableIncompatibleFieldType(
+            FormItemContainer parentContainer,
+            Map<String, Object> operation,
+            String fieldName
+    ) {
+        if (parentContainer == null || operation == null) {
+            return;
+        }
+        String parentClassName = parentContainer.eClass() != null
+                ? parentContainer.eClass().getName()
+                : null;
+        if (!"Table".equals(parentClassName)) { //$NON-NLS-1$
+            return;
+        }
+        String rawFieldType = asString(getMapValueIgnoreCase(operation, "field_type")); //$NON-NLS-1$
+        if (rawFieldType == null) {
+            rawFieldType = asString(getMapValueIgnoreCase(operation, "fieldType")); //$NON-NLS-1$
+        }
+        if (rawFieldType == null) {
+            Map<String, Object> set = asMap(operation.get("set")); //$NON-NLS-1$
+            rawFieldType = asString(getMapValueIgnoreCase(set, "field_type")); //$NON-NLS-1$
+            if (rawFieldType == null) {
+                rawFieldType = asString(getMapValueIgnoreCase(set, "fieldType")); //$NON-NLS-1$
+            }
+        }
+        if (FormFieldTypeValidator.isIncompatibleWithTableParent(rawFieldType)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    FormFieldTypeValidator.tableIncompatibleFieldTypeMessage(rawFieldType, fieldName),
+                    false);
+        }
+    }
+
+    /**
      * Builds a concise mutation hint string that is embedded in the inspect_form_layout
      * output. LLMs read this hint before calling mutate_form_model, which dramatically
      * reduces parameter name hallucinations (parent_id vs parent_item_id, etc.).
@@ -2341,6 +3938,8 @@ public class EdtMetadataService {
                 + "For commands: {op:\"add_command\", name:\"CmdName\", action:\"HandlerProc\", title:\"Button Title\"}, " //$NON-NLS-1$
                 + "then {op:\"add_button\", name:\"BtnName\", command_name:\"CmdName\"} — parent defaults to existing CommandBar. " //$NON-NLS-1$
                 + "DO NOT create a new CommandBar group — the form already has one. DO NOT use add_group for command bars. " //$NON-NLS-1$
+                + "Inside a Table parent, Boolean columns must use field_type=\"INPUT_FIELD\" (the platform draws a checkmark automatically); " //$NON-NLS-1$
+                + "CHECK_BOX_FIELD/RADIO_BUTTON_FIELD/PROGRESS_BAR_FIELD/TRACK_BAR_FIELD are rejected by SU107 in Tables. " //$NON-NLS-1$
                 + "Valid ops: add_field, add_group, add_command, add_button, set_item, remove_item, move_item, set_form_props."; //$NON-NLS-1$
     }
 
@@ -3886,9 +5485,9 @@ public class EdtMetadataService {
         if ("externalreport".equals(ownerType) || "externaldataprocessor".equals(ownerType)) { //$NON-NLS-1$ //$NON-NLS-2$
             return false;
         }
-        if (usage == FormUsage.AUXILIARY) {
-            return false;
-        }
+        // AUXILIARY used to short-circuit to false; we now route it through bindDefaultForm too
+        // so DataProcessor/Report-style owners get setDefaultForm + useStandardCommands +
+        // form.usePurposes wired up, making the form openable via e1cib/app/... out of the box.
         return requestedSetAsDefault == null || requestedSetAsDefault.booleanValue();
     }
 
@@ -4320,25 +5919,77 @@ public class EdtMetadataService {
     }
 
     private void bindDefaultForm(MdObject owner, MdObject form, FormUsage usage, String opId) {
+        // Path 1: kind-specific setter for owners that distinguish forms by usage
+        // (Catalog/Document/Register/etc. have setDefaultObjectForm / setDefaultListForm / setDefaultChoiceForm).
         String setter = formOwnerStrategy.resolveDefaultSetter(usage);
-        if (setter == null) {
+        if (setter != null) {
+            Method targetMethod = findCompatibleSetter(owner.getClass(), setter, form.getClass());
+            if (targetMethod == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_FORM_USAGE,
+                        "Form usage " + usage + " is not supported for owner " + owner.eClass().getName(), false); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            try {
+                targetMethod.invoke(owner, form);
+                LOG.debug("[%s] Bound default form via %s for owner=%s form=%s", opId, setter, //$NON-NLS-1$
+                        owner.eClass().getName(), form.getName());
+                return;
+            } catch (ReflectiveOperationException e) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                        "Failed to bind default form via " + setter + ": " + e.getMessage(), false, e); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+        }
+        // Path 2: owner-level setDefaultForm wiring (DataProcessor/Report — these have no per-kind
+        // setters and need useStandardCommands + form.usePurposes to be openable via e1cib/app/...).
+        bindOwnerLevelDefaultForm(owner, form, opId);
+    }
+
+    private void bindOwnerLevelDefaultForm(MdObject owner, MdObject form, String opId) {
+        Method defaultFormSetter = findCompatibleSetter(owner.getClass(), "setDefaultForm", form.getClass()); //$NON-NLS-1$
+        if (defaultFormSetter == null) {
+            // Owner doesn't expose a generic defaultForm setter (e.g. Catalog/Document — they
+            // rely on kind-specific setters which are routed via path 1 above). No-op.
             return;
         }
-        Method targetMethod = findCompatibleSetter(owner.getClass(), setter, form.getClass());
-        if (targetMethod == null) {
-            throw new MetadataOperationException(
-                    MetadataOperationCode.INVALID_FORM_USAGE,
-                    "Form usage " + usage + " is not supported for owner " + owner.eClass().getName(), false); //$NON-NLS-1$ //$NON-NLS-2$
-        }
         try {
-            targetMethod.invoke(owner, form);
-            LOG.debug("[%s] Bound default form via %s for owner=%s form=%s", opId, setter, //$NON-NLS-1$
+            defaultFormSetter.invoke(owner, form);
+            LOG.debug("[%s] Bound owner-level setDefaultForm for owner=%s form=%s", opId, //$NON-NLS-1$
                     owner.eClass().getName(), form.getName());
         } catch (ReflectiveOperationException e) {
             throw new MetadataOperationException(
                     MetadataOperationCode.EDT_TRANSACTION_FAILED,
-                    "Failed to bind default form via " + setter + ": " + e.getMessage(), false, e); //$NON-NLS-1$ //$NON-NLS-2$
+                    "Failed to bind owner-level defaultForm: " + e.getMessage(), false, e); //$NON-NLS-1$
         }
+        enableStandardCommandsIfApplicable(owner, opId);
+        ensureFormVisibleOnPersonalComputer(form, opId);
+    }
+
+    private void enableStandardCommandsIfApplicable(MdObject owner, String opId) {
+        try {
+            Method m = owner.getClass().getMethod("setUseStandardCommands", boolean.class); //$NON-NLS-1$
+            m.invoke(owner, true);
+            LOG.debug("[%s] Enabled useStandardCommands for owner=%s", //$NON-NLS-1$
+                    opId, owner.eClass().getName());
+        } catch (NoSuchMethodException e) {
+            // Owner doesn't expose the property — Catalog/Document gain standard commands automatically.
+        } catch (ReflectiveOperationException e) {
+            LOG.warn("[%s] setUseStandardCommands failed for owner=%s: %s", //$NON-NLS-1$
+                    opId, owner.eClass().getName(), e.getMessage());
+        }
+    }
+
+    private void ensureFormVisibleOnPersonalComputer(MdObject form, String opId) {
+        if (!(form instanceof BasicForm basicForm)) {
+            return;
+        }
+        EList<ApplicationUsePurpose> purposes = basicForm.getUsePurposes();
+        if (purposes == null || purposes.contains(ApplicationUsePurpose.PERSONAL_COMPUTER)) {
+            return;
+        }
+        purposes.add(ApplicationUsePurpose.PERSONAL_COMPUTER);
+        LOG.debug("[%s] Added PERSONAL_COMPUTER to usePurposes for form=%s", //$NON-NLS-1$
+                opId, basicForm.getName());
     }
 
     private void populateFormContent(
@@ -5221,7 +6872,7 @@ public class EdtMetadataService {
         executeRead(project, readTx -> {
             for (String typeString : typeStrings) {
                 TypeItem item = resolveTypeItem(typeString, readTx);
-                if (item == null && !isSimpleTypeQuery(typeString)) {
+                if (item == null && !isSimpleTypeQuery(typeString) && !isPlatformBuiltInType(typeString)) {
                     throw new MetadataOperationException(
                             MetadataOperationCode.INVALID_PROPERTY_VALUE,
                             "Type not found in BM: " + typeString, false); //$NON-NLS-1$
@@ -5314,6 +6965,7 @@ public class EdtMetadataService {
         if (feature == null || properties == null || properties.isEmpty()) {
             return;
         }
+        // Boolean flags on BasicFeature ---------------------------------------
         Boolean multiLine = firstParsedBoolean(
                 getMapValueIgnoreCase(properties, "multiLine"), //$NON-NLS-1$
                 getMapValueIgnoreCase(properties, "multiline"), //$NON-NLS-1$
@@ -5321,6 +6973,152 @@ public class EdtMetadataService {
         if (multiLine != null) {
             feature.setMultiLine(multiLine.booleanValue());
         }
+        Boolean passwordMode = firstParsedBoolean(
+                getMapValueIgnoreCase(properties, "passwordMode"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "password_mode")); //$NON-NLS-1$
+        if (passwordMode != null) {
+            feature.setPasswordMode(passwordMode.booleanValue());
+        }
+        Boolean markNegatives = firstParsedBoolean(
+                getMapValueIgnoreCase(properties, "markNegatives"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "mark_negatives")); //$NON-NLS-1$
+        if (markNegatives != null) {
+            feature.setMarkNegatives(markNegatives.booleanValue());
+        }
+        Object maskValue = getMapValueIgnoreCase(properties, "mask"); //$NON-NLS-1$
+        if (maskValue != null) {
+            String maskString = String.valueOf(maskValue);
+            if (!maskString.isBlank()) {
+                feature.setMask(maskString);
+            }
+        }
+        // Enum-typed: fillChecking on BasicFeature ----------------------------
+        applyFillChecking(feature, properties);
+        // Enum-typed: dataHistory on DataHistorySupport (Catalog/Document/...) -
+        applyDataHistory(feature, properties);
+        // Enum-typed: fullTextSearch / indexing on DbObjectAttribute ----------
+        applyFullTextSearch(feature, properties);
+        applyIndexing(feature, properties);
+    }
+
+    private void applyFillChecking(BasicFeature feature, Map<String, Object> properties) {
+        Object raw = firstNonNull(
+                getMapValueIgnoreCase(properties, "fillChecking"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "fill_checking"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "fillchecking")); //$NON-NLS-1$
+        if (raw == null) {
+            return;
+        }
+        String literal = BasicFeaturePropertyAliases.resolveFillChecking(String.valueOf(raw)).orElse(null);
+        if (literal == null) {
+            LOG.warn("applyBasicFeatureCreateProperties: unrecognized fillChecking value '%s'", raw); //$NON-NLS-1$
+            return;
+        }
+        try {
+            feature.setFillChecking(
+                    com._1c.g5.v8.dt.metadata.common.FillChecking.valueOf(literal));
+        } catch (Exception e) {
+            LOG.warn("applyBasicFeatureCreateProperties: failed to apply fillChecking=%s: %s", literal, e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private void applyDataHistory(BasicFeature feature, Map<String, Object> properties) {
+        if (!(feature instanceof com._1c.g5.v8.dt.metadata.mdclass.DataHistorySupport dhs)) {
+            // Not all attribute kinds support data history (e.g. tabular section attributes).
+            // Surface a warning so the agent can spot a mismatched kind, but do not throw.
+            if (firstNonNull(
+                    getMapValueIgnoreCase(properties, "dataHistory"), //$NON-NLS-1$
+                    getMapValueIgnoreCase(properties, "data_history")) != null) { //$NON-NLS-1$
+                LOG.warn("applyBasicFeatureCreateProperties: dataHistory not applicable for %s", //$NON-NLS-1$
+                        feature.eClass().getName());
+            }
+            return;
+        }
+        Object raw = firstNonNull(
+                getMapValueIgnoreCase(properties, "dataHistory"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "data_history")); //$NON-NLS-1$
+        if (raw == null) {
+            return;
+        }
+        String literal = BasicFeaturePropertyAliases.resolveDataHistory(String.valueOf(raw)).orElse(null);
+        if (literal == null) {
+            LOG.warn("applyBasicFeatureCreateProperties: unrecognized dataHistory value '%s'", raw); //$NON-NLS-1$
+            return;
+        }
+        try {
+            dhs.setDataHistory(
+                    com._1c.g5.v8.dt.metadata.mdclass.DataHistoryUse.valueOf(literal));
+        } catch (Exception e) {
+            LOG.warn("applyBasicFeatureCreateProperties: failed to apply dataHistory=%s: %s", literal, e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private void applyFullTextSearch(BasicFeature feature, Map<String, Object> properties) {
+        if (!(feature instanceof com._1c.g5.v8.dt.metadata.mdclass.DbObjectAttribute dbo)) {
+            if (firstNonNull(
+                    getMapValueIgnoreCase(properties, "fullTextSearch"), //$NON-NLS-1$
+                    getMapValueIgnoreCase(properties, "full_text_search"), //$NON-NLS-1$
+                    getMapValueIgnoreCase(properties, "fulltextsearch")) != null) { //$NON-NLS-1$
+                LOG.warn("applyBasicFeatureCreateProperties: fullTextSearch not applicable for %s", //$NON-NLS-1$
+                        feature.eClass().getName());
+            }
+            return;
+        }
+        Object raw = firstNonNull(
+                getMapValueIgnoreCase(properties, "fullTextSearch"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "full_text_search"), //$NON-NLS-1$
+                getMapValueIgnoreCase(properties, "fulltextsearch")); //$NON-NLS-1$
+        if (raw == null) {
+            return;
+        }
+        String literal = BasicFeaturePropertyAliases.resolveFullTextSearch(String.valueOf(raw)).orElse(null);
+        if (literal == null) {
+            LOG.warn("applyBasicFeatureCreateProperties: unrecognized fullTextSearch value '%s'", raw); //$NON-NLS-1$
+            return;
+        }
+        try {
+            dbo.setFullTextSearch(
+                    com._1c.g5.v8.dt.metadata.mdclass.FullTextSearchUsing.valueOf(literal));
+        } catch (Exception e) {
+            LOG.warn("applyBasicFeatureCreateProperties: failed to apply fullTextSearch=%s: %s", literal, e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private void applyIndexing(BasicFeature feature, Map<String, Object> properties) {
+        if (!(feature instanceof com._1c.g5.v8.dt.metadata.mdclass.DbObjectAttribute dbo)) {
+            if (getMapValueIgnoreCase(properties, "indexing") != null) { //$NON-NLS-1$
+                LOG.warn("applyBasicFeatureCreateProperties: indexing not applicable for %s", //$NON-NLS-1$
+                        feature.eClass().getName());
+            }
+            return;
+        }
+        Object raw = getMapValueIgnoreCase(properties, "indexing"); //$NON-NLS-1$
+        if (raw == null) {
+            return;
+        }
+        String literal = BasicFeaturePropertyAliases.resolveIndexing(String.valueOf(raw)).orElse(null);
+        if (literal == null) {
+            LOG.warn("applyBasicFeatureCreateProperties: unrecognized indexing value '%s'", raw); //$NON-NLS-1$
+            return;
+        }
+        try {
+            dbo.setIndexing(
+                    com._1c.g5.v8.dt.metadata.mdclass.Indexing.valueOf(literal));
+        } catch (Exception e) {
+            LOG.warn("applyBasicFeatureCreateProperties: failed to apply indexing=%s: %s", literal, e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    private static Object firstNonNull(Object... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Object value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private boolean isKindWithRequiredType(MetadataChildKind kind) {
@@ -5674,6 +7472,18 @@ public class EdtMetadataService {
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
                         "children_ops item must contain op", false); //$NON-NLS-1$
             }
+            String normalizedOp = normalizeToken(opType);
+            // children_ops only operates on already-existing children. The agent must use
+            // add_metadata_child for creation — surface that explicitly so the agent doesn't
+            // hit the indirect "child_fqn is required" / "Metadata child object not found"
+            // sequence and conclude the request is malformed.  Logic lives in a pure helper
+            // so it can be unit-tested without an Eclipse OSGi runtime.
+            if (ChildrenOpsValidator.isCreateChildIntent(normalizedOp)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        ChildrenOpsValidator.createChildIntentRejectionMessage(opType),
+                        false);
+            }
             String childFqn = asString(op.get("child_fqn")); //$NON-NLS-1$
             if (childFqn == null || childFqn.isBlank()) {
                 throw new MetadataOperationException(
@@ -5693,7 +7503,7 @@ public class EdtMetadataService {
                         "Metadata child object not found: " + childFqn, false); //$NON-NLS-1$
             }
 
-            String normalizedOp = normalizeToken(opType);
+
             switch (normalizedOp) {
                 case "renamechild", "rename" -> renameChildObject(child, childFqn, asString(op.get("new_name"))); //$NON-NLS-1$ //$NON-NLS-2$
                 case "deletechild", "delete", "remove" -> { //$NON-NLS-1$ //$NON-NLS-2$
@@ -5906,9 +7716,13 @@ public class EdtMetadataService {
             return;
         }
         if (eFeature.isMany()) {
-            throw new MetadataOperationException(
-                    MetadataOperationCode.INVALID_METADATA_CHANGE,
-                    "Collection attribute updates are not supported: " + fieldName, false); //$NON-NLS-1$
+            if (!(eFeature instanceof EAttribute manyAttribute)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        "Collection reference updates are not supported: " + fieldName, false); //$NON-NLS-1$
+            }
+            applyManyAttributeReplacement(target, manyAttribute, value, fieldName);
+            return;
         }
         if (!(eFeature instanceof EAttribute attribute)) {
             throw new MetadataOperationException(
@@ -5918,6 +7732,56 @@ public class EdtMetadataService {
 
         Object converted = convertAttributeValue(attribute, value);
         target.eSet(eFeature, converted);
+    }
+
+    /**
+     * Replace the contents of a many-valued EAttribute (e.g. {@code usePurposes} on
+     * Configuration / BasicForm) with the supplied list. Accepts either a single value
+     * (single-element list) or a List/array of values; each element is coerced via the
+     * existing {@code convertAttributeValue}. Element-type unsupported by that helper
+     * (e.g. complex nested classes) still rejects with an actionable message.
+     */
+    @SuppressWarnings("unchecked")
+    private void applyManyAttributeReplacement(EObject target, EAttribute attribute, Object value, String fieldName) {
+        List<Object> incoming = new ArrayList<>();
+        if (value == null) {
+            // explicit null → clear
+        } else if (value instanceof List<?> list) {
+            for (Object element : list) {
+                if (element != null) {
+                    incoming.add(element);
+                }
+            }
+        } else if (value.getClass().isArray()) {
+            int len = java.lang.reflect.Array.getLength(value);
+            for (int i = 0; i < len; i++) {
+                Object element = java.lang.reflect.Array.get(value, i);
+                if (element != null) {
+                    incoming.add(element);
+                }
+            }
+        } else {
+            incoming.add(value);
+        }
+        List<Object> converted = new ArrayList<>(incoming.size());
+        for (Object raw : incoming) {
+            Object coerced = convertAttributeValue(attribute, raw);
+            if (coerced != null) {
+                converted.add(coerced);
+            }
+        }
+        Object current = target.eGet(attribute);
+        if (current instanceof List<?> existing) {
+            ((List<Object>) existing).clear();
+            ((List<Object>) existing).addAll(converted);
+            return;
+        }
+        // Defensive fallback — EMF many features normally expose List/EList; if for some
+        // reason the live value is not a List, surface a clear error rather than silently
+        // dropping the update.
+        throw new MetadataOperationException(
+                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                "Field " + fieldName + " is many-valued but its live value is not a List", false); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     /**
@@ -5998,6 +7862,28 @@ public class EdtMetadataService {
         }
 
         feature.setType(typeDesc);
+        fixNullNumberFillValue(feature, typeName);
+    }
+
+    /**
+     * Fix NPE in ValueWriter.writeValue(): some EDT EMF adapters react to setType()
+     * by creating a NumberValue with null BigDecimal as FillValue.
+     * If found, replace with BigDecimal.ZERO so XML serialization succeeds.
+     */
+    private void fixNullNumberFillValue(BasicFeature feature, String typeName) {
+        if (!isNumberType(typeName)) {
+            return;
+        }
+        EStructuralFeature fillValueFeature = feature.eClass().getEStructuralFeature("fillValue"); //$NON-NLS-1$
+        if (fillValueFeature == null) {
+            return;
+        }
+        Object current = feature.eGet(fillValueFeature);
+        if (current instanceof NumberValue nv && nv.getValue() == null) {
+            nv.setValue(BigDecimal.ZERO);
+            LOG.debug("fixNullNumberFillValue: fixed null BigDecimal in FillValue for %s", //$NON-NLS-1$
+                    feature.eClass().getName());
+        }
     }
 
     private TypeItem resolveExternalTypeItemCandidate(
@@ -6535,7 +8421,7 @@ public class EdtMetadataService {
     }
 
     private TypeItem resolveSimpleTypeItemFromConfiguration(Configuration configuration, String typeString) {
-        if (configuration == null || !isSimpleTypeQuery(typeString)) {
+        if (configuration == null || (!isSimpleTypeQuery(typeString) && !isPlatformBuiltInType(typeString))) {
             return null;
         }
         Set<String> queries = expandTypeQueries(typeString);
@@ -7243,6 +9129,51 @@ public class EdtMetadataService {
 
     private boolean isSimpleTypeQuery(String typeString) {
         return canonicalSimpleTypeName(typeString) != null;
+    }
+
+    /**
+     * Platform built-in types (ValueTable, Array, Structure, Map, ValueList, and their
+     * fixed/immutable variants) are not registered as Type instances in the project's BM
+     * transaction the way metadata-defined types are — they live in a separate
+     * platform-types partition that the BSL semantic engine loads from .type resources in
+     * com._1c.g5.v8.dt.platform_v8.3.x jars.
+     *
+     * <p>For attribute-type resolution we accept these as "let pre-resolve fall through";
+     * the configuration-scan fallback ({@link #resolveSimpleTypeItemFromConfiguration})
+     * can pick them up if any other form / attribute in the project already references
+     * the same type. On a fresh project with no prior reference, the final error message
+     * tells the agent what is going on and how to bootstrap.</p>
+     */
+    private boolean isPlatformBuiltInType(String typeString) {
+        return canonicalPlatformBuiltInTypeName(typeString) != null;
+    }
+
+    private String canonicalPlatformBuiltInTypeName(String typeString) {
+        if (typeString == null || typeString.isBlank()) {
+            return null;
+        }
+        String base = typeString.trim();
+        int openParen = base.indexOf('(');
+        if (openParen > 0) {
+            base = base.substring(0, openParen).trim();
+        }
+        int dot = base.indexOf('.');
+        if (dot > 0) {
+            base = base.substring(0, dot);
+        }
+        String token = normalizeToken(base);
+        return switch (token) {
+            case "valuetable", "таблицазначений" -> "ValueTable"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            case "valuelist", "списокзначений" -> "ValueList"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            case "valuetree", "деревозначений" -> "ValueTree"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            case "array", "массив" -> "Array"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            case "fixedarray", "фиксированныймассив" -> "FixedArray"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            case "structure", "структура" -> "Structure"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            case "fixedstructure", "фиксированнаяструктура" -> "FixedStructure"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            case "map", "соответствие" -> "Map"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            case "fixedmap", "фиксированноесоответствие" -> "FixedMap"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            default -> null;
+        };
     }
 
     private String canonicalSimpleTypeName(String typeString) {
