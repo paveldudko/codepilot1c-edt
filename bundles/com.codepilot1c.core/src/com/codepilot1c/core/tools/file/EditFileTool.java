@@ -29,6 +29,10 @@ import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.core.runtime.Path;
 
+import com.codepilot1c.core.edit.BslMethodParser;
+import com.codepilot1c.core.edit.BslMethodParser.MethodInfo;
+import com.codepilot1c.core.edit.DiffComputer;
+import com.codepilot1c.core.edit.DiffComputer.UnifiedDiff;
 import com.codepilot1c.core.edit.EditBlock;
 import com.codepilot1c.core.edit.FileEditApplier;
 import com.codepilot1c.core.edit.FuzzyMatcher;
@@ -36,6 +40,8 @@ import com.codepilot1c.core.edit.MatchResult;
 import com.codepilot1c.core.edit.SearchReplaceFormat;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 
 /**
  * Tool for editing file contents.
@@ -70,11 +76,36 @@ public class EditFileTool extends AbstractTool {
                     },
                     "new_text": {
                         "type": "string",
-                        "description": "Replacement text used together with old_text"
+                        "description": "Replacement text used together with old_text, or as the replacement payload in mode=replaceLines / mode=replaceMethod"
                     },
                     "edits": {
                         "type": "string",
                         "description": "SEARCH/REPLACE blocks for targeted multi-edit patches inside an existing file"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["replaceLines", "replaceMethod"],
+                        "description": "Optional atomic edit mode. replaceLines: replaces 1-based inclusive line range [line_from..line_to] with new_text. replaceMethod: replaces the BSL Procedure/Function named method_name (together with its directive and tightly-coupled doc-comment) with new_text."
+                    },
+                    "line_from": {
+                        "type": "integer",
+                        "description": "1-based inclusive start line for mode=replaceLines"
+                    },
+                    "line_to": {
+                        "type": "integer",
+                        "description": "1-based inclusive end line for mode=replaceLines"
+                    },
+                    "method_name": {
+                        "type": "string",
+                        "description": "Name of the Procedure/Function to replace in mode=replaceMethod (case-insensitive)"
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Compute the would-be edit without writing. Returns the unified diff and (for old_text/new_text) an ambiguity report listing every literal match line, so the caller can detect when old_text matches in more than one place before committing."
+                    },
+                    "return_diff": {
+                        "type": "boolean",
+                        "description": "Include the unified diff of applied changes in the response (apply mode only). Defaults to false to keep the common path cheap."
                     },
                     "create": {
                         "type": "boolean",
@@ -92,6 +123,8 @@ public class EditFileTool extends AbstractTool {
     private final FuzzyMatcher fuzzyMatcher = new FuzzyMatcher();
     private final SearchReplaceFormat searchReplaceFormat = new SearchReplaceFormat();
     private final FileEditApplier fileEditApplier = new FileEditApplier(fuzzyMatcher, searchReplaceFormat);
+    private final DiffComputer diffComputer = new DiffComputer();
+    private final BslMethodParser methodParser = new BslMethodParser();
 
     @Override
     public String getDescription() {
@@ -124,6 +157,12 @@ public class EditFileTool extends AbstractTool {
             String oldText = params.optString("old_text", null); //$NON-NLS-1$
             String newText = params.optString("new_text", null); //$NON-NLS-1$
             String edits = params.optString("edits", null); //$NON-NLS-1$
+            String mode = params.optString("mode", null); //$NON-NLS-1$
+            int lineFrom = params.optInt("line_from", -1); //$NON-NLS-1$
+            int lineTo = params.optInt("line_to", -1); //$NON-NLS-1$
+            String methodName = params.optString("method_name", null); //$NON-NLS-1$
+            boolean dryRun = params.optBoolean("dry_run", false); //$NON-NLS-1$
+            boolean returnDiff = params.optBoolean("return_diff", false); //$NON-NLS-1$
             boolean create = params.optBoolean("create", false); //$NON-NLS-1$
             boolean allowMetadataDescriptorEdit = params.optBoolean("allow_metadata_descriptor_edit", false); //$NON-NLS-1$
 
@@ -170,25 +209,33 @@ public class EditFileTool extends AbstractTool {
                 }
 
                 ToolResult result;
-                if (content != null) {
-                    // Replace entire file content
+                if ("replaceLines".equals(mode)) { //$NON-NLS-1$
+                    LOG.info("edit_file: mode=replaceLines в %s, строки %d..%d", //$NON-NLS-1$
+                            file.getFullPath(), lineFrom, lineTo);
+                    result = replaceLineRangeMode(file, lineFrom, lineTo, newText, dryRun, returnDiff);
+                } else if ("replaceMethod".equals(mode)) { //$NON-NLS-1$
+                    LOG.info("edit_file: mode=replaceMethod в %s, имя=%s", //$NON-NLS-1$
+                            file.getFullPath(), methodName);
+                    result = replaceMethodMode(file, methodName, newText, dryRun, returnDiff);
+                } else if (mode != null && !mode.isEmpty()) {
+                    return ToolResult.failure(
+                            "Unknown mode: " + mode + ". Supported: replaceLines, replaceMethod."); //$NON-NLS-1$ //$NON-NLS-2$
+                } else if (content != null) {
                     LOG.info("edit_file: замена содержимого файла %s (%d символов)", //$NON-NLS-1$
                             file.getFullPath(), content.length());
-                    result = replaceContent(file, content);
+                    result = replaceContent(file, content, dryRun, returnDiff);
                 } else if (edits != null && !edits.isEmpty()) {
-                    // SEARCH/REPLACE blocks format
                     LOG.info("edit_file: SEARCH/REPLACE редактирование %s", //$NON-NLS-1$
                             file.getFullPath());
-                    result = applySearchReplaceEdits(file, edits);
+                    result = applySearchReplaceEdits(file, edits, dryRun, returnDiff);
                 } else if (oldText != null && newText != null) {
-                    // Search and replace with fuzzy matching
                     LOG.info("edit_file: fuzzy search-replace в %s (oldText=%d символов)", //$NON-NLS-1$
                             file.getFullPath(), oldText.length());
-                    result = fuzzySearchAndReplace(file, oldText, newText);
+                    result = fuzzySearchAndReplace(file, oldText, newText, dryRun, returnDiff);
                 } else {
                     LOG.warn("edit_file: недостаточно параметров для редактирования"); //$NON-NLS-1$
                     return ToolResult.failure(
-                            "Either 'content', 'edits', or both 'old_text' and 'new_text' are required"); //$NON-NLS-1$
+                            "Either 'content', 'edits', 'mode' (replaceLines/replaceMethod), or both 'old_text' and 'new_text' are required"); //$NON-NLS-1$
                 }
 
                 LOG.debug("edit_file: завершено за %s, success=%b", //$NON-NLS-1$
@@ -284,104 +331,112 @@ public class EditFileTool extends AbstractTool {
         return lower.endsWith(".form") || lower.endsWith(".form.xml"); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
-    private ToolResult replaceContent(IFile file, String content) throws CoreException {
+    private ToolResult replaceContent(IFile file, String content, boolean dryRun, boolean returnDiff) throws CoreException {
         String currentContent = readFileContent(file);
+        if (currentContent == null) {
+            return ToolResult.failure("Error reading file content"); //$NON-NLS-1$
+        }
         String lineSeparator = detectLineSeparator(currentContent);
         String normalizedContent = normalizeLineEndings(content, lineSeparator);
+
+        if (dryRun) {
+            return buildDryRunResult(file, currentContent, normalizedContent, null);
+        }
+
         Charset charset = getFileCharset(file);
         ByteArrayInputStream stream = new ByteArrayInputStream(
                 normalizedContent.getBytes(charset));
         file.setContents(stream, IResource.FORCE | IResource.KEEP_HISTORY, new NullProgressMonitor());
-
-        // Refresh to ensure editors see the change
         file.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
 
         LOG.info("edit_file: содержимое записано в %s (%d байт)", //$NON-NLS-1$
                 file.getFullPath(), normalizedContent.length());
 
-        return ToolResult.success(
-                "Updated file: " + file.getFullPath().toString() + //$NON-NLS-1$
-                " (location: " + file.getLocation() + ")", //$NON-NLS-1$ //$NON-NLS-2$
-                ToolResult.ToolResultType.CONFIRMATION);
+        String summary = "Updated file: " + file.getFullPath().toString() //$NON-NLS-1$
+                + " (location: " + file.getLocation() + ")"; //$NON-NLS-1$ //$NON-NLS-2$
+        if (returnDiff) {
+            return buildApplyWithDiffResult(summary, currentContent, normalizedContent);
+        }
+        return ToolResult.success(summary, ToolResult.ToolResultType.CONFIRMATION);
     }
 
     /**
      * Applies SEARCH/REPLACE blocks to a file using the FileEditApplier.
      */
-    private ToolResult applySearchReplaceEdits(IFile file, String edits) throws CoreException {
-        // Read current content
+    private ToolResult applySearchReplaceEdits(IFile file, String edits, boolean dryRun, boolean returnDiff) throws CoreException {
         String currentContent = readFileContent(file);
         if (currentContent == null) {
             return ToolResult.failure("Error reading file content"); //$NON-NLS-1$
         }
         String lineSeparator = detectLineSeparator(currentContent);
 
-        // Parse and apply edits
         List<EditBlock> blocks = searchReplaceFormat.parse(edits);
         if (blocks.isEmpty()) {
             return ToolResult.failure("No valid SEARCH/REPLACE blocks found in 'edits' parameter. " + //$NON-NLS-1$
                     "Use format: <<<<<<< SEARCH\\nold code\\n=======\\nnew code\\n>>>>>>> REPLACE"); //$NON-NLS-1$
         }
 
-        // Validate blocks
         List<String> errors = searchReplaceFormat.validate(blocks);
         if (!errors.isEmpty()) {
             return ToolResult.failure("Invalid edit blocks: " + String.join("; ", errors)); //$NON-NLS-1$ //$NON-NLS-2$
         }
 
-        // Apply edits
         FileEditApplier.ApplyResult applyResult = fileEditApplier.apply(currentContent, blocks);
 
         if (!applyResult.allSuccessful()) {
-            // Return detailed feedback for LLM to retry
             String feedback = applyResult.getFailureFeedback();
             LOG.warn("edit_file: не все блоки применены: %s", applyResult.getSummary()); //$NON-NLS-1$
             return ToolResult.failure(feedback);
         }
 
-        // Write the modified content preserving line endings
         String normalizedContent = normalizeLineEndings(applyResult.afterContent(), lineSeparator);
+
+        if (dryRun) {
+            return buildDryRunResult(file, currentContent, normalizedContent, null);
+        }
+
         Charset charset = getFileCharset(file);
         ByteArrayInputStream stream = new ByteArrayInputStream(
                 normalizedContent.getBytes(charset));
         file.setContents(stream, true, true, new NullProgressMonitor());
 
-        return ToolResult.success(
-                applyResult.getSummary() + " в: " + file.getFullPath().toString(), //$NON-NLS-1$
-                ToolResult.ToolResultType.CONFIRMATION);
+        String summary = applyResult.getSummary() + " в: " + file.getFullPath().toString(); //$NON-NLS-1$
+        if (returnDiff) {
+            return buildApplyWithDiffResult(summary, currentContent, normalizedContent);
+        }
+        return ToolResult.success(summary, ToolResult.ToolResultType.CONFIRMATION);
     }
 
     /**
      * Search and replace with fuzzy matching support.
      */
-    private ToolResult fuzzySearchAndReplace(IFile file, String oldText, String newText) throws CoreException {
-        // Read current content
+    private ToolResult fuzzySearchAndReplace(IFile file, String oldText, String newText, boolean dryRun, boolean returnDiff) throws CoreException {
         String currentContent = readFileContent(file);
         if (currentContent == null) {
             return ToolResult.failure("Error reading file content"); //$NON-NLS-1$
         }
         String lineSeparator = detectLineSeparator(currentContent);
 
-        // Try fuzzy matching
-        MatchResult matchResult = fuzzyMatcher.findMatch(oldText, currentContent);
+        List<int[]> literalMatches = findLiteralMatches(currentContent, oldText);
 
+        MatchResult matchResult = fuzzyMatcher.findMatch(oldText, currentContent);
         if (!matchResult.isSuccess()) {
-            // Return detailed feedback for LLM to retry
             String feedback = matchResult.generateFeedback();
             LOG.warn("edit_file: fuzzy match не найден"); //$NON-NLS-1$
             return ToolResult.failure(feedback);
         }
-
-        // Get the match location
         var location = matchResult.getLocation().orElseThrow();
 
-        // Apply the replacement
-        String before = currentContent.substring(0, location.getStartOffset());
-        String after = currentContent.substring(location.getEndOffset());
+        String beforeStr = currentContent.substring(0, location.getStartOffset());
+        String afterStr = currentContent.substring(location.getEndOffset());
         String normalizedNewText = normalizeLineEndings(newText, lineSeparator);
-        String newContent = before + normalizedNewText + after;
+        String newContent = beforeStr + normalizedNewText + afterStr;
 
-        // Write with same charset
+        if (dryRun) {
+            JsonArray ambiguity = buildAmbiguityArray(literalMatches);
+            return buildDryRunResult(file, currentContent, newContent, ambiguity);
+        }
+
         Charset charset = getFileCharset(file);
         ByteArrayInputStream stream = new ByteArrayInputStream(
                 newContent.getBytes(charset));
@@ -390,11 +445,168 @@ public class EditFileTool extends AbstractTool {
         String strategyInfo = matchResult.getStrategy() != null
                 ? " (стратегия: " + matchResult.getStrategy().getDisplayName() + ")" //$NON-NLS-1$ //$NON-NLS-2$
                 : ""; //$NON-NLS-1$
+        String summary = "Заменено в строках " + location.getStartLine() + "-" + location.getEndLine() //$NON-NLS-1$ //$NON-NLS-2$
+                + strategyInfo + " в: " + file.getFullPath().toString(); //$NON-NLS-1$
+        if (returnDiff) {
+            return buildApplyWithDiffResult(summary, currentContent, newContent);
+        }
+        return ToolResult.success(summary, ToolResult.ToolResultType.CONFIRMATION);
+    }
 
-        return ToolResult.success(
-                "Заменено в строках " + location.getStartLine() + "-" + location.getEndLine() + //$NON-NLS-1$ //$NON-NLS-2$
-                        strategyInfo + " в: " + file.getFullPath().toString(), //$NON-NLS-1$
-                ToolResult.ToolResultType.CONFIRMATION);
+    private ToolResult replaceLineRangeMode(IFile file, int lineFrom, int lineTo, String newText, boolean dryRun, boolean returnDiff) throws CoreException {
+        if (lineFrom < 1 || lineTo < 1 || lineTo < lineFrom) {
+            return ToolResult.failure(
+                    "mode=replaceLines requires line_from >= 1 and line_to >= line_from (got line_from=" //$NON-NLS-1$
+                            + lineFrom + ", line_to=" + lineTo + ")"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (newText == null) {
+            return ToolResult.failure("mode=replaceLines requires new_text"); //$NON-NLS-1$
+        }
+        String currentContent = readFileContent(file);
+        if (currentContent == null) {
+            return ToolResult.failure("Error reading file content"); //$NON-NLS-1$
+        }
+        String lineSeparator = detectLineSeparator(currentContent);
+        String[] lines = currentContent.split("\\r\\n|\\r|\\n", -1); //$NON-NLS-1$
+        if (lineTo > lines.length) {
+            return ToolResult.failure(
+                    "mode=replaceLines: line_to=" + lineTo + " is past end of file (" + lines.length + " lines)"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        }
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < lineFrom - 1; i++) {
+            out.append(lines[i]);
+            if (i < lines.length - 1) {
+                out.append(lineSeparator);
+            }
+        }
+        // Insert new_text — normalize its endings to match the file.
+        String normalizedNewText = normalizeLineEndings(newText, lineSeparator);
+        out.append(normalizedNewText);
+        boolean newTextEndsWithSep = normalizedNewText.endsWith(lineSeparator);
+        if (lineTo < lines.length && !newTextEndsWithSep) {
+            out.append(lineSeparator);
+        }
+        for (int i = lineTo; i < lines.length; i++) {
+            out.append(lines[i]);
+            if (i < lines.length - 1) {
+                out.append(lineSeparator);
+            }
+        }
+        String newContent = out.toString();
+
+        if (dryRun) {
+            return buildDryRunResult(file, currentContent, newContent, null);
+        }
+
+        Charset charset = getFileCharset(file);
+        ByteArrayInputStream stream = new ByteArrayInputStream(
+                newContent.getBytes(charset));
+        file.setContents(stream, true, true, new NullProgressMonitor());
+
+        String summary = "Заменены строки " + lineFrom + "-" + lineTo //$NON-NLS-1$ //$NON-NLS-2$
+                + " в: " + file.getFullPath().toString(); //$NON-NLS-1$
+        if (returnDiff) {
+            return buildApplyWithDiffResult(summary, currentContent, newContent);
+        }
+        return ToolResult.success(summary, ToolResult.ToolResultType.CONFIRMATION);
+    }
+
+    private ToolResult replaceMethodMode(IFile file, String methodName, String newText, boolean dryRun, boolean returnDiff) throws CoreException {
+        if (methodName == null || methodName.isEmpty()) {
+            return ToolResult.failure("mode=replaceMethod requires method_name"); //$NON-NLS-1$
+        }
+        if (newText == null) {
+            return ToolResult.failure("mode=replaceMethod requires new_text"); //$NON-NLS-1$
+        }
+        String currentContent = readFileContent(file);
+        if (currentContent == null) {
+            return ToolResult.failure("Error reading file content"); //$NON-NLS-1$
+        }
+        var maybeMethod = methodParser.findByName(currentContent, methodName);
+        if (maybeMethod.isEmpty()) {
+            return ToolResult.failure(
+                    "mode=replaceMethod: метод '" + methodName + "' не найден в " + file.getFullPath()); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        MethodInfo m = maybeMethod.get();
+        return replaceLineRangeMode(file, m.replaceFromLine(), m.replaceToLine(), newText, dryRun, returnDiff);
+    }
+
+    /**
+     * Returns starting offsets and 1-based line numbers of every literal
+     * occurrence of {@code needle} in {@code haystack}.
+     */
+    private List<int[]> findLiteralMatches(String haystack, String needle) {
+        List<int[]> hits = new java.util.ArrayList<>();
+        if (needle == null || needle.isEmpty()) {
+            return hits;
+        }
+        int idx = 0;
+        while ((idx = haystack.indexOf(needle, idx)) >= 0) {
+            int line = 1;
+            for (int k = 0; k < idx; k++) {
+                if (haystack.charAt(k) == '\n') {
+                    line++;
+                }
+            }
+            hits.add(new int[] { idx, line });
+            idx += Math.max(1, needle.length());
+        }
+        return hits;
+    }
+
+    private JsonArray buildAmbiguityArray(List<int[]> matches) {
+        JsonArray array = new JsonArray();
+        for (int[] hit : matches) {
+            array.add(hit[1]);
+        }
+        return array;
+    }
+
+    private ToolResult buildDryRunResult(IFile file, String before, String after, JsonArray literalMatchLines) {
+        UnifiedDiff ud = diffComputer.unifiedDiff(before, after, 3);
+        JsonObject payload = new JsonObject();
+        payload.addProperty("dry_run", true); //$NON-NLS-1$
+        payload.addProperty("path", file.getFullPath().toString()); //$NON-NLS-1$
+        payload.addProperty("would_apply", ud.summary().hasChanges()); //$NON-NLS-1$
+        payload.addProperty("added", ud.summary().added()); //$NON-NLS-1$
+        payload.addProperty("removed", ud.summary().removed()); //$NON-NLS-1$
+        JsonArray hunks = new JsonArray();
+        for (DiffComputer.Hunk h : ud.hunks()) {
+            JsonObject hunk = new JsonObject();
+            if (h.previousRange() != null) hunk.addProperty("previous_range", h.previousRange()); //$NON-NLS-1$
+            if (h.currentRange() != null) hunk.addProperty("current_range", h.currentRange()); //$NON-NLS-1$
+            hunk.addProperty("text", h.text()); //$NON-NLS-1$
+            hunks.add(hunk);
+        }
+        payload.add("hunks", hunks); //$NON-NLS-1$
+        if (literalMatchLines != null && literalMatchLines.size() > 1) {
+            payload.add("ambiguity", literalMatchLines); //$NON-NLS-1$
+        }
+        String summary = "dry_run: " + file.getFullPath() + " (+" + ud.summary().added() //$NON-NLS-1$ //$NON-NLS-2$
+                + "/-" + ud.summary().removed() + ", " + ud.hunks().size() + " hunks)"; //$NON-NLS-1$ //$NON-NLS-2$
+        if (literalMatchLines != null && literalMatchLines.size() > 1) {
+            summary += " — ВНИМАНИЕ: old_text встречается на " + literalMatchLines.size() //$NON-NLS-1$
+                    + " позициях, fuzzy выберет первую"; //$NON-NLS-1$
+        }
+        return ToolResult.success(summary, payload);
+    }
+
+    private ToolResult buildApplyWithDiffResult(String summary, String before, String after) {
+        UnifiedDiff ud = diffComputer.unifiedDiff(before, after, 3);
+        JsonObject payload = new JsonObject();
+        payload.addProperty("added", ud.summary().added()); //$NON-NLS-1$
+        payload.addProperty("removed", ud.summary().removed()); //$NON-NLS-1$
+        JsonArray hunks = new JsonArray();
+        for (DiffComputer.Hunk h : ud.hunks()) {
+            JsonObject hunk = new JsonObject();
+            if (h.previousRange() != null) hunk.addProperty("previous_range", h.previousRange()); //$NON-NLS-1$
+            if (h.currentRange() != null) hunk.addProperty("current_range", h.currentRange()); //$NON-NLS-1$
+            hunk.addProperty("text", h.text()); //$NON-NLS-1$
+            hunks.add(hunk);
+        }
+        payload.add("hunks", hunks); //$NON-NLS-1$
+        return ToolResult.success(summary + " (+" + ud.summary().added() //$NON-NLS-1$
+                + "/-" + ud.summary().removed() + ")", payload); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     /**
