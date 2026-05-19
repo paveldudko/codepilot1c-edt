@@ -179,6 +179,69 @@ public class BslMethodParser {
         return line != null && HEADER_PATTERN.matcher(line).find();
     }
 
+    /**
+     * BSL-aware filter applied by {@code grep} to {@code .bsl} files.
+     *
+     * <p>{@code "any"} (or {@code null}) keeps every line. {@code "definition"}
+     * keeps Procedure / Function declaration lines only. {@code "call"} drops
+     * declaration lines and BSL line-comments ({@code //}), leaving call
+     * sites and other in-method references.</p>
+     */
+    public static boolean passesMatchKindFilter(String line, String matchKind) {
+        if (line == null) {
+            return false;
+        }
+        if (matchKind == null || matchKind.isEmpty() || "any".equals(matchKind)) {
+            return true;
+        }
+        boolean header = isHeaderLine(line);
+        if ("definition".equals(matchKind)) {
+            return header;
+        }
+        if ("call".equals(matchKind)) {
+            if (header) {
+                return false;
+            }
+            return !line.trim().startsWith("//");
+        }
+        return true;
+    }
+
+    /**
+     * Walks the {@code lines} list backwards from {@code lineIndex} and
+     * returns the name of the enclosing {@code Procedure} / {@code Function},
+     * or {@code null} if {@code lineIndex} is outside any method body.
+     *
+     * <p>Used by {@code grep} to surface {@code [EnclosingMethod]} in
+     * compact and full output. Implementation: regex-based backscan that
+     * early-returns {@code null} on encountering a method terminator, so
+     * lines between methods aren't misattributed to the previous method.</p>
+     */
+    public static String findEnclosingMethodName(List<String> lines, int lineIndex) {
+        if (lines == null || lineIndex < 0 || lineIndex >= lines.size()) {
+            return null;
+        }
+        for (int j = lineIndex; j >= 0; j--) {
+            String trimmed = lines.get(j).trim();
+            String lower = trimmed.toLowerCase(Locale.ROOT);
+            if (lower.startsWith("конецпроцедуры")
+                    || lower.startsWith("endprocedure")
+                    || lower.startsWith("конецфункции")
+                    || lower.startsWith("endfunction")) {
+                if (j == lineIndex) {
+                    // The query line IS a terminator — still inside the method.
+                    continue;
+                }
+                return null;
+            }
+            Matcher m = HEADER_PATTERN.matcher(trimmed);
+            if (m.find()) {
+                return m.group(2);
+            }
+        }
+        return null;
+    }
+
     private static String[] splitLines(String text) {
         String normalized = text.replace("\r\n", "\n").replace('\r', '\n');
         if (normalized.indexOf('\n') < 0) {

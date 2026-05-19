@@ -34,6 +34,7 @@ import com.codepilot1c.core.edit.BslMethodParser.MethodInfo;
 import com.codepilot1c.core.edit.DiffComputer;
 import com.codepilot1c.core.edit.DiffComputer.UnifiedDiff;
 import com.codepilot1c.core.edit.EditBlock;
+import com.codepilot1c.core.edit.LineRangeReplacer;
 import com.codepilot1c.core.edit.FileEditApplier;
 import com.codepilot1c.core.edit.FuzzyMatcher;
 import com.codepilot1c.core.edit.MatchResult;
@@ -454,11 +455,6 @@ public class EditFileTool extends AbstractTool {
     }
 
     private ToolResult replaceLineRangeMode(IFile file, int lineFrom, int lineTo, String newText, boolean dryRun, boolean returnDiff) throws CoreException {
-        if (lineFrom < 1 || lineTo < 1 || lineTo < lineFrom) {
-            return ToolResult.failure(
-                    "mode=replaceLines requires line_from >= 1 and line_to >= line_from (got line_from=" //$NON-NLS-1$
-                            + lineFrom + ", line_to=" + lineTo + ")"); //$NON-NLS-1$ //$NON-NLS-2$
-        }
         if (newText == null) {
             return ToolResult.failure("mode=replaceLines requires new_text"); //$NON-NLS-1$
         }
@@ -467,32 +463,12 @@ public class EditFileTool extends AbstractTool {
             return ToolResult.failure("Error reading file content"); //$NON-NLS-1$
         }
         String lineSeparator = detectLineSeparator(currentContent);
-        String[] lines = currentContent.split("\\r\\n|\\r|\\n", -1); //$NON-NLS-1$
-        if (lineTo > lines.length) {
-            return ToolResult.failure(
-                    "mode=replaceLines: line_to=" + lineTo + " is past end of file (" + lines.length + " lines)"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        String newContent;
+        try {
+            newContent = LineRangeReplacer.replaceLines(currentContent, lineFrom, lineTo, newText, lineSeparator);
+        } catch (IllegalArgumentException e) {
+            return ToolResult.failure("mode=replaceLines: " + e.getMessage()); //$NON-NLS-1$
         }
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < lineFrom - 1; i++) {
-            out.append(lines[i]);
-            if (i < lines.length - 1) {
-                out.append(lineSeparator);
-            }
-        }
-        // Insert new_text — normalize its endings to match the file.
-        String normalizedNewText = normalizeLineEndings(newText, lineSeparator);
-        out.append(normalizedNewText);
-        boolean newTextEndsWithSep = normalizedNewText.endsWith(lineSeparator);
-        if (lineTo < lines.length && !newTextEndsWithSep) {
-            out.append(lineSeparator);
-        }
-        for (int i = lineTo; i < lines.length; i++) {
-            out.append(lines[i]);
-            if (i < lines.length - 1) {
-                out.append(lineSeparator);
-            }
-        }
-        String newContent = out.toString();
 
         if (dryRun) {
             return buildDryRunResult(file, currentContent, newContent, null);

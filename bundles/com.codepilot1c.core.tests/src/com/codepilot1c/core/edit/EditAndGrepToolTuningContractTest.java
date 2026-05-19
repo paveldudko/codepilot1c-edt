@@ -120,10 +120,10 @@ public class EditAndGrepToolTuningContractTest {
     }
 
     @Test
-    public void editFileRejectsInvalidLineRange() throws Exception {
+    public void editFileDelegatesSplicingToLineRangeReplacer() throws Exception {
         String src = read(EDIT_TOOL_PATH);
-        assertTrue("must validate line_from / line_to before applying", //$NON-NLS-1$
-                src.contains("line_from >= 1 and line_to >= line_from")); //$NON-NLS-1$
+        assertTrue("must delegate to LineRangeReplacer.replaceLines (covered by LineRangeReplacerTest)", //$NON-NLS-1$
+                src.contains("LineRangeReplacer.replaceLines(")); //$NON-NLS-1$
     }
 
     // --- GrepTool: schema -----------------------------------------------------
@@ -150,22 +150,15 @@ public class EditAndGrepToolTuningContractTest {
         String src = read(GREP_TOOL_PATH);
         assertTrue("match_kind filter must be gated on .bsl filename", //$NON-NLS-1$
                 src.contains("isBsl = file.getName().toLowerCase().endsWith(\".bsl\")")); //$NON-NLS-1$
-        assertTrue("match_kind filter must invoke passesMatchKindFilter", //$NON-NLS-1$
-                src.contains("passesMatchKindFilter(")); //$NON-NLS-1$
-    }
-
-    @Test
-    public void grepUsesBslMethodParserForDefinitionDetection() throws Exception {
-        String src = read(GREP_TOOL_PATH);
-        assertTrue("definition match_kind must use BslMethodParser.isHeaderLine", //$NON-NLS-1$
-                src.contains("BslMethodParser.isHeaderLine(")); //$NON-NLS-1$
+        assertTrue("match_kind filter must delegate to BslMethodParser.passesMatchKindFilter (covered by BslMethodParserStaticHelpersTest)", //$NON-NLS-1$
+                src.contains("BslMethodParser.passesMatchKindFilter(")); //$NON-NLS-1$
     }
 
     @Test
     public void grepFindsEnclosingMethodForBslMatches() throws Exception {
         String src = read(GREP_TOOL_PATH);
-        assertTrue("compact format must surface enclosing method name", //$NON-NLS-1$
-                src.contains("findEnclosingMethodName(")); //$NON-NLS-1$
+        assertTrue("compact format must delegate to BslMethodParser.findEnclosingMethodName (covered by BslMethodParserStaticHelpersTest)", //$NON-NLS-1$
+                src.contains("BslMethodParser.findEnclosingMethodName(")); //$NON-NLS-1$
     }
 
     @Test

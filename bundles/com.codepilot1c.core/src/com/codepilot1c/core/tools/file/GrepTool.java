@@ -265,7 +265,7 @@ public class GrepTool extends AbstractTool {
                 if (!matcher.find()) {
                     continue;
                 }
-                if (isBsl && !passesMatchKindFilter(raw, matchKind)) {
+                if (isBsl && !BslMethodParser.passesMatchKindFilter(raw, matchKind)) {
                     continue;
                 }
                 int startContext = Math.max(0, i - contextLines);
@@ -275,7 +275,7 @@ public class GrepTool extends AbstractTool {
                     String prefix = (j == i) ? ">" : " "; //$NON-NLS-1$ //$NON-NLS-2$
                     contextBuilder.append(String.format("%s%4d | %s%n", prefix, j + 1, lines.get(j))); //$NON-NLS-1$
                 }
-                String enclosing = isBsl ? findEnclosingMethodName(lines, i) : null;
+                String enclosing = isBsl ? BslMethodParser.findEnclosingMethodName(lines, i) : null;
                 matches.add(new SearchMatch(
                         file.getFullPath().toString(),
                         i + 1,
@@ -289,51 +289,6 @@ public class GrepTool extends AbstractTool {
         }
     }
 
-    private boolean passesMatchKindFilter(String line, String matchKind) {
-        if (matchKind == null || "any".equals(matchKind)) { //$NON-NLS-1$
-            return true;
-        }
-        boolean isHeader = BslMethodParser.isHeaderLine(line);
-        if ("definition".equals(matchKind)) { //$NON-NLS-1$
-            return isHeader;
-        }
-        if ("call".equals(matchKind)) { //$NON-NLS-1$
-            if (isHeader) {
-                return false;
-            }
-            String trimmed = line.trim();
-            if (trimmed.startsWith("//")) { //$NON-NLS-1$
-                return false;
-            }
-            return true;
-        }
-        return true;
-    }
-
-    private String findEnclosingMethodName(List<String> lines, int lineIndex) {
-        for (int j = lineIndex; j >= 0; j--) {
-            String trimmed = lines.get(j).trim();
-            String lower = trimmed.toLowerCase(java.util.Locale.ROOT);
-            if (lower.startsWith("\u043A\u043E\u043D\u0435\u0446\u043F\u0440\u043E\u0446\u0435\u0434\u0443\u0440\u044B") //$NON-NLS-1$
-                    || lower.startsWith("endprocedure") //$NON-NLS-1$
-                    || lower.startsWith("\u043A\u043E\u043D\u0435\u0446\u0444\u0443\u043D\u043A\u0446\u0438\u0438") //$NON-NLS-1$
-                    || lower.startsWith("endfunction")) { //$NON-NLS-1$
-                // We crossed a method terminator going backwards \u2014 not inside any method.
-                return null;
-            }
-            if (BslMethodParser.isHeaderLine(trimmed)) {
-                java.util.regex.Matcher m = HEADER_NAME.matcher(trimmed);
-                if (m.find()) {
-                    return m.group(1);
-                }
-            }
-        }
-        return null;
-    }
-
-    private static final java.util.regex.Pattern HEADER_NAME = java.util.regex.Pattern.compile(
-            "^\\s*(?:\u041F\u0440\u043E\u0446\u0435\u0434\u0443\u0440\u0430|Procedure|\u0424\u0443\u043D\u043A\u0446\u0438\u044F|Function)\\s+([\\p{L}\\p{N}_]+)", //$NON-NLS-1$
-            java.util.regex.Pattern.CASE_INSENSITIVE);
 
     /**
      * Gets the charset for a file, defaulting to UTF-8.
