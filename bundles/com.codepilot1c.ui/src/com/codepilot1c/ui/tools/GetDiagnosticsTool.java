@@ -98,9 +98,20 @@ public class GetDiagnosticsTool implements ITool {
         String severityStr = (String) parameters.getOrDefault("severity", "info"); //$NON-NLS-1$ //$NON-NLS-2$
         int maxItems = getIntParam(parameters, "max_items", 0); //$NON-NLS-1$
         long waitMs = getIntParam(parameters, "wait_ms", 0); //$NON-NLS-1$
-        // For scope=file/active_editor, runtime markers default to false to avoid cross-module noise (issue #24)
-        boolean includeRuntimeMarkersDefault = !"file".equals(scope) && !"active_editor".equals(scope); //$NON-NLS-1$ //$NON-NLS-2$
-        boolean includeRuntimeMarkers = getBooleanParam(parameters, "include_runtime_markers", includeRuntimeMarkersDefault); //$NON-NLS-1$
+        // Runtime markers default to true for ALL scopes — EDT places the
+        // bulk of BSL diagnostics (syntax, type checks, BSL-checks) in the
+        // runtime marker manager rather than as workspace-attached markers
+        // on the .bsl IFile. With scope=file/active_editor the prior
+        // default (false) made the call silently return 0/0/0 — see
+        // 2026-05-19-diagnostics-space-in-project-name.md.
+        //
+        // The "cross-module noise" concern from issue #24 is mitigated by
+        // the strict ALL-tokens filter in markerMatchesContext (fixed by
+        // RelativePathCandidates project-prefix stripping so the surviving
+        // tokens are precise module discriminators). Callers can still
+        // pass include_runtime_markers:false explicitly when they want
+        // workspace markers only.
+        boolean includeRuntimeMarkers = getBooleanParam(parameters, "include_runtime_markers", true); //$NON-NLS-1$
 
         // Validate parameters
         if (maxItems < 0) maxItems = 0;
