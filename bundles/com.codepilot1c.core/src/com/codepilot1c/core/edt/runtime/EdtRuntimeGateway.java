@@ -3,6 +3,7 @@ package com.codepilot1c.core.edt.runtime;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.IPath;
 
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
@@ -20,7 +21,25 @@ public class EdtRuntimeGateway {
         if (workspace == null || projectName == null || projectName.isBlank()) {
             return null;
         }
-        return workspace.getRoot().getProject(projectName);
+        // 1) Eclipse-project-name lookup (primary path).
+        IProject byName = workspace.getRoot().getProject(projectName);
+        if (byName.exists()) {
+            return byName;
+        }
+        // 2) Fallback: caller passed the on-disk folder name. Mirrors the
+        // same fallback in EdtServiceGateway / EdtMetadataGateway so all
+        // tool surfaces accept the same names.
+        for (IProject candidate : workspace.getRoot().getProjects()) {
+            if (!candidate.exists()) {
+                continue;
+            }
+            IPath location = candidate.getLocation();
+            if (location != null && projectName.equals(location.lastSegment())) {
+                return candidate;
+            }
+        }
+        // 3) Return the non-existing handle for truly bogus names.
+        return byName;
     }
 
     public IInfobaseAssociationManager getInfobaseAssociationManager() {

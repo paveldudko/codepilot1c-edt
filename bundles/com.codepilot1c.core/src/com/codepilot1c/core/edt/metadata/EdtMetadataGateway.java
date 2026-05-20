@@ -3,6 +3,7 @@ package com.codepilot1c.core.edt.metadata;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspace;
 import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.IPath;
 
 import com._1c.g5.v8.bm.integration.IBmPlatformGlobalEditingContext;
 import com._1c.g5.v8.dt.bm.xtext.BmAwareResourceSetProvider;
@@ -30,7 +31,28 @@ public class EdtMetadataGateway {
         if (workspace == null || projectName == null || projectName.isBlank()) {
             return null;
         }
-        return workspace.getRoot().getProject(projectName);
+        // 1) Eclipse-project-name lookup (primary path).
+        IProject byName = workspace.getRoot().getProject(projectName);
+        if (byName.exists()) {
+            return byName;
+        }
+        // 2) Fallback: caller passed the on-disk folder name, which may
+        // differ from the Eclipse project name when EDT imported the
+        // project under an alias. Mirrors the same fallback in
+        // EdtServiceGateway so form / metadata / semantic tools all
+        // accept the same names consistently.
+        for (IProject candidate : workspace.getRoot().getProjects()) {
+            if (!candidate.exists()) {
+                continue;
+            }
+            IPath location = candidate.getLocation();
+            if (location != null && projectName.equals(location.lastSegment())) {
+                return candidate;
+            }
+        }
+        // 3) Return the non-existing handle so downstream exists() checks
+        // continue to fail the same way for truly bogus names.
+        return byName;
     }
 
     public IConfigurationProvider getConfigurationProvider() {

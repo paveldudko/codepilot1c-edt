@@ -420,6 +420,16 @@ public class EditFileTool extends AbstractTool {
 
         List<int[]> literalMatches = findLiteralMatches(currentContent, oldText);
 
+        // Literal multi-match shortcut. When old_text matches verbatim at 2+
+        // positions, the fuzzy matcher's "no exact match, here are 92 %
+        // similar candidates" feedback is actively misleading (the
+        // candidates ARE identical strings). Emit a structured ambiguity
+        // report and refuse to write — caller picks one via more context
+        // or via mode=replaceLines with a line range.
+        if (literalMatches.size() >= 2) {
+            return buildAmbiguityRefusal(file, oldText, literalMatches, dryRun);
+        }
+
         MatchResult matchResult = fuzzyMatcher.findMatch(oldText, currentContent);
         if (!matchResult.isSuccess()) {
             String feedback = matchResult.generateFeedback();
@@ -538,6 +548,22 @@ public class EditFileTool extends AbstractTool {
         return array;
     }
 
+    private ToolResult buildAmbiguityRefusal(IFile file, String oldText, List<int[]> matches, boolean dryRun) {
+        JsonArray lines = buildAmbiguityArray(matches);
+        JsonObject payload = new JsonObject();
+        payload.addProperty("error", "AMBIGUOUS_MATCH"); //$NON-NLS-1$ //$NON-NLS-2$
+        payload.addProperty("path", file.getFullPath().toString()); //$NON-NLS-1$
+        payload.addProperty("match_count", matches.size()); //$NON-NLS-1$
+        payload.add("ambiguity", lines); //$NON-NLS-1$
+        payload.addProperty("dry_run", dryRun); //$NON-NLS-1$
+        payload.addProperty("message", //$NON-NLS-1$
+                "old_text matches " + matches.size() + " positions literally — refuse to write. " //$NON-NLS-1$ //$NON-NLS-2$
+                        + "Add more context around old_text or use mode=replaceLines with line_from/line_to to pick one."); //$NON-NLS-1$
+        LOG.warn("edit_file: literal multi-match (%d positions) for %s, refusing to apply", //$NON-NLS-1$
+                matches.size(), file.getFullPath());
+        return ToolResult.failure(payload.toString());
+    }
+
     private ToolResult buildDryRunResult(IFile file, String before, String after, JsonArray literalMatchLines) {
         UnifiedDiff ud = diffComputer.unifiedDiff(before, after, 3);
         JsonObject payload = new JsonObject();
@@ -564,7 +590,12 @@ public class EditFileTool extends AbstractTool {
             summary += " — ВНИМАНИЕ: old_text встречается на " + literalMatchLines.size() //$NON-NLS-1$
                     + " позициях, fuzzy выберет первую"; //$NON-NLS-1$
         }
-        return ToolResult.success(summary, payload);
+        payload.addProperty("summary", summary); //$NON-NLS-1$
+        // Send the full JSON payload as content so MCP clients see
+        // would_apply / added / removed / hunks[] / ambiguity in the
+        // response — not just the one-line summary. The summary remains
+        // available under the "summary" key for quick human reading.
+        return ToolResult.success(payload.toString(), ToolResult.ToolResultType.SEARCH_RESULTS, payload);
     }
 
     private ToolResult buildApplyWithDiffResult(String summary, String before, String after) {

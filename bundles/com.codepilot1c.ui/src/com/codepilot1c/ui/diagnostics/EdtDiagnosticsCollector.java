@@ -496,25 +496,50 @@ public class EdtDiagnosticsCollector {
 
         IMarkerManager markerManager = getMarkerManager();
         if (markerManager == null || context.project() == null) {
+            LOG.info("[get_diagnostics] runtime-markers: SKIPPED (markerManager=%s project=%s)", //$NON-NLS-1$
+                    markerManager != null, context.project() != null);
             return;
         }
 
         Map<String, CheckMetadata> checkMetadata = loadCheckMetadata();
         MarkerFilter projectFilter = MarkerFilter.createProjectFilter(context.project());
+        int sizeBefore = diagnostics.size();
+        int[] counters = new int[] {0, 0, 0, 0}; // raw, matched, severityDropped, blankDropped
+        StringBuilder sampleSink = new StringBuilder();
 
         try (Stream<Marker> stream = markerManager.markers(projectFilter)) {
             int preLimit = getSoftScanLimit(query.maxItems(), 10);
             stream
+                    .peek(marker -> {
+                        counters[0]++;
+                        if (counters[0] <= 3) {
+                            // Sample first three markers raw to help diagnose
+                            // why file-scope reports 0/0/0 while EDT GUI shows
+                            // warnings. Captures the haystack fields the
+                            // context-token filter compares against.
+                            sampleSink.append("  raw[").append(counters[0]).append("]: ") //$NON-NLS-1$ //$NON-NLS-2$
+                                    .append("checkId=").append(safeString(marker.getCheckId())) //$NON-NLS-1$
+                                    .append(" sev=").append(marker.getSeverity()) //$NON-NLS-1$
+                                    .append(" location=").append(safeString(marker.getLocation())) //$NON-NLS-1$
+                                    .append(" objPres=").append(safeString(marker.getObjectPresentation())) //$NON-NLS-1$
+                                    .append(" sourceObjId=").append(safeObjectString(marker.getSourceObjectId())) //$NON-NLS-1$
+                                    .append(" topObjId=").append(safeObjectString(marker.getTopObjectId())) //$NON-NLS-1$
+                                    .append('\n');
+                        }
+                    })
                     .filter(marker -> markerMatchesContext(marker, context))
+                    .peek(marker -> counters[1]++)
                     .limit(preLimit)
                     .forEach(marker -> {
                         Severity sev = fromRuntimeSeverity(marker.getSeverity());
                         if (sev.getLevel() < query.minSeverity().getLevel()) {
+                            counters[2]++;
                             return;
                         }
 
                         String message = safeString(marker.getMessage());
                         if (message.isBlank()) {
+                            counters[3]++;
                             return;
                         }
 
@@ -541,6 +566,16 @@ public class EdtDiagnosticsCollector {
                                 safeString(marker.getObjectPresentation()),
                                 locationText));
                     });
+            LOG.info("[get_diagnostics] runtime-markers: raw=%d matched=%d sevDrop=%d blankDrop=%d emitted=%d tokens=%s threshold=%d hints=%d", //$NON-NLS-1$
+                    counters[0], counters[1], counters[2], counters[3],
+                    diagnostics.size() - sizeBefore,
+                    context.matchTokens(),
+                    context.tokenThreshold(),
+                    context.pathHints() != null ? context.pathHints().size() : 0);
+            if (sampleSink.length() > 0) {
+                LOG.info("[get_diagnostics] runtime-markers sample (first %d raw):\n%s", //$NON-NLS-1$
+                        Math.min(counters[0], 3), sampleSink.toString());
+            }
         } catch (Exception e) {
             LOG.warn("[get_diagnostics] Runtime marker manager file diagnostics unavailable for %s: %s", //$NON-NLS-1$
                     context.resolvedPath(), e.getMessage());
@@ -829,8 +864,17 @@ public class EdtDiagnosticsCollector {
             List<EdtDiagnostic> diagnostics,
             Set<String> seen) {
 
+        int sizeBefore = diagnostics.size();
+        Map<String, Integer> typeHistogram = new HashMap<>();
         try {
             IMarker[] markers = file.findMarkers(null, true, IResource.DEPTH_ZERO);
+            for (IMarker probe : markers) {
+                String t;
+                try { t = probe.getType(); } catch (CoreException ex) { t = "?"; } //$NON-NLS-1$
+                typeHistogram.merge(t, 1, Integer::sum);
+            }
+            LOG.info("[get_diagnostics] file-markers: file=%s rawCount=%d types=%s", //$NON-NLS-1$
+                    file.getFullPath(), markers.length, typeHistogram);
 
             for (IMarker marker : markers) {
                 int severity = marker.getAttribute(IMarker.SEVERITY, -1);
@@ -866,6 +910,8 @@ public class EdtDiagnosticsCollector {
                 diagnostics.add(EdtDiagnostic.fromMarker(
                         filePath, line, charStart, charEnd, message, severity, markerType, snippet));
             }
+            LOG.info("[get_diagnostics] file-markers emitted=%d (of %d raw)", //$NON-NLS-1$
+                    diagnostics.size() - sizeBefore, typeHistogram.values().stream().mapToInt(Integer::intValue).sum());
         } catch (CoreException e) {
             LOG.error("Error finding markers: %s", e.getMessage()); //$NON-NLS-1$
         }
