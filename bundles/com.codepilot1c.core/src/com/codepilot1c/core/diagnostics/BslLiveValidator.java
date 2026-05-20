@@ -130,21 +130,7 @@ public class BslLiveValidator {
     private Resource loadResource(IProject project, URI uri) {
         ResourceSet projectRs = null;
         if (project != null && project.exists()) {
-            VibeCorePlugin plugin = VibeCorePlugin.getDefault();
-            BmAwareResourceSetProvider provider = plugin != null ? plugin.peekResourceSetProvider() : null;
-            // Bundle com._1c.g5.v8.dt.bm.xtext has Bundle-ActivationPolicy: lazy
-            // and registers BmAwareResourceSetProvider as an OSGi service from
-            // its Activator.start() via InjectorAwareServiceRegistrator.
-            // A class-level reference doesn't reliably trigger lazy activation
-            // for OSGi-DS-style registrations (the Guice injector + service
-            // publish runs async on the activation thread), so on the very
-            // first get_diagnostics call after EDT (re)start the peek can
-            // return null even though the workspace is otherwise warm. Force
-            // bundle activation and poll briefly for the registration to land.
-            if (provider == null && plugin != null) {
-                ensureBmXtextBundleActive();
-                provider = waitForBmAwareResourceSetProvider(plugin);
-            }
+            BmAwareResourceSetProvider provider = resolveBmAwareResourceSetProvider(uri);
             if (provider != null) {
                 try {
                     projectRs = provider.get(project);
@@ -153,7 +139,7 @@ public class BslLiveValidator {
                             project.getName(), e.getClass().getSimpleName(), e.getMessage());
                 }
             } else {
-                LOG.info("BslLiveValidator: BmAwareResourceSetProvider still unavailable after bundle activation — falling through to standalone"); //$NON-NLS-1$
+                LOG.info("BslLiveValidator: BmAwareResourceSetProvider not resolvable — falling through to standalone"); //$NON-NLS-1$
             }
         }
         Resource resource = tryLoad(projectRs, uri);
@@ -168,6 +154,71 @@ public class BslLiveValidator {
                     standalone.getClass().getSimpleName(), standalone.getContents().size());
         }
         return standalone;
+    }
+
+    /**
+     * Resolves the {@link BmAwareResourceSetProvider} via three escalating
+     * strategies:
+     * <ol>
+     *   <li>Non-blocking OSGi service tracker peek — instant when the service
+     *       has already been registered (i.e. some other code path has caused
+     *       the Guice injector to instantiate it).</li>
+     *   <li>Xtext Guice resolution via
+     *       {@link IResourceServiceProvider#get(Class)} — bypasses OSGi DS
+     *       entirely and asks the BSL language injector directly for an
+     *       instance, which is the same pathway EDT's own form designer
+     *       uses. Triggers lazy activation of {@code com._1c.g5.v8.dt.bm.xtext}
+     *       as a side-effect and causes
+     *       {@code InjectorAwareServiceRegistrator} to publish the OSGi
+     *       service, so subsequent peeks succeed without overhead.</li>
+     *   <li>Lazy bundle start + short OSGi poll — last-resort path for
+     *       runtimes where the BSL service provider is not registered.</li>
+     * </ol>
+     */
+    private BmAwareResourceSetProvider resolveBmAwareResourceSetProvider(URI uri) {
+        VibeCorePlugin plugin = VibeCorePlugin.getDefault();
+        BmAwareResourceSetProvider provider = plugin != null ? plugin.peekResourceSetProvider() : null;
+        if (provider != null) {
+            return provider;
+        }
+        // Strategy 2: ask Xtext's BSL language injector for the provider
+        // directly. This is the same Guice path EDT's own form designer
+        // uses to obtain the BM-aware resource set when opening a module.
+        try {
+            IResourceServiceProvider rsp = IResourceServiceProvider.Registry.INSTANCE.getResourceServiceProvider(uri);
+            if (rsp != null) {
+                BmAwareResourceSetProvider injected = rsp.get(BmAwareResourceSetProvider.class);
+                if (injected != null) {
+                    LOG.info("BslLiveValidator: BmAwareResourceSetProvider resolved via IResourceServiceProvider injector"); //$NON-NLS-1$
+                    return injected;
+                }
+            }
+        } catch (RuntimeException e) {
+            LOG.info("BslLiveValidator: injector-based provider lookup failed: %s — %s", //$NON-NLS-1$
+                    e.getClass().getSimpleName(), e.getMessage());
+        }
+        // Strategy 3: force-start the bundle and poll for OSGi service.
+        if (plugin == null) {
+            return null;
+        }
+        ensureBmXtextBundleActive();
+        long start = System.currentTimeMillis();
+        long deadline = start + BM_SERVICE_REGISTRATION_TIMEOUT_MS;
+        provider = plugin.peekResourceSetProvider();
+        while (provider == null && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(BM_SERVICE_REGISTRATION_POLL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            provider = plugin.peekResourceSetProvider();
+        }
+        if (provider != null) {
+            LOG.info("BslLiveValidator: BmAwareResourceSetProvider registered via OSGi after %d ms", //$NON-NLS-1$
+                    System.currentTimeMillis() - start);
+        }
+        return provider;
     }
 
     private void ensureBmXtextBundleActive() {
@@ -188,26 +239,6 @@ public class BslLiveValidator {
             LOG.info("BslLiveValidator: bundle %s start failed: %s", //$NON-NLS-1$
                     BM_XTEXT_BUNDLE_ID, e.getMessage());
         }
-    }
-
-    private BmAwareResourceSetProvider waitForBmAwareResourceSetProvider(VibeCorePlugin plugin) {
-        long start = System.currentTimeMillis();
-        long deadline = start + BM_SERVICE_REGISTRATION_TIMEOUT_MS;
-        BmAwareResourceSetProvider provider = plugin.peekResourceSetProvider();
-        while (provider == null && System.currentTimeMillis() < deadline) {
-            try {
-                Thread.sleep(BM_SERVICE_REGISTRATION_POLL_MS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-            provider = plugin.peekResourceSetProvider();
-        }
-        long waited = System.currentTimeMillis() - start;
-        if (provider != null) {
-            LOG.info("BslLiveValidator: BmAwareResourceSetProvider registered after %d ms", waited); //$NON-NLS-1$
-        }
-        return provider;
     }
 
     private Resource tryLoad(ResourceSet resourceSet, URI uri) {
