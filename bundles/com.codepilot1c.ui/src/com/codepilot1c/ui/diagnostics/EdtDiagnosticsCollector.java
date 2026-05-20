@@ -255,9 +255,8 @@ public class EdtDiagnosticsCollector {
     public CompletableFuture<DiagnosticsResult> collectFromFile(String filePath, DiagnosticsQuery query) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                LOG.info("[get_diagnostics] collectFromFile START: path='%s' severity=%s maxItems=%d waitMs=%d includeRuntime=%s", //$NON-NLS-1$
-                        filePath, query.minSeverity(), query.maxItems(), query.waitMs(), query.includeRuntimeMarkers());
-                // Wait if requested (for EDT to recalculate diagnostics after file save)
+                LOG.info("[get_diagnostics] scope=file path='%s' severity=%s maxItems=%d includeRuntime=%s", //$NON-NLS-1$
+                        filePath, query.minSeverity(), query.maxItems(), query.includeRuntimeMarkers());
                 if (query.waitMs() > 0) {
                     try {
                         Thread.sleep(query.waitMs());
@@ -267,49 +266,20 @@ public class EdtDiagnosticsCollector {
                 }
 
                 ResolvedFileContext context = resolveFileContext(filePath);
-                LOG.info("[get_diagnostics] resolved: file=%s exists=%s project=%s resolvedPath=%s pathHints=%s matchTokens=%s threshold=%d", //$NON-NLS-1$
-                        context.file() == null ? "<null>" : context.file().getFullPath(),
-                        context.file() != null && context.file().exists(),
-                        context.project() == null ? "<null>" : context.project().getName(),
-                        context.resolvedPath(),
-                        context.pathHints(),
-                        context.matchTokens(),
-                        context.tokenThreshold());
-
                 if (context.file() == null) {
                     throw new IllegalArgumentException("File not found in workspace: " + filePath); //$NON-NLS-1$
                 }
 
                 String resultPath = context.resolvedPath() != null ? context.resolvedPath() : normalizePath(filePath);
-
                 List<EdtDiagnostic> diagnostics = new ArrayList<>();
                 Set<String> seen = new HashSet<>();
 
                 collectFromMarkers(context.file(), resultPath, query, diagnostics, seen);
-                int afterWorkspace = diagnostics.size();
-                LOG.info("[get_diagnostics] workspace markers contributed: %d", afterWorkspace); //$NON-NLS-1$
-
                 if (query.includeRuntimeMarkers() && context.project() != null) {
                     collectRuntimeFileMarkers(context, query, diagnostics, seen);
-                    LOG.info("[get_diagnostics] runtime markers contributed: %d (after-runtime total=%d)", //$NON-NLS-1$
-                            diagnostics.size() - afterWorkspace, diagnostics.size());
-                } else {
-                    LOG.info("[get_diagnostics] runtime markers SKIPPED: includeRuntime=%s project=%s", //$NON-NLS-1$
-                            query.includeRuntimeMarkers(),
-                            context.project() == null ? "<null>" : context.project().getName());
                 }
-
-                // Annotation-model query: live XText-based info / warning hints
-                // from the BSL editor's reconciler only exist while the file is
-                // open in an editor. EDT info-level checks (e.g. naming-style
-                // advisories) materialize here but NOT in IMarkerManager, so
-                // without this branch scope=file misses them entirely.
-                int beforeAnnotations = diagnostics.size();
                 collectFromOpenEditorAnnotations(context.file(), resultPath, query, diagnostics, seen);
-                LOG.info("[get_diagnostics] editor annotations contributed: %d (after-annotations total=%d)", //$NON-NLS-1$
-                        diagnostics.size() - beforeAnnotations, diagnostics.size());
 
-                // Sort and limit (ensure maxItems is positive)
                 diagnostics.sort(Comparator
                         .comparing((EdtDiagnostic d) -> d.severity().getLevel()).reversed()
                         .thenComparing(EdtDiagnostic::filePath, Comparator.nullsLast(String::compareTo))
@@ -321,15 +291,15 @@ public class EdtDiagnosticsCollector {
                 int warnings = (int) diagnostics.stream().filter(d -> d.severity() == Severity.WARNING).count();
                 int infos = diagnostics.size() - errors - warnings;
 
-                LOG.info("[get_diagnostics] DONE: returning %d items (errors=%d warnings=%d infos=%d)", //$NON-NLS-1$
-                        diagnostics.size(), errors, warnings, infos);
+                LOG.info("[get_diagnostics] result: %d items (errors=%d warnings=%d infos=%d) path='%s'", //$NON-NLS-1$
+                        diagnostics.size(), errors, warnings, infos, resultPath);
                 return new DiagnosticsResult(resultPath, false, diagnostics, errors, warnings, infos);
 
             } catch (IllegalArgumentException e) {
-                LOG.warn("[get_diagnostics] IllegalArgumentException for path='%s': %s", filePath, e.getMessage()); //$NON-NLS-1$
+                LOG.warn("[get_diagnostics] failed for path='%s': %s", filePath, e.getMessage()); //$NON-NLS-1$
                 throw e; // propagate as exceptional future completion (e.g. file-not-found)
             } catch (Exception e) {
-                LOG.error("[get_diagnostics] SWALLOWED Exception for path='%s': %s — %s", //$NON-NLS-1$
+                LOG.error("[get_diagnostics] internal error for path='%s': %s — %s", //$NON-NLS-1$
                         filePath, e.getClass().getSimpleName(), e.getMessage());
                 return new DiagnosticsResult(filePath, false, List.of(), 0, 0, 0);
             }
@@ -343,25 +313,18 @@ public class EdtDiagnosticsCollector {
         // The match-only subset drops candidates that still carry a known
         // workspace project name as their first segment. Tokens / pathHints
         // come from THIS subset so the project name never enters the
-        // ALL-tokens marker filter (see Phase 19b — without this the
-        // with-project-prefix input shape still hit silent-zero because
-        // buildMatchTokens(relativeCandidates) emitted the project name
-        // as a discriminating token).
+        // ALL-tokens marker filter — without this the with-project-prefix
+        // input shape silently returned 0/0/0 because the project segment
+        // became a "discriminating" token that never appeared in any
+        // marker haystack.
         List<String> matchCandidates = RelativePathCandidates.buildForMatch(
                 pathWithoutLeadingSlash, knownWorkspaceProjectNames());
-        LOG.info("[get_diagnostics] resolveFileContext: requested='%s' normalized='%s' pathWithoutSlash='%s' candidates=%s matchCandidates=%s", //$NON-NLS-1$
-                requestedPath, normalizedPath, pathWithoutLeadingSlash, relativeCandidates, matchCandidates);
 
         IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
 
         // 1) Workspace-relative form: /<project>/...
         IFile directFile = root.getFile(new Path(withLeadingSlash(pathWithoutLeadingSlash)));
-        boolean directExists = directFile != null && directFile.exists();
-        LOG.info("[get_diagnostics] step-1 root.getFile('%s'): handle=%s exists=%s", //$NON-NLS-1$
-                withLeadingSlash(pathWithoutLeadingSlash),
-                directFile == null ? "<null>" : directFile.getFullPath(),
-                directExists);
-        if (directExists) {
+        if (directFile != null && directFile.exists()) {
             String resolvedPath = directFile.getFullPath().toString();
             return new ResolvedFileContext(
                     requestedPath,
@@ -375,24 +338,16 @@ public class EdtDiagnosticsCollector {
 
         // 2) Project-relative form: src/... or Configuration/src/...
         List<IProject> projects = resolveDiagnosticsProjects();
-        boolean fellBack = false;
         if (projects.isEmpty()) {
             projects = Arrays.stream(root.getProjects())
                     .filter(this::isAccessibleProject)
                     .sorted(Comparator.comparing(IProject::getName, String.CASE_INSENSITIVE_ORDER))
                     .toList();
-            fellBack = true;
         }
-        LOG.info("[get_diagnostics] step-2 projects under consideration (fellBackToAll=%s): %s", //$NON-NLS-1$
-                fellBack,
-                projects.stream().map(IProject::getName).toList());
         for (IProject project : projects) {
             for (String candidate : relativeCandidates) {
                 IFile file = project.getFile(candidate);
-                boolean exists = file != null && file.exists();
-                LOG.info("[get_diagnostics]   project='%s' candidate='%s' → exists=%s", //$NON-NLS-1$
-                        project.getName(), candidate, exists);
-                if (exists) {
+                if (file != null && file.exists()) {
                     String resolvedPath = file.getFullPath().toString();
                     return new ResolvedFileContext(
                             requestedPath,
@@ -411,8 +366,6 @@ public class EdtDiagnosticsCollector {
                 ? "/" + project.getName() + "/" + preferredRelativePath(matchCandidates) //$NON-NLS-1$ //$NON-NLS-2$
                 : withLeadingSlash(pathWithoutLeadingSlash);
         List<String> tokens = buildMatchTokens(matchCandidates);
-        LOG.info("[get_diagnostics] step-3 synthesized: project=%s synthesizedPath='%s' tokens=%s (context.file=null → throw)", //$NON-NLS-1$
-                project == null ? "<null>" : project.getName(), synthesizedPath, tokens);
         return new ResolvedFileContext(
                 requestedPath,
                 synthesizedPath,
@@ -472,11 +425,7 @@ public class EdtDiagnosticsCollector {
         // Delegates to the pure-Java RelativePathCandidates utility so the
         // project-name-stripping rule can be unit-tested without an open
         // workspace. See 2026-05-19-diagnostics-space-in-project-name.md.
-        Set<String> known = knownWorkspaceProjectNames();
-        List<String> result = RelativePathCandidates.build(pathWithoutLeadingSlash, known);
-        LOG.info("[get_diagnostics] buildRelativePathCandidates: input='%s' knownProjects=%s candidates=%s", //$NON-NLS-1$
-                pathWithoutLeadingSlash, known, result);
-        return result;
+        return RelativePathCandidates.build(pathWithoutLeadingSlash, knownWorkspaceProjectNames());
     }
 
     private Set<String> knownWorkspaceProjectNames() {
@@ -542,54 +491,25 @@ public class EdtDiagnosticsCollector {
 
         IMarkerManager markerManager = getMarkerManager();
         if (markerManager == null || context.project() == null) {
-            LOG.info("[get_diagnostics] collectRuntimeFileMarkers: SKIP (markerManager=%s project=%s)", //$NON-NLS-1$
-                    markerManager == null ? "<null>" : "<present>",
-                    context.project() == null ? "<null>" : context.project().getName());
             return;
         }
 
         Map<String, CheckMetadata> checkMetadata = loadCheckMetadata();
         MarkerFilter projectFilter = MarkerFilter.createProjectFilter(context.project());
-        LOG.info("[get_diagnostics] collectRuntimeFileMarkers: project=%s pathHints=%s tokens=%s threshold=%d", //$NON-NLS-1$
-                context.project().getName(), context.pathHints(),
-                context.matchTokens(), context.tokenThreshold());
-
-        int[] scanned = {0};
-        int[] accepted = {0};
-        int[] rejectedByContext = {0};
-        int[] rejectedBySeverity = {0};
-        int[] rejectedByBlankMessage = {0};
-        int[] rejectedBySeen = {0};
-        int[] loggedRejectionSamples = {0};
-        int rejectionSampleCap = 5;
 
         try (Stream<Marker> stream = markerManager.markers(projectFilter)) {
             int preLimit = getSoftScanLimit(query.maxItems(), 10);
             stream
-                    .peek(marker -> scanned[0]++)
-                    .filter(marker -> {
-                        boolean ok = markerMatchesContext(marker, context);
-                        if (!ok) {
-                            rejectedByContext[0]++;
-                            if (loggedRejectionSamples[0] < rejectionSampleCap) {
-                                LOG.info("[get_diagnostics]   REJECT by context: haystack='%s'", //$NON-NLS-1$
-                                        buildRuntimeMarkerHaystack(marker));
-                                loggedRejectionSamples[0]++;
-                            }
-                        }
-                        return ok;
-                    })
+                    .filter(marker -> markerMatchesContext(marker, context))
                     .limit(preLimit)
                     .forEach(marker -> {
                         Severity sev = fromRuntimeSeverity(marker.getSeverity());
                         if (sev.getLevel() < query.minSeverity().getLevel()) {
-                            rejectedBySeverity[0]++;
                             return;
                         }
 
                         String message = safeString(marker.getMessage());
                         if (message.isBlank()) {
-                            rejectedByBlankMessage[0]++;
                             return;
                         }
 
@@ -598,7 +518,6 @@ public class EdtDiagnosticsCollector {
                         String key = context.resolvedPath() + ":" + checkId + ":" + message + ":" //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                                 + safeString(marker.getLocation()) + ":" + safeString(marker.getObjectPresentation()); //$NON-NLS-1$
                         if (!seen.add(key)) {
-                            rejectedBySeen[0]++;
                             return;
                         }
 
@@ -616,15 +535,11 @@ public class EdtDiagnosticsCollector {
                                 meta != null ? meta.issueSeverity() : null,
                                 safeString(marker.getObjectPresentation()),
                                 locationText));
-                        accepted[0]++;
                     });
         } catch (Exception e) {
             LOG.warn("[get_diagnostics] Runtime marker manager file diagnostics unavailable for %s: %s", //$NON-NLS-1$
                     context.resolvedPath(), e.getMessage());
         }
-        LOG.info("[get_diagnostics] runtime markers: scanned=%d accepted=%d rejected(context=%d, severity=%d, blank=%d, seen=%d)", //$NON-NLS-1$
-                scanned[0], accepted[0], rejectedByContext[0], rejectedBySeverity[0],
-                rejectedByBlankMessage[0], rejectedBySeen[0]);
     }
 
     private boolean markerMatchesContext(Marker marker, ResolvedFileContext context) {
@@ -890,8 +805,6 @@ public class EdtDiagnosticsCollector {
 
         try {
             IMarker[] markers = file.findMarkers(null, true, IResource.DEPTH_ZERO);
-            LOG.info("[get_diagnostics] collectFromMarkers: file=%s rawCount=%d (workspace-attached markers)", //$NON-NLS-1$
-                    filePath, markers.length);
 
             for (IMarker marker : markers) {
                 int severity = marker.getAttribute(IMarker.SEVERITY, -1);
@@ -1051,43 +964,21 @@ public class EdtDiagnosticsCollector {
             Set<String> seen) {
 
         Iterator<?> it = model.getAnnotationIterator();
-        int totalSeen = 0;
-        int rejectedByType = 0;
-        int rejectedByBlankText = 0;
-        int rejectedBySeverity = 0;
-        int rejectedBySeen = 0;
-        int accepted = 0;
-        int sampleCap = 8;
-        int sampleLogged = 0;
-        java.util.HashMap<String, Integer> typeCounts = new java.util.HashMap<>();
+        int count = 0;
 
         while (it.hasNext()) {
             Object obj = it.next();
             if (!(obj instanceof Annotation ann)) {
                 continue;
             }
-            totalSeen++;
 
             String annType = ann.getType();
-            typeCounts.merge(annType == null ? "<null>" : annType, 1, Integer::sum);
-
             if (annType == null || !isProblemAnnotation(annType)) {
-                rejectedByType++;
-                if (sampleLogged < sampleCap) {
-                    LOG.info("[get_diagnostics]   annotation REJECT by type: type='%s' text='%s'", //$NON-NLS-1$
-                            annType, Objects.toString(ann.getText(), ""));
-                    sampleLogged++;
-                }
                 continue;
             }
 
             String text = Objects.toString(ann.getText(), ""); //$NON-NLS-1$
             if (text.isBlank()) {
-                rejectedByBlankText++;
-                if (sampleLogged < sampleCap) {
-                    LOG.info("[get_diagnostics]   annotation REJECT blank-text: type='%s'", annType); //$NON-NLS-1$
-                    sampleLogged++;
-                }
                 continue;
             }
 
@@ -1097,22 +988,17 @@ public class EdtDiagnosticsCollector {
             int line = safeGetLineOfOffset(document, offset);
             int charEnd = offset + length;
 
-            // Determine severity from annotation type
             Severity sev = getSeverityFromAnnotationType(annType);
             if (sev.getLevel() < query.minSeverity().getLevel()) {
-                rejectedBySeverity++;
                 continue;
             }
 
-            // Deduplicate
             String key = line + ":" + offset + ":" + text; //$NON-NLS-1$ //$NON-NLS-2$
             if (seen.contains(key)) {
-                rejectedBySeen++;
                 continue;
             }
             seen.add(key);
 
-            // For MarkerAnnotation, get marker type
             String markerType = null;
             if (ann instanceof MarkerAnnotation markerAnn) {
                 IMarker marker = markerAnn.getMarker();
@@ -1128,16 +1014,11 @@ public class EdtDiagnosticsCollector {
             diagnostics.add(EdtDiagnostic.fromAnnotation(
                     filePath, line, offset, charEnd, text, sev,
                     markerType != null ? markerType : annType, snippet));
-            accepted++;
-            LOG.info("[get_diagnostics]   annotation ACCEPT: line=%d sev=%s type='%s' text='%s'", //$NON-NLS-1$
-                    line, sev, annType, text);
-
-            if (accepted >= getSoftScanLimit(query.maxItems(), 2)) { // Pre-limit before dedup sort
+            count++;
+            if (count >= getSoftScanLimit(query.maxItems(), 2)) {
                 break;
             }
         }
-        LOG.info("[get_diagnostics] annotation scan: totalSeen=%d accepted=%d rejected(type=%d, blank=%d, severity=%d, seen=%d) — typeCounts=%s", //$NON-NLS-1$
-                totalSeen, accepted, rejectedByType, rejectedByBlankText, rejectedBySeverity, rejectedBySeen, typeCounts);
     }
 
     private boolean isProblemAnnotation(String type) {
@@ -1244,29 +1125,22 @@ public class EdtDiagnosticsCollector {
         }
         final IDocument[] documentRef = {null};
         final IAnnotationModel[] modelRef = {null};
-        final int[] scannedRefs = {0};
         try {
             Display.getDefault().syncExec(() -> {
                 try {
                     IWorkbench workbench = PlatformUI.getWorkbench();
                     if (workbench == null) {
-                        LOG.info("[get_diagnostics] editor scan: workbench=<null>"); //$NON-NLS-1$
                         return;
                     }
                     IWorkbenchWindow[] windows = workbench.getWorkbenchWindows();
-                    LOG.info("[get_diagnostics] editor scan: target=%s workbenchWindows=%d", //$NON-NLS-1$
-                            file.getFullPath(), windows == null ? 0 : windows.length);
                     if (windows == null) {
                         return;
                     }
                     for (IWorkbenchWindow window : windows) {
                         for (IWorkbenchPage page : window.getPages()) {
                             IEditorReference[] refs = page.getEditorReferences();
-                            LOG.info("[get_diagnostics]   page='%s' editorReferences=%d", //$NON-NLS-1$
-                                    page.getLabel(), refs == null ? 0 : refs.length);
                             if (refs == null) continue;
                             for (IEditorReference ref : refs) {
-                                scannedRefs[0]++;
                                 if (matchEditorForFile(ref, file, documentRef, modelRef)) {
                                     return;
                                 }
@@ -1286,11 +1160,8 @@ public class EdtDiagnosticsCollector {
         IDocument document = documentRef[0];
         IAnnotationModel annotationModel = modelRef[0];
         if (document == null || annotationModel == null) {
-            LOG.info("[get_diagnostics] no open editor found (scannedRefs=%d) for %s — annotation model unavailable (live info-hints from XText reconciler require the file to be open in EDT)", //$NON-NLS-1$
-                    scannedRefs[0], filePath);
-            return;
+            return; // file not open — live XText hints unavailable
         }
-        LOG.info("[get_diagnostics] annotation model FOUND for %s — collecting", filePath); //$NON-NLS-1$
         collectFromAnnotations(annotationModel, document, filePath, query, diagnostics, seen);
     }
 
@@ -1298,13 +1169,8 @@ public class EdtDiagnosticsCollector {
                                        IDocument[] documentOut, IAnnotationModel[] modelOut) {
         try {
             IEditorInput input = ref.getEditorInput();
-            String inputClass = input == null ? "<null>" : input.getClass().getSimpleName();
             IFile candidate = resolveFile(input);
-            String candidatePath = candidate == null ? "<null>" : candidate.getFullPath().toString();
-            boolean match = candidate != null && candidate.equals(target);
-            LOG.info("[get_diagnostics]     ref id='%s' title='%s' inputClass=%s candidateFile=%s match=%s", //$NON-NLS-1$
-                    ref.getId(), ref.getTitle(), inputClass, candidatePath, match);
-            if (!match) {
+            if (candidate == null || !candidate.equals(target)) {
                 return false;
             }
             // Force-materialise lazy editor — getEditor(false) returns null for
@@ -1312,23 +1178,16 @@ public class EdtDiagnosticsCollector {
             // focused). The document provider only exists after instantiation.
             IEditorPart editor = ref.getEditor(true);
             if (!(editor instanceof ITextEditor textEditor)) {
-                LOG.info("[get_diagnostics]     editor instantiated but NOT ITextEditor: %s", //$NON-NLS-1$
-                        editor == null ? "<null>" : editor.getClass().getName());
                 return false;
             }
             IDocumentProvider dp = textEditor.getDocumentProvider();
             if (dp == null) {
-                LOG.info("[get_diagnostics]     ITextEditor has no document provider"); //$NON-NLS-1$
                 return false;
             }
             documentOut[0] = dp.getDocument(input);
             modelOut[0] = dp.getAnnotationModel(input);
-            LOG.info("[get_diagnostics]     dp produced document=%s annotationModel=%s", //$NON-NLS-1$
-                    documentOut[0] == null ? "<null>" : "<present>",
-                    modelOut[0] == null ? "<null>" : "<present>");
             return documentOut[0] != null && modelOut[0] != null;
         } catch (PartInitException e) {
-            LOG.warn("[get_diagnostics]     PartInitException on ref: %s", e.getMessage()); //$NON-NLS-1$
             return false;
         }
     }
