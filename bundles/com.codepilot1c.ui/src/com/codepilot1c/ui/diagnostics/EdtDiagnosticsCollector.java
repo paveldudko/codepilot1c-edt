@@ -42,8 +42,11 @@ import org.eclipse.jface.text.source.IAnnotationModel;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.ui.IEditorInput;
 import org.eclipse.ui.IEditorPart;
+import org.eclipse.ui.IEditorReference;
+import org.eclipse.ui.IWorkbench;
 import org.eclipse.ui.IWorkbenchPage;
 import org.eclipse.ui.IWorkbenchWindow;
+import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.PlatformUI;
 import org.eclipse.ui.part.FileEditorInput;
 import org.eclipse.ui.texteditor.IDocumentProvider;
@@ -295,6 +298,16 @@ public class EdtDiagnosticsCollector {
                             query.includeRuntimeMarkers(),
                             context.project() == null ? "<null>" : context.project().getName());
                 }
+
+                // Annotation-model query: live XText-based info / warning hints
+                // from the BSL editor's reconciler only exist while the file is
+                // open in an editor. EDT info-level checks (e.g. naming-style
+                // advisories) materialize here but NOT in IMarkerManager, so
+                // without this branch scope=file misses them entirely.
+                int beforeAnnotations = diagnostics.size();
+                collectFromOpenEditorAnnotations(context.file(), resultPath, query, diagnostics, seen);
+                LOG.info("[get_diagnostics] editor annotations contributed: %d (after-annotations total=%d)", //$NON-NLS-1$
+                        diagnostics.size() - beforeAnnotations, diagnostics.size());
 
                 // Sort and limit (ensure maxItems is positive)
                 diagnostics.sort(Comparator
@@ -1179,6 +1192,81 @@ public class EdtDiagnosticsCollector {
             return textEditor;
         }
         return null;
+    }
+
+    /**
+     * Looks up the open editor for {@code file} (if any) and reads its
+     * XText annotation model. Annotations carry live BSL-checker info /
+     * warning hints that don't materialize into IMarkerManager.
+     *
+     * <p>Runs the editor lookup on the UI thread via {@link Display#syncExec}.
+     * No-op if the file is not currently open in any editor.</p>
+     */
+    private void collectFromOpenEditorAnnotations(
+            IFile file, String filePath, DiagnosticsQuery query,
+            List<EdtDiagnostic> diagnostics, Set<String> seen) {
+        if (file == null) {
+            return;
+        }
+        final IDocument[] documentRef = {null};
+        final IAnnotationModel[] modelRef = {null};
+        try {
+            Display.getDefault().syncExec(() -> {
+                try {
+                    IWorkbench workbench = PlatformUI.getWorkbench();
+                    if (workbench == null) {
+                        return;
+                    }
+                    for (IWorkbenchWindow window : workbench.getWorkbenchWindows()) {
+                        for (IWorkbenchPage page : window.getPages()) {
+                            for (IEditorReference ref : page.getEditorReferences()) {
+                                if (matchEditorForFile(ref, file, documentRef, modelRef)) {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    LOG.warn("[get_diagnostics] editor annotation lookup failed: %s", e.getMessage()); //$NON-NLS-1$
+                }
+            });
+        } catch (Exception e) {
+            LOG.warn("[get_diagnostics] syncExec for annotation lookup failed: %s", e.getMessage()); //$NON-NLS-1$
+            return;
+        }
+        IDocument document = documentRef[0];
+        IAnnotationModel annotationModel = modelRef[0];
+        if (document == null || annotationModel == null) {
+            LOG.info("[get_diagnostics] no open editor for %s — annotation model unavailable (live info-hints from XText reconciler require the file to be open in EDT)", //$NON-NLS-1$
+                    filePath);
+            return;
+        }
+        LOG.info("[get_diagnostics] annotation model FOUND for %s — collecting", filePath); //$NON-NLS-1$
+        collectFromAnnotations(annotationModel, document, filePath, query, diagnostics, seen);
+    }
+
+    private boolean matchEditorForFile(IEditorReference ref, IFile target,
+                                       IDocument[] documentOut, IAnnotationModel[] modelOut) {
+        try {
+            IEditorInput input = ref.getEditorInput();
+            IFile candidate = resolveFile(input);
+            if (candidate == null || !candidate.equals(target)) {
+                return false;
+            }
+            IEditorPart editor = ref.getEditor(false);
+            if (!(editor instanceof ITextEditor textEditor)) {
+                return false;
+            }
+            IDocumentProvider dp = textEditor.getDocumentProvider();
+            if (dp == null) {
+                return false;
+            }
+            documentOut[0] = dp.getDocument(input);
+            modelOut[0] = dp.getAnnotationModel(input);
+            return documentOut[0] != null && modelOut[0] != null;
+        } catch (PartInitException e) {
+            return false;
+        }
     }
 
     private IFile resolveFile(IEditorInput input) {
