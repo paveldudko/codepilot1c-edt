@@ -21,7 +21,7 @@ import org.eclipse.xtext.validation.IResourceValidator;
 import org.eclipse.xtext.validation.Issue;
 
 import com._1c.g5.v8.dt.bm.xtext.BmAwareResourceSetProvider;
-import com.codepilot1c.core.edt.ast.EdtServiceGateway;
+import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.codepilot1c.core.logging.VibeLogger;
 
 /**
@@ -68,14 +68,7 @@ public class BslLiveValidator {
             String code) {
     }
 
-    private final EdtServiceGateway gateway;
-
     public BslLiveValidator() {
-        this(new EdtServiceGateway());
-    }
-
-    public BslLiveValidator(EdtServiceGateway gateway) {
-        this.gateway = gateway;
     }
 
     public List<BslLiveIssue> validate(IFile file, IProject project) {
@@ -107,6 +100,8 @@ public class BslLiveValidator {
 
         try {
             List<Issue> issues = validator.validate(resource, CheckMode.ALL, CancelIndicator.NullImpl);
+            LOG.info("BslLiveValidator: validate(%s) returned %d issues", //$NON-NLS-1$
+                    uri.lastSegment(), issues == null ? 0 : issues.size());
             if (issues == null || issues.isEmpty()) {
                 return Collections.emptyList();
             }
@@ -128,19 +123,36 @@ public class BslLiveValidator {
     private Resource loadResource(IProject project, URI uri) {
         ResourceSet projectRs = null;
         if (project != null && project.exists()) {
-            try {
-                BmAwareResourceSetProvider provider = gateway.getResourceSetProvider();
-                projectRs = provider.get(project);
-            } catch (RuntimeException e) {
-                // BM services not ready — fall through to standalone resource set.
-                LOG.info("BslLiveValidator: project ResourceSet unavailable: %s", e.getMessage()); //$NON-NLS-1$
+            VibeCorePlugin plugin = VibeCorePlugin.getDefault();
+            // Use the non-blocking peek so get_diagnostics never eats the
+            // 30 s ServiceTracker wait when BM services are still cold.
+            // Caller absorbs the "EDT not ready yet" miss by returning an
+            // empty issue list; a follow-up call once the workspace warms
+            // up succeeds normally.
+            BmAwareResourceSetProvider provider = plugin != null ? plugin.peekResourceSetProvider() : null;
+            if (provider != null) {
+                try {
+                    projectRs = provider.get(project);
+                } catch (RuntimeException e) {
+                    LOG.info("BslLiveValidator: BM-aware ResourceSet.get(%s) failed: %s — %s", //$NON-NLS-1$
+                            project.getName(), e.getClass().getSimpleName(), e.getMessage());
+                }
+            } else {
+                LOG.info("BslLiveValidator: BmAwareResourceSetProvider not registered yet — skipping project-bound RS"); //$NON-NLS-1$
             }
         }
         Resource resource = tryLoad(projectRs, uri);
         if (resource != null) {
+            LOG.info("BslLiveValidator: loaded via project RS, class=%s contentsSize=%d", //$NON-NLS-1$
+                    resource.getClass().getSimpleName(), resource.getContents().size());
             return resource;
         }
-        return tryLoad(new XtextResourceSet(), uri);
+        Resource standalone = tryLoad(new XtextResourceSet(), uri);
+        if (standalone != null) {
+            LOG.info("BslLiveValidator: loaded via standalone XtextResourceSet, class=%s contentsSize=%d", //$NON-NLS-1$
+                    standalone.getClass().getSimpleName(), standalone.getContents().size());
+        }
+        return standalone;
     }
 
     private Resource tryLoad(ResourceSet resourceSet, URI uri) {

@@ -357,6 +357,22 @@ public class VibeCorePlugin extends Plugin {
         return getTrackedService(resourceSetProviderTracker, "BmAwareResourceSetProvider"); //$NON-NLS-1$
     }
 
+    /**
+     * Returns the currently-tracked {@link BmAwareResourceSetProvider}, or
+     * {@code null} immediately when the service is not yet registered. In
+     * contrast to {@link #getResourceSetProvider()} this never blocks
+     * waiting for the service to appear — required by callers (e.g.
+     * {@code get_diagnostics scope=file}) whose latency budget cannot
+     * absorb the standard 30 s wait.
+     */
+    public BmAwareResourceSetProvider peekResourceSetProvider() {
+        ServiceTracker<BmAwareResourceSetProvider, BmAwareResourceSetProvider> tracker = resourceSetProviderTracker;
+        if (tracker == null) {
+            return null;
+        }
+        return tracker.getService();
+    }
+
     public ITopObjectFqnGenerator getTopObjectFqnGenerator() {
         return getTrackedService(topObjectFqnGeneratorTracker, "ITopObjectFqnGenerator"); //$NON-NLS-1$
     }
