@@ -112,4 +112,44 @@ public final class RelativePathCandidates {
         }
         return null;
     }
+
+    /**
+     * Returns the subset of {@link #build(String, Set)} candidates suitable
+     * for marker-haystack tokenization — i.e. those that do NOT start with
+     * a known workspace project name segment.
+     *
+     * <p>Why this is separate from {@link #build}: the project-prefixed
+     * form is necessary for the workspace-rooted {@code IFile} lookup
+     * (step 1 in {@code EdtDiagnosticsCollector.resolveFileContext}), but
+     * its presence in {@code buildMatchTokens} produces a tokens-union
+     * that includes the project-name segment as a "discriminating" token.
+     * Since EDT marker haystacks never carry the project name, the
+     * resulting ALL-tokens threshold (= 2) becomes unsatisfiable for
+     * every marker — exactly the silent-zero regression we fixed in
+     * Phase 19, with the with-prefix input shape still hitting it.</p>
+     *
+     * <p>If every candidate happens to be project-prefixed (pathological
+     * case — caller passed only {@code "Project/"} with no rest), the
+     * original list is returned unchanged as a safety net.</p>
+     */
+    public static List<String> buildForMatch(String rawPath, Set<String> knownProjectNames) {
+        List<String> all = build(rawPath, knownProjectNames);
+        if (all.isEmpty()) {
+            return all;
+        }
+        Set<String> projects = knownProjectNames == null ? Set.of() : knownProjectNames;
+        java.util.ArrayList<String> filtered = new java.util.ArrayList<>(all.size());
+        for (String candidate : all) {
+            int slash = candidate.indexOf('/');
+            if (slash <= 0) {
+                filtered.add(candidate);
+                continue;
+            }
+            String firstSegment = candidate.substring(0, slash);
+            if (!projects.contains(firstSegment)) {
+                filtered.add(candidate);
+            }
+        }
+        return filtered.isEmpty() ? all : List.copyOf(filtered);
+    }
 }

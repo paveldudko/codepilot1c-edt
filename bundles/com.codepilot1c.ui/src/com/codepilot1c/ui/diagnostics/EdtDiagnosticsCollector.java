@@ -340,8 +340,17 @@ public class EdtDiagnosticsCollector {
         String normalizedPath = normalizePath(requestedPath);
         String pathWithoutLeadingSlash = removeLeadingSlash(normalizedPath);
         List<String> relativeCandidates = buildRelativePathCandidates(pathWithoutLeadingSlash);
-        LOG.info("[get_diagnostics] resolveFileContext: requested='%s' normalized='%s' pathWithoutSlash='%s' candidates=%s", //$NON-NLS-1$
-                requestedPath, normalizedPath, pathWithoutLeadingSlash, relativeCandidates);
+        // The match-only subset drops candidates that still carry a known
+        // workspace project name as their first segment. Tokens / pathHints
+        // come from THIS subset so the project name never enters the
+        // ALL-tokens marker filter (see Phase 19b — without this the
+        // with-project-prefix input shape still hit silent-zero because
+        // buildMatchTokens(relativeCandidates) emitted the project name
+        // as a discriminating token).
+        List<String> matchCandidates = RelativePathCandidates.buildForMatch(
+                pathWithoutLeadingSlash, knownWorkspaceProjectNames());
+        LOG.info("[get_diagnostics] resolveFileContext: requested='%s' normalized='%s' pathWithoutSlash='%s' candidates=%s matchCandidates=%s", //$NON-NLS-1$
+                requestedPath, normalizedPath, pathWithoutLeadingSlash, relativeCandidates, matchCandidates);
 
         IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
 
@@ -359,9 +368,9 @@ public class EdtDiagnosticsCollector {
                     resolvedPath,
                     directFile.getProject(),
                     directFile,
-                    buildRuntimePathHints(pathWithoutLeadingSlash, relativeCandidates),
-                    buildMatchTokens(relativeCandidates),
-                    computeTokenThreshold(buildMatchTokens(relativeCandidates)));
+                    buildRuntimePathHints(pathWithoutLeadingSlash, matchCandidates),
+                    buildMatchTokens(matchCandidates),
+                    computeTokenThreshold(buildMatchTokens(matchCandidates)));
         }
 
         // 2) Project-relative form: src/... or Configuration/src/...
@@ -390,18 +399,18 @@ public class EdtDiagnosticsCollector {
                             resolvedPath,
                             project,
                             file,
-                            buildRuntimePathHints(candidate, relativeCandidates),
-                            buildMatchTokens(relativeCandidates),
-                            computeTokenThreshold(buildMatchTokens(relativeCandidates)));
+                            buildRuntimePathHints(candidate, matchCandidates),
+                            buildMatchTokens(matchCandidates),
+                            computeTokenThreshold(buildMatchTokens(matchCandidates)));
                 }
             }
         }
 
         IProject project = resolveProjectForPath(pathWithoutLeadingSlash, projects, root);
         String synthesizedPath = project != null
-                ? "/" + project.getName() + "/" + preferredRelativePath(relativeCandidates) //$NON-NLS-1$ //$NON-NLS-2$
+                ? "/" + project.getName() + "/" + preferredRelativePath(matchCandidates) //$NON-NLS-1$ //$NON-NLS-2$
                 : withLeadingSlash(pathWithoutLeadingSlash);
-        List<String> tokens = buildMatchTokens(relativeCandidates);
+        List<String> tokens = buildMatchTokens(matchCandidates);
         LOG.info("[get_diagnostics] step-3 synthesized: project=%s synthesizedPath='%s' tokens=%s (context.file=null → throw)", //$NON-NLS-1$
                 project == null ? "<null>" : project.getName(), synthesizedPath, tokens);
         return new ResolvedFileContext(
@@ -409,7 +418,7 @@ public class EdtDiagnosticsCollector {
                 synthesizedPath,
                 project,
                 null,
-                buildRuntimePathHints(preferredRelativePath(relativeCandidates), relativeCandidates),
+                buildRuntimePathHints(preferredRelativePath(matchCandidates), matchCandidates),
                 tokens,
                 computeTokenThreshold(tokens));
     }

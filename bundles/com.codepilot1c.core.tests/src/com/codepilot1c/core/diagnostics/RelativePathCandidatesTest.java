@@ -8,6 +8,7 @@
 package com.codepilot1c.core.diagnostics;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.util.List;
@@ -184,5 +185,52 @@ public class RelativePathCandidatesTest {
                 tokens.contains("integration_highradius"));
         assertTrue("project name (with space) must NOT appear as a token", //$NON-NLS-1$
                 !tokens.contains("accounting management"));
+    }
+
+    // --- buildForMatch: project-relative-only subset --------------------------
+
+    @Test
+    public void buildForMatchDropsProjectPrefixedCandidate() {
+        List<String> matchCandidates = RelativePathCandidates.buildForMatch(
+                "Accounting management/src/CommonModules/Integration_HighRadius/Module.bsl",
+                KNOWN);
+        assertTrue("project-prefixed form must NOT be in match candidates", //$NON-NLS-1$
+                !matchCandidates.contains("Accounting management/src/CommonModules/Integration_HighRadius/Module.bsl"));
+        assertTrue("project-stripped form must be in match candidates", //$NON-NLS-1$
+                matchCandidates.contains("src/CommonModules/Integration_HighRadius/Module.bsl"));
+    }
+
+    @Test
+    public void buildForMatchKeepsNonProjectPrefixedCandidates() {
+        // Plain project-relative input — nothing to strip, should pass through.
+        List<String> matchCandidates = RelativePathCandidates.buildForMatch(
+                "src/CommonModules/X/Module.bsl", KNOWN);
+        assertEquals(1, matchCandidates.size());
+        assertTrue(matchCandidates.contains("src/CommonModules/X/Module.bsl"));
+    }
+
+    @Test
+    public void buildForMatchTokensThenContainsNoProjectName() {
+        // End-to-end: with-prefix input → buildForMatch → buildMatchTokens
+        // must NOT emit the project-name segment as a token, so the
+        // threshold stays at 1 instead of 2.
+        List<String> matchCandidates = RelativePathCandidates.buildForMatch(
+                "Accounting management/src/CommonModules/Integration_HighRadius/Module.bsl",
+                KNOWN);
+        List<String> tokens = PathMatchTokens.buildMatchTokens(matchCandidates);
+        assertTrue("integration_highradius must remain", //$NON-NLS-1$
+                tokens.contains("integration_highradius"));
+        assertTrue("accounting management must NOT appear as a token", //$NON-NLS-1$
+                !tokens.contains("accounting management"));
+        assertEquals("threshold must collapse to 1, not 2", 1, tokens.size()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void buildForMatchFallsBackToOriginalIfFilteringWouldEmpty() {
+        // Pathological: caller passed exactly "ProjectName/" with no rest —
+        // build returns just the original; filtering would drop it. Safety
+        // net keeps the original so we don't return an empty token set.
+        List<String> matchCandidates = RelativePathCandidates.buildForMatch("AM/", KNOWN);
+        assertFalse(matchCandidates.isEmpty());
     }
 }
