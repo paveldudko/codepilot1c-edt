@@ -10,6 +10,7 @@ import java.util.List;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IProject;
+import org.eclipse.core.runtime.Platform;
 import org.eclipse.emf.common.util.URI;
 import org.eclipse.emf.ecore.resource.Resource;
 import org.eclipse.emf.ecore.resource.ResourceSet;
@@ -19,6 +20,8 @@ import org.eclipse.xtext.util.CancelIndicator;
 import org.eclipse.xtext.validation.CheckMode;
 import org.eclipse.xtext.validation.IResourceValidator;
 import org.eclipse.xtext.validation.Issue;
+import org.osgi.framework.Bundle;
+import org.osgi.framework.BundleException;
 
 import com._1c.g5.v8.dt.bm.xtext.BmAwareResourceSetProvider;
 import com.codepilot1c.core.internal.VibeCorePlugin;
@@ -120,16 +123,28 @@ public class BslLiveValidator {
         }
     }
 
+    private static final String BM_XTEXT_BUNDLE_ID = "com._1c.g5.v8.dt.bm.xtext"; //$NON-NLS-1$
+    private static final long BM_SERVICE_REGISTRATION_POLL_MS = 200L;
+    private static final long BM_SERVICE_REGISTRATION_TIMEOUT_MS = 5000L;
+
     private Resource loadResource(IProject project, URI uri) {
         ResourceSet projectRs = null;
         if (project != null && project.exists()) {
             VibeCorePlugin plugin = VibeCorePlugin.getDefault();
-            // Use the non-blocking peek so get_diagnostics never eats the
-            // 30 s ServiceTracker wait when BM services are still cold.
-            // Caller absorbs the "EDT not ready yet" miss by returning an
-            // empty issue list; a follow-up call once the workspace warms
-            // up succeeds normally.
             BmAwareResourceSetProvider provider = plugin != null ? plugin.peekResourceSetProvider() : null;
+            // Bundle com._1c.g5.v8.dt.bm.xtext has Bundle-ActivationPolicy: lazy
+            // and registers BmAwareResourceSetProvider as an OSGi service from
+            // its Activator.start() via InjectorAwareServiceRegistrator.
+            // A class-level reference doesn't reliably trigger lazy activation
+            // for OSGi-DS-style registrations (the Guice injector + service
+            // publish runs async on the activation thread), so on the very
+            // first get_diagnostics call after EDT (re)start the peek can
+            // return null even though the workspace is otherwise warm. Force
+            // bundle activation and poll briefly for the registration to land.
+            if (provider == null && plugin != null) {
+                ensureBmXtextBundleActive();
+                provider = waitForBmAwareResourceSetProvider(plugin);
+            }
             if (provider != null) {
                 try {
                     projectRs = provider.get(project);
@@ -138,7 +153,7 @@ public class BslLiveValidator {
                             project.getName(), e.getClass().getSimpleName(), e.getMessage());
                 }
             } else {
-                LOG.info("BslLiveValidator: BmAwareResourceSetProvider not registered yet — skipping project-bound RS"); //$NON-NLS-1$
+                LOG.info("BslLiveValidator: BmAwareResourceSetProvider still unavailable after bundle activation — falling through to standalone"); //$NON-NLS-1$
             }
         }
         Resource resource = tryLoad(projectRs, uri);
@@ -153,6 +168,46 @@ public class BslLiveValidator {
                     standalone.getClass().getSimpleName(), standalone.getContents().size());
         }
         return standalone;
+    }
+
+    private void ensureBmXtextBundleActive() {
+        Bundle bundle = Platform.getBundle(BM_XTEXT_BUNDLE_ID);
+        if (bundle == null) {
+            LOG.info("BslLiveValidator: bundle %s not present in runtime", BM_XTEXT_BUNDLE_ID); //$NON-NLS-1$
+            return;
+        }
+        int state = bundle.getState();
+        if (state == Bundle.ACTIVE) {
+            return;
+        }
+        try {
+            bundle.start(Bundle.START_TRANSIENT | Bundle.START_ACTIVATION_POLICY);
+            LOG.info("BslLiveValidator: triggered start of %s (was state=%d, now=%d)", //$NON-NLS-1$
+                    BM_XTEXT_BUNDLE_ID, state, bundle.getState());
+        } catch (BundleException e) {
+            LOG.info("BslLiveValidator: bundle %s start failed: %s", //$NON-NLS-1$
+                    BM_XTEXT_BUNDLE_ID, e.getMessage());
+        }
+    }
+
+    private BmAwareResourceSetProvider waitForBmAwareResourceSetProvider(VibeCorePlugin plugin) {
+        long start = System.currentTimeMillis();
+        long deadline = start + BM_SERVICE_REGISTRATION_TIMEOUT_MS;
+        BmAwareResourceSetProvider provider = plugin.peekResourceSetProvider();
+        while (provider == null && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(BM_SERVICE_REGISTRATION_POLL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            provider = plugin.peekResourceSetProvider();
+        }
+        long waited = System.currentTimeMillis() - start;
+        if (provider != null) {
+            LOG.info("BslLiveValidator: BmAwareResourceSetProvider registered after %d ms", waited); //$NON-NLS-1$
+        }
+        return provider;
     }
 
     private Resource tryLoad(ResourceSet resourceSet, URI uri) {
