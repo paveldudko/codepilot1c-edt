@@ -1235,16 +1235,29 @@ public class EdtDiagnosticsCollector {
         }
         final IDocument[] documentRef = {null};
         final IAnnotationModel[] modelRef = {null};
+        final int[] scannedRefs = {0};
         try {
             Display.getDefault().syncExec(() -> {
                 try {
                     IWorkbench workbench = PlatformUI.getWorkbench();
                     if (workbench == null) {
+                        LOG.info("[get_diagnostics] editor scan: workbench=<null>"); //$NON-NLS-1$
                         return;
                     }
-                    for (IWorkbenchWindow window : workbench.getWorkbenchWindows()) {
+                    IWorkbenchWindow[] windows = workbench.getWorkbenchWindows();
+                    LOG.info("[get_diagnostics] editor scan: target=%s workbenchWindows=%d", //$NON-NLS-1$
+                            file.getFullPath(), windows == null ? 0 : windows.length);
+                    if (windows == null) {
+                        return;
+                    }
+                    for (IWorkbenchWindow window : windows) {
                         for (IWorkbenchPage page : window.getPages()) {
-                            for (IEditorReference ref : page.getEditorReferences()) {
+                            IEditorReference[] refs = page.getEditorReferences();
+                            LOG.info("[get_diagnostics]   page='%s' editorReferences=%d", //$NON-NLS-1$
+                                    page.getLabel(), refs == null ? 0 : refs.length);
+                            if (refs == null) continue;
+                            for (IEditorReference ref : refs) {
+                                scannedRefs[0]++;
                                 if (matchEditorForFile(ref, file, documentRef, modelRef)) {
                                     return;
                                 }
@@ -1252,18 +1265,20 @@ public class EdtDiagnosticsCollector {
                         }
                     }
                 } catch (Exception e) {
-                    LOG.warn("[get_diagnostics] editor annotation lookup failed: %s", e.getMessage()); //$NON-NLS-1$
+                    LOG.warn("[get_diagnostics] editor annotation lookup failed: %s — %s", //$NON-NLS-1$
+                            e.getClass().getSimpleName(), e.getMessage());
                 }
             });
         } catch (Exception e) {
-            LOG.warn("[get_diagnostics] syncExec for annotation lookup failed: %s", e.getMessage()); //$NON-NLS-1$
+            LOG.warn("[get_diagnostics] syncExec for annotation lookup failed: %s — %s", //$NON-NLS-1$
+                    e.getClass().getSimpleName(), e.getMessage());
             return;
         }
         IDocument document = documentRef[0];
         IAnnotationModel annotationModel = modelRef[0];
         if (document == null || annotationModel == null) {
-            LOG.info("[get_diagnostics] no open editor for %s — annotation model unavailable (live info-hints from XText reconciler require the file to be open in EDT)", //$NON-NLS-1$
-                    filePath);
+            LOG.info("[get_diagnostics] no open editor found (scannedRefs=%d) for %s — annotation model unavailable (live info-hints from XText reconciler require the file to be open in EDT)", //$NON-NLS-1$
+                    scannedRefs[0], filePath);
             return;
         }
         LOG.info("[get_diagnostics] annotation model FOUND for %s — collecting", filePath); //$NON-NLS-1$
@@ -1274,22 +1289,37 @@ public class EdtDiagnosticsCollector {
                                        IDocument[] documentOut, IAnnotationModel[] modelOut) {
         try {
             IEditorInput input = ref.getEditorInput();
+            String inputClass = input == null ? "<null>" : input.getClass().getSimpleName();
             IFile candidate = resolveFile(input);
-            if (candidate == null || !candidate.equals(target)) {
+            String candidatePath = candidate == null ? "<null>" : candidate.getFullPath().toString();
+            boolean match = candidate != null && candidate.equals(target);
+            LOG.info("[get_diagnostics]     ref id='%s' title='%s' inputClass=%s candidateFile=%s match=%s", //$NON-NLS-1$
+                    ref.getId(), ref.getTitle(), inputClass, candidatePath, match);
+            if (!match) {
                 return false;
             }
-            IEditorPart editor = ref.getEditor(false);
+            // Force-materialise lazy editor — getEditor(false) returns null for
+            // editors that haven't been instantiated yet (e.g. tab open but not
+            // focused). The document provider only exists after instantiation.
+            IEditorPart editor = ref.getEditor(true);
             if (!(editor instanceof ITextEditor textEditor)) {
+                LOG.info("[get_diagnostics]     editor instantiated but NOT ITextEditor: %s", //$NON-NLS-1$
+                        editor == null ? "<null>" : editor.getClass().getName());
                 return false;
             }
             IDocumentProvider dp = textEditor.getDocumentProvider();
             if (dp == null) {
+                LOG.info("[get_diagnostics]     ITextEditor has no document provider"); //$NON-NLS-1$
                 return false;
             }
             documentOut[0] = dp.getDocument(input);
             modelOut[0] = dp.getAnnotationModel(input);
+            LOG.info("[get_diagnostics]     dp produced document=%s annotationModel=%s", //$NON-NLS-1$
+                    documentOut[0] == null ? "<null>" : "<present>",
+                    modelOut[0] == null ? "<null>" : "<present>");
             return documentOut[0] != null && modelOut[0] != null;
         } catch (PartInitException e) {
+            LOG.warn("[get_diagnostics]     PartInitException on ref: %s", e.getMessage()); //$NON-NLS-1$
             return false;
         }
     }
