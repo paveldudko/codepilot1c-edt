@@ -252,6 +252,8 @@ public class EdtDiagnosticsCollector {
     public CompletableFuture<DiagnosticsResult> collectFromFile(String filePath, DiagnosticsQuery query) {
         return CompletableFuture.supplyAsync(() -> {
             try {
+                LOG.info("[get_diagnostics] collectFromFile START: path='%s' severity=%s maxItems=%d waitMs=%d includeRuntime=%s", //$NON-NLS-1$
+                        filePath, query.minSeverity(), query.maxItems(), query.waitMs(), query.includeRuntimeMarkers());
                 // Wait if requested (for EDT to recalculate diagnostics after file save)
                 if (query.waitMs() > 0) {
                     try {
@@ -262,6 +264,14 @@ public class EdtDiagnosticsCollector {
                 }
 
                 ResolvedFileContext context = resolveFileContext(filePath);
+                LOG.info("[get_diagnostics] resolved: file=%s exists=%s project=%s resolvedPath=%s pathHints=%s matchTokens=%s threshold=%d", //$NON-NLS-1$
+                        context.file() == null ? "<null>" : context.file().getFullPath(),
+                        context.file() != null && context.file().exists(),
+                        context.project() == null ? "<null>" : context.project().getName(),
+                        context.resolvedPath(),
+                        context.pathHints(),
+                        context.matchTokens(),
+                        context.tokenThreshold());
 
                 if (context.file() == null) {
                     throw new IllegalArgumentException("File not found in workspace: " + filePath); //$NON-NLS-1$
@@ -273,8 +283,17 @@ public class EdtDiagnosticsCollector {
                 Set<String> seen = new HashSet<>();
 
                 collectFromMarkers(context.file(), resultPath, query, diagnostics, seen);
+                int afterWorkspace = diagnostics.size();
+                LOG.info("[get_diagnostics] workspace markers contributed: %d", afterWorkspace); //$NON-NLS-1$
+
                 if (query.includeRuntimeMarkers() && context.project() != null) {
                     collectRuntimeFileMarkers(context, query, diagnostics, seen);
+                    LOG.info("[get_diagnostics] runtime markers contributed: %d (after-runtime total=%d)", //$NON-NLS-1$
+                            diagnostics.size() - afterWorkspace, diagnostics.size());
+                } else {
+                    LOG.info("[get_diagnostics] runtime markers SKIPPED: includeRuntime=%s project=%s", //$NON-NLS-1$
+                            query.includeRuntimeMarkers(),
+                            context.project() == null ? "<null>" : context.project().getName());
                 }
 
                 // Sort and limit (ensure maxItems is positive)
@@ -289,12 +308,16 @@ public class EdtDiagnosticsCollector {
                 int warnings = (int) diagnostics.stream().filter(d -> d.severity() == Severity.WARNING).count();
                 int infos = diagnostics.size() - errors - warnings;
 
+                LOG.info("[get_diagnostics] DONE: returning %d items (errors=%d warnings=%d infos=%d)", //$NON-NLS-1$
+                        diagnostics.size(), errors, warnings, infos);
                 return new DiagnosticsResult(resultPath, false, diagnostics, errors, warnings, infos);
 
             } catch (IllegalArgumentException e) {
+                LOG.warn("[get_diagnostics] IllegalArgumentException for path='%s': %s", filePath, e.getMessage()); //$NON-NLS-1$
                 throw e; // propagate as exceptional future completion (e.g. file-not-found)
             } catch (Exception e) {
-                LOG.error("Error collecting diagnostics for file %s: %s", filePath, e.getMessage()); //$NON-NLS-1$
+                LOG.error("[get_diagnostics] SWALLOWED Exception for path='%s': %s — %s", //$NON-NLS-1$
+                        filePath, e.getClass().getSimpleName(), e.getMessage());
                 return new DiagnosticsResult(filePath, false, List.of(), 0, 0, 0);
             }
         });
@@ -304,12 +327,19 @@ public class EdtDiagnosticsCollector {
         String normalizedPath = normalizePath(requestedPath);
         String pathWithoutLeadingSlash = removeLeadingSlash(normalizedPath);
         List<String> relativeCandidates = buildRelativePathCandidates(pathWithoutLeadingSlash);
+        LOG.info("[get_diagnostics] resolveFileContext: requested='%s' normalized='%s' pathWithoutSlash='%s' candidates=%s", //$NON-NLS-1$
+                requestedPath, normalizedPath, pathWithoutLeadingSlash, relativeCandidates);
 
         IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
 
         // 1) Workspace-relative form: /<project>/...
         IFile directFile = root.getFile(new Path(withLeadingSlash(pathWithoutLeadingSlash)));
-        if (directFile != null && directFile.exists()) {
+        boolean directExists = directFile != null && directFile.exists();
+        LOG.info("[get_diagnostics] step-1 root.getFile('%s'): handle=%s exists=%s", //$NON-NLS-1$
+                withLeadingSlash(pathWithoutLeadingSlash),
+                directFile == null ? "<null>" : directFile.getFullPath(),
+                directExists);
+        if (directExists) {
             String resolvedPath = directFile.getFullPath().toString();
             return new ResolvedFileContext(
                     requestedPath,
@@ -323,16 +353,24 @@ public class EdtDiagnosticsCollector {
 
         // 2) Project-relative form: src/... or Configuration/src/...
         List<IProject> projects = resolveDiagnosticsProjects();
+        boolean fellBack = false;
         if (projects.isEmpty()) {
             projects = Arrays.stream(root.getProjects())
                     .filter(this::isAccessibleProject)
                     .sorted(Comparator.comparing(IProject::getName, String.CASE_INSENSITIVE_ORDER))
                     .toList();
+            fellBack = true;
         }
+        LOG.info("[get_diagnostics] step-2 projects under consideration (fellBackToAll=%s): %s", //$NON-NLS-1$
+                fellBack,
+                projects.stream().map(IProject::getName).toList());
         for (IProject project : projects) {
             for (String candidate : relativeCandidates) {
                 IFile file = project.getFile(candidate);
-                if (file != null && file.exists()) {
+                boolean exists = file != null && file.exists();
+                LOG.info("[get_diagnostics]   project='%s' candidate='%s' → exists=%s", //$NON-NLS-1$
+                        project.getName(), candidate, exists);
+                if (exists) {
                     String resolvedPath = file.getFullPath().toString();
                     return new ResolvedFileContext(
                             requestedPath,
@@ -351,6 +389,8 @@ public class EdtDiagnosticsCollector {
                 ? "/" + project.getName() + "/" + preferredRelativePath(relativeCandidates) //$NON-NLS-1$ //$NON-NLS-2$
                 : withLeadingSlash(pathWithoutLeadingSlash);
         List<String> tokens = buildMatchTokens(relativeCandidates);
+        LOG.info("[get_diagnostics] step-3 synthesized: project=%s synthesizedPath='%s' tokens=%s (context.file=null → throw)", //$NON-NLS-1$
+                project == null ? "<null>" : project.getName(), synthesizedPath, tokens);
         return new ResolvedFileContext(
                 requestedPath,
                 synthesizedPath,
@@ -409,13 +449,12 @@ public class EdtDiagnosticsCollector {
     private List<String> buildRelativePathCandidates(String pathWithoutLeadingSlash) {
         // Delegates to the pure-Java RelativePathCandidates utility so the
         // project-name-stripping rule can be unit-tested without an open
-        // workspace. See 2026-05-19-diagnostics-space-in-project-name.md:
-        // without project-name stripping, the project segment becomes a
-        // non-generic token that the ALL-tokens marker filter requires to
-        // be present in every haystack — but EDT marker haystacks never
-        // carry the workspace project name, so every file-scope diagnostics
-        // call silently returned 0/0/0 for any 3+ char project name.
-        return RelativePathCandidates.build(pathWithoutLeadingSlash, knownWorkspaceProjectNames());
+        // workspace. See 2026-05-19-diagnostics-space-in-project-name.md.
+        Set<String> known = knownWorkspaceProjectNames();
+        List<String> result = RelativePathCandidates.build(pathWithoutLeadingSlash, known);
+        LOG.info("[get_diagnostics] buildRelativePathCandidates: input='%s' knownProjects=%s candidates=%s", //$NON-NLS-1$
+                pathWithoutLeadingSlash, known, result);
+        return result;
     }
 
     private Set<String> knownWorkspaceProjectNames() {
@@ -481,25 +520,54 @@ public class EdtDiagnosticsCollector {
 
         IMarkerManager markerManager = getMarkerManager();
         if (markerManager == null || context.project() == null) {
+            LOG.info("[get_diagnostics] collectRuntimeFileMarkers: SKIP (markerManager=%s project=%s)", //$NON-NLS-1$
+                    markerManager == null ? "<null>" : "<present>",
+                    context.project() == null ? "<null>" : context.project().getName());
             return;
         }
 
         Map<String, CheckMetadata> checkMetadata = loadCheckMetadata();
         MarkerFilter projectFilter = MarkerFilter.createProjectFilter(context.project());
+        LOG.info("[get_diagnostics] collectRuntimeFileMarkers: project=%s pathHints=%s tokens=%s threshold=%d", //$NON-NLS-1$
+                context.project().getName(), context.pathHints(),
+                context.matchTokens(), context.tokenThreshold());
+
+        int[] scanned = {0};
+        int[] accepted = {0};
+        int[] rejectedByContext = {0};
+        int[] rejectedBySeverity = {0};
+        int[] rejectedByBlankMessage = {0};
+        int[] rejectedBySeen = {0};
+        int[] loggedRejectionSamples = {0};
+        int rejectionSampleCap = 5;
 
         try (Stream<Marker> stream = markerManager.markers(projectFilter)) {
             int preLimit = getSoftScanLimit(query.maxItems(), 10);
             stream
-                    .filter(marker -> markerMatchesContext(marker, context))
+                    .peek(marker -> scanned[0]++)
+                    .filter(marker -> {
+                        boolean ok = markerMatchesContext(marker, context);
+                        if (!ok) {
+                            rejectedByContext[0]++;
+                            if (loggedRejectionSamples[0] < rejectionSampleCap) {
+                                LOG.info("[get_diagnostics]   REJECT by context: haystack='%s'", //$NON-NLS-1$
+                                        buildRuntimeMarkerHaystack(marker));
+                                loggedRejectionSamples[0]++;
+                            }
+                        }
+                        return ok;
+                    })
                     .limit(preLimit)
                     .forEach(marker -> {
                         Severity sev = fromRuntimeSeverity(marker.getSeverity());
                         if (sev.getLevel() < query.minSeverity().getLevel()) {
+                            rejectedBySeverity[0]++;
                             return;
                         }
 
                         String message = safeString(marker.getMessage());
                         if (message.isBlank()) {
+                            rejectedByBlankMessage[0]++;
                             return;
                         }
 
@@ -508,6 +576,7 @@ public class EdtDiagnosticsCollector {
                         String key = context.resolvedPath() + ":" + checkId + ":" + message + ":" //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                                 + safeString(marker.getLocation()) + ":" + safeString(marker.getObjectPresentation()); //$NON-NLS-1$
                         if (!seen.add(key)) {
+                            rejectedBySeen[0]++;
                             return;
                         }
 
@@ -525,11 +594,15 @@ public class EdtDiagnosticsCollector {
                                 meta != null ? meta.issueSeverity() : null,
                                 safeString(marker.getObjectPresentation()),
                                 locationText));
+                        accepted[0]++;
                     });
         } catch (Exception e) {
-            LOG.warn("Runtime marker manager file diagnostics unavailable for %s: %s", //$NON-NLS-1$
+            LOG.warn("[get_diagnostics] Runtime marker manager file diagnostics unavailable for %s: %s", //$NON-NLS-1$
                     context.resolvedPath(), e.getMessage());
         }
+        LOG.info("[get_diagnostics] runtime markers: scanned=%d accepted=%d rejected(context=%d, severity=%d, blank=%d, seen=%d)", //$NON-NLS-1$
+                scanned[0], accepted[0], rejectedByContext[0], rejectedBySeverity[0],
+                rejectedByBlankMessage[0], rejectedBySeen[0]);
     }
 
     private boolean markerMatchesContext(Marker marker, ResolvedFileContext context) {
@@ -795,7 +868,8 @@ public class EdtDiagnosticsCollector {
 
         try {
             IMarker[] markers = file.findMarkers(null, true, IResource.DEPTH_ZERO);
-            LOG.debug("Found %d markers for file %s", markers.length, filePath); //$NON-NLS-1$
+            LOG.info("[get_diagnostics] collectFromMarkers: file=%s rawCount=%d (workspace-attached markers)", //$NON-NLS-1$
+                    filePath, markers.length);
 
             for (IMarker marker : markers) {
                 int severity = marker.getAttribute(IMarker.SEVERITY, -1);
