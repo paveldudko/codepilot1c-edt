@@ -1208,6 +1208,8 @@ public class EdtDiagnosticsCollector {
         }
         final IDocument[] documentRef = {null};
         final IAnnotationModel[] modelRef = {null};
+        final int[] refCounter = {0};
+        final StringBuilder refDump = new StringBuilder();
         try {
             Display.getDefault().syncExec(() -> {
                 try {
@@ -1224,6 +1226,28 @@ public class EdtDiagnosticsCollector {
                             IEditorReference[] refs = page.getEditorReferences();
                             if (refs == null) continue;
                             for (IEditorReference ref : refs) {
+                                refCounter[0]++;
+                                // Per-ref dump: input class + resolved IFile + match outcome.
+                                // Helps diagnose annotation: SKIPPED when the file is
+                                // visibly open but our resolver can't bind to the editor.
+                                try {
+                                    IEditorInput input = ref.getEditorInput();
+                                    IFile candidate = resolveFile(input);
+                                    boolean inputMatches = candidate != null && candidate.equals(file);
+                                    if (refDump.length() < 4000) { // soft cap
+                                        refDump.append("  ref[").append(refCounter[0]).append("]: ") //$NON-NLS-1$ //$NON-NLS-2$
+                                                .append("inputClass=").append(input != null ? input.getClass().getName() : "null") //$NON-NLS-1$ //$NON-NLS-2$
+                                                .append(" candidateFile=").append(candidate != null ? candidate.getFullPath() : "null") //$NON-NLS-1$ //$NON-NLS-2$
+                                                .append(" matchesTarget=").append(inputMatches) //$NON-NLS-1$
+                                                .append(" editorId=").append(ref.getId()) //$NON-NLS-1$
+                                                .append('\n');
+                                    }
+                                } catch (Exception probe) {
+                                    if (refDump.length() < 4000) {
+                                        refDump.append("  ref[").append(refCounter[0]).append("]: probe-failed=") //$NON-NLS-1$ //$NON-NLS-2$
+                                                .append(probe.getClass().getSimpleName()).append('\n');
+                                    }
+                                }
                                 if (matchEditorForFile(ref, file, documentRef, modelRef)) {
                                     return;
                                 }
@@ -1243,7 +1267,9 @@ public class EdtDiagnosticsCollector {
         IDocument document = documentRef[0];
         IAnnotationModel annotationModel = modelRef[0];
         if (document == null || annotationModel == null) {
-            LOG.info("[get_diagnostics] annotations: SKIPPED (file not open in any editor — live Xtext hints unavailable)"); //$NON-NLS-1$
+            LOG.info("[get_diagnostics] annotations: SKIPPED (file not open in any editor — live Xtext hints unavailable). target=%s refsScanned=%d\n%s", //$NON-NLS-1$
+                    file.getFullPath(), refCounter[0],
+                    refDump.length() == 0 ? "  (no editor references in workbench)\n" : refDump.toString());
             return;
         }
         collectFromAnnotations(annotationModel, document, filePath, query, diagnostics, seen);
