@@ -125,6 +125,7 @@ public class ToolRegistry {
         register(new ApplyFormRecipeTool());
         register(new InspectFormLayoutTool());
         register(new GetFormGeometryTool());
+        register(new GetFormRenderingTool());
         register(new AddMetadataChildTool());
         register(new EnsureModuleArtifactTool());
         register(new UpdateMetadataTool());
