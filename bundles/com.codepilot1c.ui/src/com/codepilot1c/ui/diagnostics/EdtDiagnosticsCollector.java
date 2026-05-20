@@ -1037,17 +1037,26 @@ public class EdtDiagnosticsCollector {
 
         Iterator<?> it = model.getAnnotationIterator();
         int count = 0;
+        int totalSeen = 0;
+        int problemMatched = 0;
+        Map<String, Integer> typeHistogram = new HashMap<>();
+        int sizeBefore = diagnostics.size();
 
         while (it.hasNext()) {
             Object obj = it.next();
             if (!(obj instanceof Annotation ann)) {
                 continue;
             }
+            totalSeen++;
 
             String annType = ann.getType();
+            if (annType != null) {
+                typeHistogram.merge(annType, 1, Integer::sum);
+            }
             if (annType == null || !isProblemAnnotation(annType)) {
                 continue;
             }
+            problemMatched++;
 
             String text = Objects.toString(ann.getText(), ""); //$NON-NLS-1$
             if (text.isBlank()) {
@@ -1091,6 +1100,8 @@ public class EdtDiagnosticsCollector {
                 break;
             }
         }
+        LOG.info("[get_diagnostics] annotations: file=%s totalSeen=%d problemMatched=%d emitted=%d types=%s", //$NON-NLS-1$
+                filePath, totalSeen, problemMatched, diagnostics.size() - sizeBefore, typeHistogram);
     }
 
     private boolean isProblemAnnotation(String type) {
@@ -1232,7 +1243,8 @@ public class EdtDiagnosticsCollector {
         IDocument document = documentRef[0];
         IAnnotationModel annotationModel = modelRef[0];
         if (document == null || annotationModel == null) {
-            return; // file not open — live XText hints unavailable
+            LOG.info("[get_diagnostics] annotations: SKIPPED (file not open in any editor — live Xtext hints unavailable)"); //$NON-NLS-1$
+            return;
         }
         collectFromAnnotations(annotationModel, document, filePath, query, diagnostics, seen);
     }
