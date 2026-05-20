@@ -1042,22 +1042,43 @@ public class EdtDiagnosticsCollector {
             Set<String> seen) {
 
         Iterator<?> it = model.getAnnotationIterator();
-        int count = 0;
+        int totalSeen = 0;
+        int rejectedByType = 0;
+        int rejectedByBlankText = 0;
+        int rejectedBySeverity = 0;
+        int rejectedBySeen = 0;
+        int accepted = 0;
+        int sampleCap = 8;
+        int sampleLogged = 0;
+        java.util.HashMap<String, Integer> typeCounts = new java.util.HashMap<>();
 
         while (it.hasNext()) {
             Object obj = it.next();
             if (!(obj instanceof Annotation ann)) {
                 continue;
             }
+            totalSeen++;
 
-            // Skip non-problem annotations
             String annType = ann.getType();
+            typeCounts.merge(annType == null ? "<null>" : annType, 1, Integer::sum);
+
             if (annType == null || !isProblemAnnotation(annType)) {
+                rejectedByType++;
+                if (sampleLogged < sampleCap) {
+                    LOG.info("[get_diagnostics]   annotation REJECT by type: type='%s' text='%s'", //$NON-NLS-1$
+                            annType, Objects.toString(ann.getText(), ""));
+                    sampleLogged++;
+                }
                 continue;
             }
 
             String text = Objects.toString(ann.getText(), ""); //$NON-NLS-1$
             if (text.isBlank()) {
+                rejectedByBlankText++;
+                if (sampleLogged < sampleCap) {
+                    LOG.info("[get_diagnostics]   annotation REJECT blank-text: type='%s'", annType); //$NON-NLS-1$
+                    sampleLogged++;
+                }
                 continue;
             }
 
@@ -1070,12 +1091,14 @@ public class EdtDiagnosticsCollector {
             // Determine severity from annotation type
             Severity sev = getSeverityFromAnnotationType(annType);
             if (sev.getLevel() < query.minSeverity().getLevel()) {
+                rejectedBySeverity++;
                 continue;
             }
 
             // Deduplicate
             String key = line + ":" + offset + ":" + text; //$NON-NLS-1$ //$NON-NLS-2$
             if (seen.contains(key)) {
+                rejectedBySeen++;
                 continue;
             }
             seen.add(key);
@@ -1096,14 +1119,16 @@ public class EdtDiagnosticsCollector {
             diagnostics.add(EdtDiagnostic.fromAnnotation(
                     filePath, line, offset, charEnd, text, sev,
                     markerType != null ? markerType : annType, snippet));
+            accepted++;
+            LOG.info("[get_diagnostics]   annotation ACCEPT: line=%d sev=%s type='%s' text='%s'", //$NON-NLS-1$
+                    line, sev, annType, text);
 
-            count++;
-            if (count >= getSoftScanLimit(query.maxItems(), 2)) { // Pre-limit before dedup sort
+            if (accepted >= getSoftScanLimit(query.maxItems(), 2)) { // Pre-limit before dedup sort
                 break;
             }
         }
-
-        LOG.debug("Collected %d annotations from model", count); //$NON-NLS-1$
+        LOG.info("[get_diagnostics] annotation scan: totalSeen=%d accepted=%d rejected(type=%d, blank=%d, severity=%d, seen=%d) — typeCounts=%s", //$NON-NLS-1$
+                totalSeen, accepted, rejectedByType, rejectedByBlankText, rejectedBySeverity, rejectedBySeen, typeCounts);
     }
 
     private boolean isProblemAnnotation(String type) {
