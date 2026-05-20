@@ -1287,19 +1287,79 @@ public class EdtDiagnosticsCollector {
             // editors that haven't been instantiated yet (e.g. tab open but not
             // focused). The document provider only exists after instantiation.
             IEditorPart editor = ref.getEditor(true);
-            if (!(editor instanceof ITextEditor textEditor)) {
+            if (editor == null) {
                 return false;
             }
-            IDocumentProvider dp = textEditor.getDocumentProvider();
-            if (dp == null) {
-                return false;
+            // Primary path: plain BSL text editor.
+            if (editor instanceof ITextEditor textEditor) {
+                return extractDocAndModelFromTextEditor(textEditor, input, documentOut, modelOut);
             }
-            documentOut[0] = dp.getDocument(input);
-            modelOut[0] = dp.getAnnotationModel(input);
-            return documentOut[0] != null && modelOut[0] != null;
+            // Multi-page editor path: EDT form designer is a MultiPageEditorPart
+            // whose BSL module page is a nested ITextEditor. Plain
+            // (editor instanceof ITextEditor) returns false on the outer
+            // MultiPageEditorPart, so we have to dive in. Try the Eclipse
+            // adapter mechanism first (many multi-page editors forward
+            // getAdapter(ITextEditor.class) to their active text-editor page);
+            // if that returns null (user is on the visual page, BSL page not
+            // yet active), reflectively iterate every page and pick the first
+            // ITextEditor whose document provider exposes an annotation model.
+            ITextEditor adapted = editor.getAdapter(ITextEditor.class);
+            if (adapted != null) {
+                if (extractDocAndModelFromTextEditor(adapted, adapted.getEditorInput(), documentOut, modelOut)) {
+                    return true;
+                }
+            }
+            if (editor instanceof org.eclipse.ui.part.MultiPageEditorPart multi) {
+                if (matchTextEditorInsideMultiPage(multi, documentOut, modelOut)) {
+                    return true;
+                }
+            }
+            return false;
         } catch (PartInitException e) {
             return false;
         }
+    }
+
+    private boolean extractDocAndModelFromTextEditor(ITextEditor textEditor, IEditorInput input,
+                                                     IDocument[] documentOut, IAnnotationModel[] modelOut) {
+        IDocumentProvider dp = textEditor.getDocumentProvider();
+        if (dp == null) {
+            return false;
+        }
+        IDocument doc = dp.getDocument(input);
+        IAnnotationModel model = dp.getAnnotationModel(input);
+        if (doc == null || model == null) {
+            return false;
+        }
+        documentOut[0] = doc;
+        modelOut[0] = model;
+        return true;
+    }
+
+    private boolean matchTextEditorInsideMultiPage(
+            org.eclipse.ui.part.MultiPageEditorPart multi,
+            IDocument[] documentOut, IAnnotationModel[] modelOut) {
+        try {
+            java.lang.reflect.Method getCount = org.eclipse.ui.part.MultiPageEditorPart.class
+                    .getDeclaredMethod("getPageCount"); //$NON-NLS-1$
+            getCount.setAccessible(true);
+            java.lang.reflect.Method getEditor = org.eclipse.ui.part.MultiPageEditorPart.class
+                    .getDeclaredMethod("getEditor", int.class); //$NON-NLS-1$
+            getEditor.setAccessible(true);
+            int pages = (int) getCount.invoke(multi);
+            for (int i = 0; i < pages; i++) {
+                Object page = getEditor.invoke(multi, i);
+                if (page instanceof ITextEditor te) {
+                    if (extractDocAndModelFromTextEditor(te, te.getEditorInput(), documentOut, modelOut)) {
+                        return true;
+                    }
+                }
+            }
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            LOG.warn("[get_diagnostics] multi-page editor reflection failed: %s — %s", //$NON-NLS-1$
+                    e.getClass().getSimpleName(), e.getMessage());
+        }
+        return false;
     }
 
     private IFile resolveFile(IEditorInput input) {
