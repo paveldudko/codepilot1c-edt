@@ -61,6 +61,8 @@ import com.e1c.g5.dt.applications.IApplicationManager;
 import com.e1c.g5.v8.dt.check.settings.CheckUid;
 import com.e1c.g5.v8.dt.check.settings.ICheckDescription;
 import com.e1c.g5.v8.dt.check.settings.ICheckRepository;
+import com.codepilot1c.core.diagnostics.BslLiveValidator;
+import com.codepilot1c.core.diagnostics.BslLiveValidator.BslLiveIssue;
 import com.codepilot1c.core.diagnostics.DiagnosticsLineFilter;
 import com.codepilot1c.core.diagnostics.PathMatchTokens;
 import com.codepilot1c.core.diagnostics.RelativePathCandidates;
@@ -283,6 +285,7 @@ public class EdtDiagnosticsCollector {
                     collectRuntimeFileMarkers(context, query, diagnostics, seen);
                 }
                 collectFromOpenEditorAnnotations(context.file(), resultPath, query, diagnostics, seen);
+                collectFromBslLiveValidator(context, resultPath, query, diagnostics, seen);
 
                 diagnostics.sort(Comparator
                         .comparing((EdtDiagnostic d) -> d.severity().getLevel()).reversed()
@@ -1200,6 +1203,59 @@ public class EdtDiagnosticsCollector {
      * <p>Runs the editor lookup on the UI thread via {@link Display#syncExec}.
      * No-op if the file is not currently open in any editor.</p>
      */
+    private final BslLiveValidator bslLiveValidator = new BslLiveValidator();
+
+    /**
+     * Runs the Xtext BSL validator on the file even when no editor is open.
+     * Closes the "false-clean" gap: region-structure / handler-placement
+     * checks live as Xtext {@code Issue} objects, which Eclipse only
+     * persists as workspace markers when an editor's parsing pass writes
+     * them — closed files were therefore invisible to {@code scope=file}.
+     *
+     * <p>Skips non-{@code .bsl} files inside the validator itself, so this
+     * method is safe to call unconditionally.</p>
+     */
+    private void collectFromBslLiveValidator(
+            ResolvedFileContext context, String filePath, DiagnosticsQuery query,
+            List<EdtDiagnostic> diagnostics, Set<String> seen) {
+        if (context.file() == null) {
+            return;
+        }
+        List<BslLiveIssue> issues = bslLiveValidator.validate(context.file(), context.project());
+        int sizeBefore = diagnostics.size();
+        for (BslLiveIssue issue : issues) {
+            Severity sev = bslLiveSeverity(issue.severity());
+            if (sev.getLevel() < query.minSeverity().getLevel()) {
+                continue;
+            }
+            int line = issue.line();
+            int offset = issue.offset();
+            int charEnd = offset >= 0 ? offset + issue.length() : -1;
+            String key = "xtext:" + line + ":" + offset + ":" + issue.message(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            if (!seen.add(key)) {
+                continue;
+            }
+            String typeLabel = issue.code() != null && !issue.code().isBlank()
+                    ? "xtext:" + issue.code() //$NON-NLS-1$
+                    : "xtext"; //$NON-NLS-1$
+            diagnostics.add(EdtDiagnostic.fromAnnotation(
+                    filePath, line, offset, charEnd, issue.message(), sev, typeLabel, null));
+        }
+        LOG.info("[get_diagnostics] xtext-live: file=%s issuesScanned=%d emitted=%d", //$NON-NLS-1$
+                filePath, issues.size(), diagnostics.size() - sizeBefore);
+    }
+
+    private Severity bslLiveSeverity(String severity) {
+        if (severity == null) {
+            return Severity.INFO;
+        }
+        return switch (severity) {
+            case "error" -> Severity.ERROR; //$NON-NLS-1$
+            case "warning" -> Severity.WARNING; //$NON-NLS-1$
+            default -> Severity.INFO;
+        };
+    }
+
     private void collectFromOpenEditorAnnotations(
             IFile file, String filePath, DiagnosticsQuery query,
             List<EdtDiagnostic> diagnostics, Set<String> seen) {
