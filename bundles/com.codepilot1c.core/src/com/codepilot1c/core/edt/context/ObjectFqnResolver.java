@@ -115,13 +115,18 @@ public class ObjectFqnResolver {
      * Returns the standard module file paths (relative to the project
      * {@code src/}) that the object owns under the EDT convention.
      * Empty list for kinds without BSL modules (currently {@link ObjectKind#ENUM}).
+     *
+     * <p>EDT layout has no {@code /Ext/} segment — that is the legacy
+     * configurator-XML-dump format. EDT places module files directly
+     * inside the object folder, e.g. {@code Documents/SalesOrder/ObjectModule.bsl}
+     * (not {@code Documents/SalesOrder/Ext/ObjectModule.bsl}).</p>
      */
     public List<String> standardModulePaths(ParsedFqn parsed) {
         if (parsed == null || parsed.kind().moduleFileNames().isEmpty()) {
             return List.of();
         }
         List<String> out = new ArrayList<>();
-        String base = parsed.kind().folderName() + "/" + parsed.name() + "/Ext/";
+        String base = parsed.kind().folderName() + "/" + parsed.name() + "/";
         for (String moduleFile : parsed.kind().moduleFileNames()) {
             out.add(base + moduleFile);
         }
@@ -132,6 +137,10 @@ public class ObjectFqnResolver {
      * Returns the form module path for {@code formName} on the given
      * object, or {@code null} if {@code parsed.kind()} cannot host forms
      * with BSL modules in the standard convention (Enums).
+     *
+     * <p>EDT layout: {@code Documents/X/Forms/DocumentForm/Module.bsl}
+     * (no {@code /Ext/Form/} segment — that was the legacy configurator
+     * XML dump format).</p>
      */
     public String formModulePath(ParsedFqn parsed, String formName) {
         if (parsed == null || formName == null || formName.isEmpty()) {
@@ -141,7 +150,7 @@ public class ObjectFqnResolver {
             return null;
         }
         return parsed.kind().folderName() + "/" + parsed.name()
-                + "/Forms/" + formName + "/Ext/Form/Module.bsl";
+                + "/Forms/" + formName + "/Module.bsl";
     }
 
     /** Convenience for callers that want to enumerate all known kinds. */

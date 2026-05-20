@@ -24,7 +24,31 @@ public class EdtServiceGateway {
         if (workspace == null || projectName == null || projectName.isBlank()) {
             return null;
         }
-        return workspace.getRoot().getProject(projectName);
+        // 1) Eclipse-project-name lookup (primary path — what bsl_* tools use).
+        IProject byName = workspace.getRoot().getProject(projectName);
+        if (byName.exists()) {
+            return byName;
+        }
+        // 2) Fallback: caller passed the on-disk folder name, which may
+        // differ from the Eclipse project name when EDT imported the
+        // project under an alias. Scan workspace projects for one whose
+        // location's last segment matches. Gives form / metadata tools
+        // parity with the (historically permissive) bsl_* tools so the
+        // same project_name resolves consistently across the whole
+        // tool surface.
+        for (IProject candidate : workspace.getRoot().getProjects()) {
+            if (!candidate.exists()) {
+                continue;
+            }
+            IPath location = candidate.getLocation();
+            if (location != null && projectName.equals(location.lastSegment())) {
+                return candidate;
+            }
+        }
+        // 3) Return the non-existing handle so downstream exists() checks
+        // continue to fail in the same way they always did when the
+        // caller passes a truly bogus name.
+        return byName;
     }
 
     public IFile resolveSourceFile(IProject project, String filePath) {

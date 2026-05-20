@@ -104,10 +104,16 @@ public class BslObjectContextService {
 
         JsonArray errors = new JsonArray();
 
+        // All section keys are emitted unconditionally so the agent can
+        // distinguish "not requested" (empty array) from "no items found"
+        // (also empty, but errors[] may explain why) without guessing on
+        // key presence. Each include flag still gates whether work is
+        // actually performed.
+        JsonArray modules = new JsonArray();
         if (req.methods() != MethodInclusion.NONE) {
-            JsonArray modules = collectModuleSections(req, parsed, errors);
-            out.add("modules", modules);
+            modules = collectModuleSections(req, parsed, errors);
         }
+        out.add("modules", modules);
 
         MetadataDetailsResult details = null;
         if (req.attributes() || req.tabularSections() || req.formLayout() != FormLayoutInclusion.NONE) {
@@ -120,22 +126,21 @@ public class BslObjectContextService {
                 errors.add(errorEntry("metadata_details", classAndMessage(e)));
             }
         }
-        if (details != null && !details.getNodes().isEmpty()) {
-            MetadataNode root = details.getNodes().get(0);
-            if (req.attributes()) {
-                out.add("attributes", extractSubsection(root, "attributes", "standardAttributes"));
-            }
-            if (req.tabularSections()) {
-                out.add("tabular_sections", extractSubsection(root, "tabularSections"));
-            }
-            if (req.formLayout() != FormLayoutInclusion.NONE) {
-                out.add("forms", collectFormSections(req, parsed, root, errors));
-            }
-        }
+        MetadataNode root = details != null && !details.getNodes().isEmpty() ? details.getNodes().get(0) : null;
+        out.add("attributes",
+                req.attributes() && root != null
+                        ? extractSubsection(root, "attributes", "standardAttributes")
+                        : new JsonObject());
+        out.add("tabular_sections",
+                req.tabularSections() && root != null
+                        ? extractSubsection(root, "tabularSections")
+                        : new JsonObject());
+        out.add("forms",
+                req.formLayout() != FormLayoutInclusion.NONE && root != null
+                        ? collectFormSections(req, parsed, root, errors)
+                        : new JsonArray());
 
-        if (req.callers()) {
-            out.add("callers", collectCallers(req, errors));
-        }
+        out.add("callers", req.callers() ? collectCallers(req, errors) : new JsonObject());
 
         if (errors.size() > 0) {
             out.add("errors", errors);

@@ -114,9 +114,9 @@ public class ObjectFqnResolverTest {
         ParsedFqn p = resolver.parse("Document.SalesOrder").get();
         List<String> modules = resolver.standardModulePaths(p);
         assertTrue("must include ObjectModule.bsl", //$NON-NLS-1$
-                modules.contains("Documents/SalesOrder/Ext/ObjectModule.bsl"));
+                modules.contains("Documents/SalesOrder/ObjectModule.bsl"));
         assertTrue("must include ManagerModule.bsl", //$NON-NLS-1$
-                modules.contains("Documents/SalesOrder/Ext/ManagerModule.bsl"));
+                modules.contains("Documents/SalesOrder/ManagerModule.bsl"));
     }
 
     @Test
@@ -124,15 +124,15 @@ public class ObjectFqnResolverTest {
         ParsedFqn p = resolver.parse("CommonModule.GeneralPurpose").get();
         List<String> modules = resolver.standardModulePaths(p);
         assertEquals(1, modules.size());
-        assertEquals("CommonModules/GeneralPurpose/Ext/Module.bsl", modules.get(0));
+        assertEquals("CommonModules/GeneralPurpose/Module.bsl", modules.get(0));
     }
 
     @Test
     public void catalogHasObjectAndManagerModule() {
         ParsedFqn p = resolver.parse("Catalog.Nomenclature").get();
         List<String> modules = resolver.standardModulePaths(p);
-        assertTrue(modules.contains("Catalogs/Nomenclature/Ext/ObjectModule.bsl"));
-        assertTrue(modules.contains("Catalogs/Nomenclature/Ext/ManagerModule.bsl"));
+        assertTrue(modules.contains("Catalogs/Nomenclature/ObjectModule.bsl"));
+        assertTrue(modules.contains("Catalogs/Nomenclature/ManagerModule.bsl"));
     }
 
     @Test
@@ -140,9 +140,9 @@ public class ObjectFqnResolverTest {
         ParsedFqn p = resolver.parse("InformationRegister.Prices").get();
         List<String> modules = resolver.standardModulePaths(p);
         assertTrue("must include RecordSetModule.bsl", //$NON-NLS-1$
-                modules.contains("InformationRegisters/Prices/Ext/RecordSetModule.bsl"));
+                modules.contains("InformationRegisters/Prices/RecordSetModule.bsl"));
         assertTrue("must include ManagerModule.bsl", //$NON-NLS-1$
-                modules.contains("InformationRegisters/Prices/Ext/ManagerModule.bsl"));
+                modules.contains("InformationRegisters/Prices/ManagerModule.bsl"));
     }
 
     @Test
@@ -150,16 +150,16 @@ public class ObjectFqnResolverTest {
         ParsedFqn p = resolver.parse("Constant.OrgName").get();
         List<String> modules = resolver.standardModulePaths(p);
         assertTrue("must include ValueManagerModule.bsl", //$NON-NLS-1$
-                modules.contains("Constants/OrgName/Ext/ValueManagerModule.bsl"));
+                modules.contains("Constants/OrgName/ValueManagerModule.bsl"));
         assertTrue("must include ManagerModule.bsl", //$NON-NLS-1$
-                modules.contains("Constants/OrgName/Ext/ManagerModule.bsl"));
+                modules.contains("Constants/OrgName/ManagerModule.bsl"));
     }
 
     @Test
     public void cyrillicNameSurvivesPathBuild() {
         ParsedFqn p = resolver.parse("Document.ВыпискаДенежныхСредств").get();
         List<String> modules = resolver.standardModulePaths(p);
-        assertTrue(modules.contains("Documents/ВыпискаДенежныхСредств/Ext/ObjectModule.bsl"));
+        assertTrue(modules.contains("Documents/ВыпискаДенежныхСредств/ObjectModule.bsl"));
     }
 
     @Test
@@ -168,7 +168,7 @@ public class ObjectFqnResolverTest {
         // Reports do: ObjectModule + ManagerModule.
         assertTrue("Report must have ObjectModule", //$NON-NLS-1$
                 resolver.standardModulePaths(resolver.parse("Report.X").get())
-                        .contains("Reports/X/Ext/ObjectModule.bsl"));
+                        .contains("Reports/X/ObjectModule.bsl"));
         assertTrue("Enum should yield empty module list", //$NON-NLS-1$
                 resolver.standardModulePaths(resolver.parse("Enum.Status").get()).isEmpty());
     }
@@ -178,7 +178,7 @@ public class ObjectFqnResolverTest {
         ParsedFqn p = resolver.parse("Document.SalesOrder").get();
         String formModule = resolver.formModulePath(p, "DocumentForm");
         assertNotNull(formModule);
-        assertEquals("Documents/SalesOrder/Forms/DocumentForm/Ext/Form/Module.bsl", formModule);
+        assertEquals("Documents/SalesOrder/Forms/DocumentForm/Module.bsl", formModule);
     }
 
     @Test
