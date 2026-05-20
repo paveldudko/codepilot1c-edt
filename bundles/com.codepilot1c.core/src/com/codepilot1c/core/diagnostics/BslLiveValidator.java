@@ -14,6 +14,7 @@ import org.eclipse.core.runtime.Platform;
 import org.eclipse.emf.common.util.URI;
 import org.eclipse.emf.ecore.resource.Resource;
 import org.eclipse.emf.ecore.resource.ResourceSet;
+import org.eclipse.emf.ecore.util.EcoreUtil;
 import org.eclipse.xtext.resource.IResourceServiceProvider;
 import org.eclipse.xtext.resource.XtextResourceSet;
 import org.eclipse.xtext.util.CancelIndicator;
@@ -101,9 +102,31 @@ public class BslLiveValidator {
             return Collections.emptyList();
         }
 
+        // Resolve all cross-references before validation — many BSL checks
+        // skip silently when proxies aren't resolved (no type info, no
+        // scope graph), the same way the editor's ValidationJob resolves
+        // before invoking IResourceValidator. Errors that surface from
+        // proxy resolution are reflected in resource.getErrors() and we
+        // log them alongside the issue count below to disambiguate
+        // "parser failed" from "validator ran and found nothing".
         try {
-            List<Issue> issues = validator.validate(resource, CheckMode.ALL, CancelIndicator.NullImpl);
-            LOG.info("BslLiveValidator: validate(%s) returned %d issues", //$NON-NLS-1$
+            EcoreUtil.resolveAll(resource);
+        } catch (RuntimeException e) {
+            LOG.info("BslLiveValidator: resolveAll(%s) failed: %s — %s", //$NON-NLS-1$
+                    uri.lastSegment(), e.getClass().getSimpleName(), e.getMessage());
+        }
+        int parseErrors = resource.getErrors().size();
+        int parseWarnings = resource.getWarnings().size();
+        LOG.info("BslLiveValidator: resource state after resolveAll — errors=%d warnings=%d", //$NON-NLS-1$
+                parseErrors, parseWarnings);
+
+        try {
+            // CheckMode.NORMAL_AND_FAST is what the editor's ValidationJob
+            // runs by default. CheckMode.ALL additionally enables EXPENSIVE
+            // checks (whole-project cross-ref walks) which often skip when
+            // the index isn't populated and can mask the cheaper checks.
+            List<Issue> issues = validator.validate(resource, CheckMode.NORMAL_AND_FAST, CancelIndicator.NullImpl);
+            LOG.info("BslLiveValidator: validate(%s, NORMAL_AND_FAST) returned %d issues", //$NON-NLS-1$
                     uri.lastSegment(), issues == null ? 0 : issues.size());
             if (issues == null || issues.isEmpty()) {
                 return Collections.emptyList();
