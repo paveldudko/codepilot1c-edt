@@ -7,6 +7,7 @@ import org.eclipse.core.runtime.IPath;
 
 import com._1c.g5.v8.bm.integration.IBmPlatformGlobalEditingContext;
 import com._1c.g5.v8.dt.bm.xtext.BmAwareResourceSetProvider;
+import com.codepilot1c.core.logging.VibeLogger;
 import com._1c.g5.v8.dt.core.naming.ITopObjectFqnGenerator;
 import com._1c.g5.v8.dt.core.platform.IBmModelManager;
 import com._1c.g5.v8.dt.core.platform.IConfigurationProvider;
@@ -26,14 +27,20 @@ import com.codepilot1c.core.internal.VibeCorePlugin;
  */
 public class EdtMetadataGateway {
 
+    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtMetadataGateway.class);
+
     public IProject resolveProject(String projectName) {
         IWorkspace workspace = ResourcesPlugin.getWorkspace();
         if (workspace == null || projectName == null || projectName.isBlank()) {
+            LOG.info("[gateway.resolveProject metadata] name='%s' REJECTED (workspace=%s blankName=%s)", //$NON-NLS-1$
+                    projectName, workspace != null,
+                    projectName == null || projectName.isBlank());
             return null;
         }
         // 1) Eclipse-project-name lookup (primary path).
         IProject byName = workspace.getRoot().getProject(projectName);
         if (byName.exists()) {
+            LOG.info("[gateway.resolveProject metadata] name='%s' MATCH byName (Eclipse project exists)", projectName); //$NON-NLS-1$
             return byName;
         }
         // 2) Fallback: caller passed the on-disk folder name, which may
@@ -41,17 +48,24 @@ public class EdtMetadataGateway {
         // project under an alias. Mirrors the same fallback in
         // EdtServiceGateway so form / metadata / semantic tools all
         // accept the same names consistently.
+        StringBuilder dump = new StringBuilder();
         for (IProject candidate : workspace.getRoot().getProjects()) {
             if (!candidate.exists()) {
                 continue;
             }
             IPath location = candidate.getLocation();
-            if (location != null && projectName.equals(location.lastSegment())) {
+            String lastSeg = location != null ? location.lastSegment() : "<no-location>"; //$NON-NLS-1$
+            dump.append(candidate.getName()).append('@').append(lastSeg).append(", "); //$NON-NLS-1$
+            if (location != null && projectName.equals(lastSeg)) {
+                LOG.info("[gateway.resolveProject metadata] name='%s' MATCH fallback → project='%s' (lastSegment match)", //$NON-NLS-1$
+                        projectName, candidate.getName());
                 return candidate;
             }
         }
         // 3) Return the non-existing handle so downstream exists() checks
         // continue to fail the same way for truly bogus names.
+        LOG.info("[gateway.resolveProject metadata] name='%s' NO_MATCH (byName.exists=false, fallback exhausted) projects=[%s]", //$NON-NLS-1$
+                projectName, dump.toString());
         return byName;
     }
 

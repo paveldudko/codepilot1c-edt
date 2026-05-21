@@ -146,9 +146,6 @@ public class GetDiagnosticsTool implements ITool {
                 collectWorkspaceDiagnostics = true;
             }
         }
-        LOG.debug("get_diagnostics: scope=%s, project=%s, path=%s, severity=%s, max=%d, wait=%d, runtime=%s", //$NON-NLS-1$
-                normalizedScope, projectName, path, minSeverity, maxItems, waitMs, includeRuntimeMarkers);
-
         CompletableFuture<DiagnosticsResult> resultFuture;
 
         resultFuture = switch (normalizedScope) {
@@ -161,8 +158,6 @@ public class GetDiagnosticsTool implements ITool {
 
         return resultFuture.thenApply(result -> {
             String formatted = result.formatForLlm();
-            LOG.debug("get_diagnostics result: %d errors, %d warnings", //$NON-NLS-1$
-                    result.errorCount(), result.warningCount());
             return ToolResult.success(formatted);
         }).exceptionally(e -> {
             LOG.error("get_diagnostics failed: %s", e.getMessage()); //$NON-NLS-1$

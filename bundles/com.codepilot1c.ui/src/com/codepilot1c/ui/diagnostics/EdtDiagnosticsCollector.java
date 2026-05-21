@@ -84,6 +84,15 @@ public class EdtDiagnosticsCollector {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtDiagnosticsCollector.class);
 
+    /** Toggle for the noisy {@code [get_diagnostics]} progress logs. Off by default. */
+    private static final boolean DIAG_VERBOSE = false;
+
+    private static void diagInfo(String format, Object... args) {
+        if (DIAG_VERBOSE) {
+            LOG.info(format, args);
+        }
+    }
+
     private static final int MAX_SNIPPET_LENGTH = 120;
 
     private static EdtDiagnosticsCollector instance;
@@ -262,7 +271,7 @@ public class EdtDiagnosticsCollector {
     public CompletableFuture<DiagnosticsResult> collectFromFile(String filePath, DiagnosticsQuery query) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                LOG.info("[get_diagnostics] scope=file path='%s' severity=%s maxItems=%d includeRuntime=%s", //$NON-NLS-1$
+                diagInfo("[get_diagnostics] scope=file path='%s' severity=%s maxItems=%d includeRuntime=%s", //$NON-NLS-1$
                         filePath, query.minSeverity(), query.maxItems(), query.includeRuntimeMarkers());
                 if (query.waitMs() > 0) {
                     try {
@@ -299,7 +308,7 @@ public class EdtDiagnosticsCollector {
                 int warnings = (int) diagnostics.stream().filter(d -> d.severity() == Severity.WARNING).count();
                 int infos = diagnostics.size() - errors - warnings;
 
-                LOG.info("[get_diagnostics] result: %d items (errors=%d warnings=%d infos=%d) path='%s'", //$NON-NLS-1$
+                diagInfo("[get_diagnostics] result: %d items (errors=%d warnings=%d infos=%d) path='%s'", //$NON-NLS-1$
                         diagnostics.size(), errors, warnings, infos, resultPath);
                 return new DiagnosticsResult(resultPath, false, diagnostics, errors, warnings, infos);
 
@@ -499,7 +508,7 @@ public class EdtDiagnosticsCollector {
 
         IMarkerManager markerManager = getMarkerManager();
         if (markerManager == null || context.project() == null) {
-            LOG.info("[get_diagnostics] runtime-markers: SKIPPED (markerManager=%s project=%s)", //$NON-NLS-1$
+            diagInfo("[get_diagnostics] runtime-markers: SKIPPED (markerManager=%s project=%s)", //$NON-NLS-1$
                     markerManager != null, context.project() != null);
             return;
         }
@@ -569,14 +578,14 @@ public class EdtDiagnosticsCollector {
                                 safeString(marker.getObjectPresentation()),
                                 locationText));
                     });
-            LOG.info("[get_diagnostics] runtime-markers: raw=%d matched=%d sevDrop=%d blankDrop=%d emitted=%d tokens=%s threshold=%d hints=%d", //$NON-NLS-1$
+            diagInfo("[get_diagnostics] runtime-markers: raw=%d matched=%d sevDrop=%d blankDrop=%d emitted=%d tokens=%s threshold=%d hints=%d", //$NON-NLS-1$
                     counters[0], counters[1], counters[2], counters[3],
                     diagnostics.size() - sizeBefore,
                     context.matchTokens(),
                     context.tokenThreshold(),
                     context.pathHints() != null ? context.pathHints().size() : 0);
             if (sampleSink.length() > 0) {
-                LOG.info("[get_diagnostics] runtime-markers sample (first %d raw):\n%s", //$NON-NLS-1$
+                diagInfo("[get_diagnostics] runtime-markers sample (first %d raw):\n%s", //$NON-NLS-1$
                         Math.min(counters[0], 3), sampleSink.toString());
             }
         } catch (Exception e) {
@@ -876,7 +885,7 @@ public class EdtDiagnosticsCollector {
                 try { t = probe.getType(); } catch (CoreException ex) { t = "?"; } //$NON-NLS-1$
                 typeHistogram.merge(t, 1, Integer::sum);
             }
-            LOG.info("[get_diagnostics] file-markers: file=%s rawCount=%d types=%s", //$NON-NLS-1$
+            diagInfo("[get_diagnostics] file-markers: file=%s rawCount=%d types=%s", //$NON-NLS-1$
                     file.getFullPath(), markers.length, typeHistogram);
 
             for (IMarker marker : markers) {
@@ -913,7 +922,7 @@ public class EdtDiagnosticsCollector {
                 diagnostics.add(EdtDiagnostic.fromMarker(
                         filePath, line, charStart, charEnd, message, severity, markerType, snippet));
             }
-            LOG.info("[get_diagnostics] file-markers emitted=%d (of %d raw)", //$NON-NLS-1$
+            diagInfo("[get_diagnostics] file-markers emitted=%d (of %d raw)", //$NON-NLS-1$
                     diagnostics.size() - sizeBefore, typeHistogram.values().stream().mapToInt(Integer::intValue).sum());
         } catch (CoreException e) {
             LOG.error("Error finding markers: %s", e.getMessage()); //$NON-NLS-1$
@@ -1103,7 +1112,7 @@ public class EdtDiagnosticsCollector {
                 break;
             }
         }
-        LOG.info("[get_diagnostics] annotations: file=%s totalSeen=%d problemMatched=%d emitted=%d types=%s", //$NON-NLS-1$
+        diagInfo("[get_diagnostics] annotations: file=%s totalSeen=%d problemMatched=%d emitted=%d types=%s", //$NON-NLS-1$
                 filePath, totalSeen, problemMatched, diagnostics.size() - sizeBefore, typeHistogram);
     }
 
@@ -1241,7 +1250,7 @@ public class EdtDiagnosticsCollector {
             diagnostics.add(EdtDiagnostic.fromAnnotation(
                     filePath, line, offset, charEnd, issue.message(), sev, typeLabel, null));
         }
-        LOG.info("[get_diagnostics] xtext-live: file=%s issuesScanned=%d emitted=%d", //$NON-NLS-1$
+        diagInfo("[get_diagnostics] xtext-live: file=%s issuesScanned=%d emitted=%d", //$NON-NLS-1$
                 filePath, issues.size(), diagnostics.size() - sizeBefore);
     }
 
@@ -1340,7 +1349,7 @@ public class EdtDiagnosticsCollector {
                     document = documentRef[0];
                     annotationModel = modelRef[0];
                     if (document != null && annotationModel != null) {
-                        LOG.info("[get_diagnostics] annotations: headless-open succeeded for %s", file.getFullPath()); //$NON-NLS-1$
+                        diagInfo("[get_diagnostics] annotations: headless-open succeeded for %s", file.getFullPath()); //$NON-NLS-1$
                         collectFromAnnotations(annotationModel, document, filePath, query, diagnostics, seen);
                         return;
                     }
@@ -1350,13 +1359,15 @@ public class EdtDiagnosticsCollector {
             }
         }
 
-        LOG.info("[get_diagnostics] annotations: SKIPPED (file not open in any editor — live Xtext hints unavailable). target=%s refsScanned=%d\n%s", //$NON-NLS-1$
+        diagInfo("[get_diagnostics] annotations: SKIPPED (file not open in any editor — live Xtext hints unavailable). target=%s refsScanned=%d\n%s", //$NON-NLS-1$
                 file.getFullPath(), refCounter[0],
                 refDump.length() == 0 ? "  (no editor references in workbench)\n" : refDump.toString());
     }
 
-    /** How long to wait for Xtext ValidationJob to populate annotations after open. */
-    private static final long HEADLESS_OPEN_VALIDATION_WAIT_MS = 800L;
+    /** Upper bound on how long to wait for Xtext ValidationJob to populate annotations after headless open. */
+    private static final long HEADLESS_OPEN_VALIDATION_MAX_WAIT_MS = 5000L;
+    /** Poll interval while waiting for validation annotations to appear. */
+    private static final long HEADLESS_OPEN_VALIDATION_POLL_INTERVAL_MS = 200L;
 
     /**
      * Opens {@code file} in a non-activated editor so its Xtext annotation
@@ -1416,19 +1427,20 @@ public class EdtDiagnosticsCollector {
             return false;
         }
         if (editorRef[0] == null) {
-            LOG.info("[get_diagnostics] annotations: headless-open could not resolve a workbench page for %s", file.getFullPath()); //$NON-NLS-1$
+            diagInfo("[get_diagnostics] annotations: headless-open could not resolve a workbench page for %s", file.getFullPath()); //$NON-NLS-1$
             return false;
         }
 
-        // Off UI thread — let Xtext ValidationJob run and populate annotations.
-        try {
-            Thread.sleep(HEADLESS_OPEN_VALIDATION_WAIT_MS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        // Off UI thread — poll the annotation model until Xtext ValidationJob
+        // emits at least one problem-type annotation, or the budget runs out.
+        // A fixed Thread.sleep proved unreliable: for cold opens the BSL
+        // pipeline (parse + cross-ref resolution + validation) routinely
+        // takes longer than the prior 800ms ceiling, leaving the model with
+        // only synchronous quickdiff annotations at read time.
+        final IEditorPart editor = editorRef[0];
+        pollForValidationAnnotations(editor, file);
 
         // Back on UI thread to read the document + annotation model.
-        final IEditorPart editor = editorRef[0];
         try {
             Display.getDefault().syncExec(() -> {
                 try {
@@ -1444,6 +1456,71 @@ public class EdtDiagnosticsCollector {
             return false;
         }
         return documentRef[0] != null && modelRef[0] != null;
+    }
+
+    /**
+     * Polls the editor's annotation model off the UI thread until a problem-type
+     * annotation appears (Xtext ValidationJob finished and emitted issues) or
+     * the {@link #HEADLESS_OPEN_VALIDATION_MAX_WAIT_MS} budget is exhausted.
+     * Logs the final state so we can tell timeouts apart from clean files.
+     */
+    private void pollForValidationAnnotations(IEditorPart editor, IFile file) {
+        final long deadline = System.currentTimeMillis() + HEADLESS_OPEN_VALIDATION_MAX_WAIT_MS;
+        final long startMs = System.currentTimeMillis();
+        int polls = 0;
+        while (true) {
+            try {
+                Thread.sleep(HEADLESS_OPEN_VALIDATION_POLL_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                diagInfo("[get_diagnostics] annotations: poll interrupted after %dms (polls=%d)", //$NON-NLS-1$
+                        System.currentTimeMillis() - startMs, polls);
+                return;
+            }
+            polls++;
+            final boolean[] hasProblem = {false};
+            final int[] totalSeen = {0};
+            final Map<String, Integer> typeHistogram = new HashMap<>();
+            try {
+                Display.getDefault().syncExec(() -> {
+                    IDocument[] d = new IDocument[1];
+                    IAnnotationModel[] m = new IAnnotationModel[1];
+                    extractDocAndModelFromEditorPart(editor, d, m);
+                    if (m[0] == null) {
+                        return;
+                    }
+                    Iterator<?> it = m[0].getAnnotationIterator();
+                    while (it.hasNext()) {
+                        Object o = it.next();
+                        if (!(o instanceof Annotation a)) {
+                            continue;
+                        }
+                        totalSeen[0]++;
+                        String t = a.getType();
+                        if (t == null) {
+                            continue;
+                        }
+                        typeHistogram.merge(t, 1, Integer::sum);
+                        if (isProblemAnnotation(t)) {
+                            hasProblem[0] = true;
+                        }
+                    }
+                });
+            } catch (RuntimeException e) {
+                LOG.warn("[get_diagnostics] annotations: poll syncExec failed: %s — %s", //$NON-NLS-1$
+                        e.getClass().getSimpleName(), e.getMessage());
+            }
+            if (hasProblem[0]) {
+                diagInfo("[get_diagnostics] annotations: validation populated after %dms (polls=%d, totalAnn=%d, types=%s) %s", //$NON-NLS-1$
+                        System.currentTimeMillis() - startMs, polls, totalSeen[0], typeHistogram, file.getFullPath());
+                return;
+            }
+            if (System.currentTimeMillis() >= deadline) {
+                diagInfo("[get_diagnostics] annotations: validation wait exhausted budget=%dms (polls=%d, totalAnn=%d, types=%s) %s", //$NON-NLS-1$
+                        HEADLESS_OPEN_VALIDATION_MAX_WAIT_MS, polls, totalSeen[0], typeHistogram, file.getFullPath());
+                return;
+            }
+        }
     }
 
     /**

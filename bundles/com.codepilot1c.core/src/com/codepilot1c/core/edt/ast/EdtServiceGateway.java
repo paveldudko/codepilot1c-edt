@@ -13,20 +13,27 @@ import com._1c.g5.v8.dt.core.platform.IConfigurationProvider;
 import com._1c.g5.v8.dt.core.platform.IDerivedDataManagerProvider;
 import com._1c.g5.v8.dt.core.platform.IDtProjectManager;
 import com.codepilot1c.core.internal.VibeCorePlugin;
+import com.codepilot1c.core.logging.VibeLogger;
 
 /**
  * EDT service gateway (strict EDT-only mode).
  */
 public class EdtServiceGateway {
 
+    private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtServiceGateway.class);
+
     public IProject resolveProject(String projectName) {
         IWorkspace workspace = ResourcesPlugin.getWorkspace();
         if (workspace == null || projectName == null || projectName.isBlank()) {
+            LOG.info("[gateway.resolveProject service] name='%s' REJECTED (workspace=%s blankName=%s)", //$NON-NLS-1$
+                    projectName, workspace != null,
+                    projectName == null || projectName.isBlank());
             return null;
         }
         // 1) Eclipse-project-name lookup (primary path — what bsl_* tools use).
         IProject byName = workspace.getRoot().getProject(projectName);
         if (byName.exists()) {
+            LOG.info("[gateway.resolveProject service] name='%s' MATCH byName (Eclipse project exists)", projectName); //$NON-NLS-1$
             return byName;
         }
         // 2) Fallback: caller passed the on-disk folder name, which may
@@ -36,18 +43,25 @@ public class EdtServiceGateway {
         // parity with the (historically permissive) bsl_* tools so the
         // same project_name resolves consistently across the whole
         // tool surface.
+        StringBuilder dump = new StringBuilder();
         for (IProject candidate : workspace.getRoot().getProjects()) {
             if (!candidate.exists()) {
                 continue;
             }
             IPath location = candidate.getLocation();
-            if (location != null && projectName.equals(location.lastSegment())) {
+            String lastSeg = location != null ? location.lastSegment() : "<no-location>"; //$NON-NLS-1$
+            dump.append(candidate.getName()).append('@').append(lastSeg).append(", "); //$NON-NLS-1$
+            if (location != null && projectName.equals(lastSeg)) {
+                LOG.info("[gateway.resolveProject service] name='%s' MATCH fallback → project='%s' (lastSegment match)", //$NON-NLS-1$
+                        projectName, candidate.getName());
                 return candidate;
             }
         }
         // 3) Return the non-existing handle so downstream exists() checks
         // continue to fail in the same way they always did when the
         // caller passes a truly bogus name.
+        LOG.info("[gateway.resolveProject service] name='%s' NO_MATCH (byName.exists=false, fallback exhausted) projects=[%s]", //$NON-NLS-1$
+                projectName, dump.toString());
         return byName;
     }
 
