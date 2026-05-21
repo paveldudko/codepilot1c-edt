@@ -48,6 +48,7 @@ import org.eclipse.ui.IWorkbenchPage;
 import org.eclipse.ui.IWorkbenchWindow;
 import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.PlatformUI;
+import org.eclipse.ui.ide.IDE;
 import org.eclipse.ui.part.FileEditorInput;
 import org.eclipse.ui.texteditor.IDocumentProvider;
 import org.eclipse.ui.texteditor.ITextEditor;
@@ -285,7 +286,6 @@ public class EdtDiagnosticsCollector {
                     collectRuntimeFileMarkers(context, query, diagnostics, seen);
                 }
                 collectFromOpenEditorAnnotations(context.file(), resultPath, query, diagnostics, seen);
-                collectFromBslLiveValidator(context, resultPath, query, diagnostics, seen);
 
                 diagnostics.sort(Comparator
                         .comparing((EdtDiagnostic d) -> d.severity().getLevel()).reversed()
@@ -1322,13 +1322,179 @@ public class EdtDiagnosticsCollector {
         }
         IDocument document = documentRef[0];
         IAnnotationModel annotationModel = modelRef[0];
-        if (document == null || annotationModel == null) {
-            LOG.info("[get_diagnostics] annotations: SKIPPED (file not open in any editor — live Xtext hints unavailable). target=%s refsScanned=%d\n%s", //$NON-NLS-1$
-                    file.getFullPath(), refCounter[0],
-                    refDump.length() == 0 ? "  (no editor references in workbench)\n" : refDump.toString());
+        if (document != null && annotationModel != null) {
+            collectFromAnnotations(annotationModel, document, filePath, query, diagnostics, seen);
             return;
         }
-        collectFromAnnotations(annotationModel, document, filePath, query, diagnostics, seen);
+
+        // Headless-open fallback for .bsl files: nothing in the workbench
+        // is currently showing this file, so the live Xtext ValidationJob
+        // hasn't run. Open the file in a non-activated editor, wait briefly
+        // for the parse + validate pipeline to populate the annotation
+        // model, harvest the issues, then close the editor (only if we
+        // were the one that opened it — pre-existing editors stay).
+        if (file.getName().toLowerCase(java.util.Locale.ROOT).endsWith(".bsl")) { //$NON-NLS-1$
+            IEditorPart[] openedByUs = {null};
+            try {
+                if (tryHeadlessOpenForAnnotations(file, documentRef, modelRef, openedByUs)) {
+                    document = documentRef[0];
+                    annotationModel = modelRef[0];
+                    if (document != null && annotationModel != null) {
+                        LOG.info("[get_diagnostics] annotations: headless-open succeeded for %s", file.getFullPath()); //$NON-NLS-1$
+                        collectFromAnnotations(annotationModel, document, filePath, query, diagnostics, seen);
+                        return;
+                    }
+                }
+            } finally {
+                closeHeadlessIfNeeded(openedByUs[0]);
+            }
+        }
+
+        LOG.info("[get_diagnostics] annotations: SKIPPED (file not open in any editor — live Xtext hints unavailable). target=%s refsScanned=%d\n%s", //$NON-NLS-1$
+                file.getFullPath(), refCounter[0],
+                refDump.length() == 0 ? "  (no editor references in workbench)\n" : refDump.toString());
+    }
+
+    /** How long to wait for Xtext ValidationJob to populate annotations after open. */
+    private static final long HEADLESS_OPEN_VALIDATION_WAIT_MS = 800L;
+
+    /**
+     * Opens {@code file} in a non-activated editor so its Xtext annotation
+     * model populates with live validation issues, then extracts the
+     * document + annotation model. Records the editor in
+     * {@code openedByUsRef} only when this call was the one that opened
+     * it — pre-existing editors don't get closed by {@link #closeHeadlessIfNeeded}.
+     */
+    private boolean tryHeadlessOpenForAnnotations(
+            IFile file, IDocument[] documentRef, IAnnotationModel[] modelRef, IEditorPart[] openedByUsRef) {
+        final IEditorPart[] editorRef = {null};
+        try {
+            Display.getDefault().syncExec(() -> {
+                try {
+                    IWorkbench workbench = PlatformUI.getWorkbench();
+                    if (workbench == null) {
+                        return;
+                    }
+                    IWorkbenchWindow window = workbench.getActiveWorkbenchWindow();
+                    if (window == null) {
+                        IWorkbenchWindow[] windows = workbench.getWorkbenchWindows();
+                        if (windows != null && windows.length > 0) {
+                            window = windows[0];
+                        }
+                    }
+                    if (window == null) {
+                        return;
+                    }
+                    IWorkbenchPage page = window.getActivePage();
+                    if (page == null) {
+                        return;
+                    }
+                    FileEditorInput input = new FileEditorInput(file);
+                    IEditorPart existing = page.findEditor(input);
+                    if (existing != null) {
+                        editorRef[0] = existing; // pre-existing — do NOT mark as opened-by-us
+                        return;
+                    }
+                    // activate=false → no focus steal, the editor opens in
+                    // background and Xtext starts parsing immediately.
+                    IEditorPart opened = IDE.openEditor(page, file, false);
+                    if (opened != null) {
+                        editorRef[0] = opened;
+                        openedByUsRef[0] = opened;
+                    }
+                } catch (PartInitException e) {
+                    LOG.warn("[get_diagnostics] headless openEditor failed for %s: %s", //$NON-NLS-1$
+                            file.getFullPath(), e.getMessage());
+                } catch (RuntimeException e) {
+                    LOG.warn("[get_diagnostics] headless openEditor crashed for %s: %s — %s", //$NON-NLS-1$
+                            file.getFullPath(), e.getClass().getSimpleName(), e.getMessage());
+                }
+            });
+        } catch (RuntimeException e) {
+            LOG.warn("[get_diagnostics] syncExec for headless open failed: %s — %s", //$NON-NLS-1$
+                    e.getClass().getSimpleName(), e.getMessage());
+            return false;
+        }
+        if (editorRef[0] == null) {
+            LOG.info("[get_diagnostics] annotations: headless-open could not resolve a workbench page for %s", file.getFullPath()); //$NON-NLS-1$
+            return false;
+        }
+
+        // Off UI thread — let Xtext ValidationJob run and populate annotations.
+        try {
+            Thread.sleep(HEADLESS_OPEN_VALIDATION_WAIT_MS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        // Back on UI thread to read the document + annotation model.
+        final IEditorPart editor = editorRef[0];
+        try {
+            Display.getDefault().syncExec(() -> {
+                try {
+                    extractDocAndModelFromEditorPart(editor, documentRef, modelRef);
+                } catch (RuntimeException e) {
+                    LOG.warn("[get_diagnostics] headless extract failed: %s — %s", //$NON-NLS-1$
+                            e.getClass().getSimpleName(), e.getMessage());
+                }
+            });
+        } catch (RuntimeException e) {
+            LOG.warn("[get_diagnostics] syncExec for headless extract failed: %s — %s", //$NON-NLS-1$
+                    e.getClass().getSimpleName(), e.getMessage());
+            return false;
+        }
+        return documentRef[0] != null && modelRef[0] != null;
+    }
+
+    /**
+     * Unified document + annotation-model extraction reused by both the
+     * existing-editor scan and the headless-open path. Mirrors the
+     * MultiPageEditorPart handling in {@link #matchEditorForFile}.
+     */
+    private void extractDocAndModelFromEditorPart(
+            IEditorPart editor, IDocument[] documentOut, IAnnotationModel[] modelOut) {
+        if (editor == null) {
+            return;
+        }
+        if (editor instanceof ITextEditor textEditor) {
+            extractDocAndModelFromTextEditor(textEditor, editor.getEditorInput(), documentOut, modelOut);
+            return;
+        }
+        ITextEditor adapted = editor.getAdapter(ITextEditor.class);
+        if (adapted != null) {
+            if (extractDocAndModelFromTextEditor(adapted, adapted.getEditorInput(), documentOut, modelOut)) {
+                return;
+            }
+        }
+        if (editor instanceof org.eclipse.ui.part.MultiPageEditorPart multi) {
+            matchTextEditorInsideMultiPage(multi, documentOut, modelOut);
+        }
+    }
+
+    private void closeHeadlessIfNeeded(IEditorPart openedByUs) {
+        if (openedByUs == null) {
+            return;
+        }
+        try {
+            Display.getDefault().syncExec(() -> {
+                try {
+                    if (openedByUs.getSite() == null) {
+                        return;
+                    }
+                    IWorkbenchPage page = openedByUs.getSite().getPage();
+                    if (page == null) {
+                        return;
+                    }
+                    page.closeEditor(openedByUs, false); // discard unsaved
+                } catch (RuntimeException e) {
+                    LOG.warn("[get_diagnostics] headless close failed: %s — %s", //$NON-NLS-1$
+                            e.getClass().getSimpleName(), e.getMessage());
+                }
+            });
+        } catch (RuntimeException e) {
+            LOG.warn("[get_diagnostics] syncExec for headless close failed: %s — %s", //$NON-NLS-1$
+                    e.getClass().getSimpleName(), e.getMessage());
+        }
     }
 
     private boolean matchEditorForFile(IEditorReference ref, IFile target,
