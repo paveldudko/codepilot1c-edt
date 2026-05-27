@@ -122,4 +122,12 @@ public final class VibePreferenceConstants {
     /** Model ID used for background memory extraction (Channel A). Default: kimi-k2.5. */
     public static final String PREF_MEMORY_EXTRACTION_MODEL = "codepilot.memory.extraction_model"; //$NON-NLS-1$
     public static final String PREF_MEMORY_EXTRACTION_MODEL_DEFAULT = "kimi-k2.5"; //$NON-NLS-1$
+
+    // Diagnostics
+    /**
+     * Verbose progress logging for {@code get_diagnostics} (file-markers, runtime-markers,
+     * annotations, headless-open polling). Off by default — turn on temporarily to debug
+     * "0/0/0" empty-result symptoms.
+     */
+    public static final String PREF_DIAGNOSTICS_VERBOSE = "diagnostics.verbose"; //$NON-NLS-1$
 }

@@ -88,6 +88,9 @@ public class VibePreferenceInitializer extends AbstractPreferenceInitializer {
             McpHostConfig.MutationPolicy.ALLOW.name());
         defaults.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS, "*"); //$NON-NLS-1$
 
+        // Diagnostics defaults
+        defaults.putBoolean(VibePreferenceConstants.PREF_DIAGNOSTICS_VERBOSE, false);
+
         // Completion/review are not part of OSS edition; their preferences are not initialized here.
     }
 }

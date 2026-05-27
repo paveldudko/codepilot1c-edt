@@ -20,6 +20,7 @@ import org.osgi.framework.ServiceRegistration;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.remote.IRemoteWorkbenchBridge;
 import com.codepilot1c.ui.theme.ThemeManager;
+import com.codepilot1c.ui.tools.GetDiagnosticsDetailsTool;
 import com.codepilot1c.ui.tools.GetDiagnosticsTool;
 import com.codepilot1c.ui.remote.RemoteWorkbenchBridge;
 
@@ -118,6 +119,9 @@ public class VibeUiPlugin extends AbstractUIPlugin {
 
         // Register get_diagnostics tool for auto-fix workflow
         registry.registerDynamicTool(new GetDiagnosticsTool());
+        // Companion tool: fetch the rich EDT Check Info description for one or
+        // more check_id values (Markdown rendered from check.descriptions HTML).
+        registry.registerDynamicTool(new GetDiagnosticsDetailsTool());
     }
 
     private void registerRemoteWorkbenchBridge() {

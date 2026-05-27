@@ -62,13 +62,20 @@ import com.e1c.g5.dt.applications.IApplicationManager;
 import com.e1c.g5.v8.dt.check.settings.CheckUid;
 import com.e1c.g5.v8.dt.check.settings.ICheckDescription;
 import com.e1c.g5.v8.dt.check.settings.ICheckRepository;
+import org.eclipse.core.runtime.preferences.IEclipsePreferences;
+import org.eclipse.core.runtime.preferences.InstanceScope;
+
 import com.codepilot1c.core.diagnostics.BslLiveValidator;
 import com.codepilot1c.core.diagnostics.BslLiveValidator.BslLiveIssue;
+import com.codepilot1c.core.diagnostics.DcsSchemaValidator;
+import com.codepilot1c.core.diagnostics.DcsSchemaValidator.DcsSchemaIssue;
+import com.codepilot1c.core.diagnostics.CheckInfoResolver;
 import com.codepilot1c.core.diagnostics.DiagnosticsLineFilter;
 import com.codepilot1c.core.diagnostics.PathMatchTokens;
 import com.codepilot1c.core.diagnostics.RelativePathCandidates;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.internal.VibeCorePlugin;
+import com.codepilot1c.core.settings.VibePreferenceConstants;
 import com.codepilot1c.ui.diagnostics.EdtDiagnostic.Severity;
 
 /**
@@ -84,13 +91,36 @@ public class EdtDiagnosticsCollector {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtDiagnosticsCollector.class);
 
-    /** Toggle for the noisy {@code [get_diagnostics]} progress logs. Off by default. */
-    private static final boolean DIAG_VERBOSE = false;
+    /**
+     * Toggle for the noisy {@code [get_diagnostics]} progress logs. Off by default.
+     *
+     * <p>Primary control: Window → Preferences → 1C Copilot → "Verbose get_diagnostics logging"
+     * ({@link VibePreferenceConstants#PREF_DIAGNOSTICS_VERBOSE} in the {@code com.codepilot1c.core}
+     * node). Takes effect on the next tool call, no restart needed.</p>
+     *
+     * <p>Escape hatch for non-OSGi contexts (plain JUnit, CLI smoke tests): JVM system property
+     * {@code -Dcodepilot1c.diagnostics.verbose=true}.</p>
+     */
+    private static final String CORE_PLUGIN_ID = "com.codepilot1c.core"; //$NON-NLS-1$
+    private static final String PROP_DIAG_VERBOSE = "codepilot1c.diagnostics.verbose"; //$NON-NLS-1$
 
     private static void diagInfo(String format, Object... args) {
-        if (DIAG_VERBOSE) {
+        if (isDiagVerbose()) {
             LOG.info(format, args);
         }
+    }
+
+    private static boolean isDiagVerbose() {
+        try {
+            IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(CORE_PLUGIN_ID);
+            if (prefs.getBoolean(VibePreferenceConstants.PREF_DIAGNOSTICS_VERBOSE, false)) {
+                return true;
+            }
+        } catch (RuntimeException ignored) {
+            // Non-OSGi runtime (plain JUnit) — fall through to system-property fallback.
+        }
+        String raw = System.getProperty(PROP_DIAG_VERBOSE);
+        return raw != null && Boolean.parseBoolean(raw.trim());
     }
 
     private static final int MAX_SNIPPET_LENGTH = 120;
@@ -121,16 +151,38 @@ public class EdtDiagnosticsCollector {
             long waitMs,
             boolean includeRuntimeMarkers,
             int lineFrom,
-            int lineTo) {
+            int lineTo,
+            boolean includeCheckHelp,
+            String helpLocale) {
 
         public static DiagnosticsQuery defaults() {
-            return new DiagnosticsQuery(Severity.INFO, 0, true, 0, true, 0, 0);
+            return new DiagnosticsQuery(Severity.INFO, 0, true, 0, true, 0, 0, false, "en"); //$NON-NLS-1$
         }
 
         public static DiagnosticsQuery withSeverity(Severity minSeverity) {
-            return new DiagnosticsQuery(minSeverity, 0, true, 0, true, 0, 0);
+            return new DiagnosticsQuery(minSeverity, 0, true, 0, true, 0, 0, false, "en"); //$NON-NLS-1$
+        }
+
+        /**
+         * Backwards-compatible constructor for callers that predate the
+         * {@code includeCheckHelp} / {@code helpLocale} fields. Defaults the
+         * new flags to {@code false} / {@code "en"}.
+         */
+        public DiagnosticsQuery(
+                Severity minSeverity, int maxItems, boolean includeSnippets, long waitMs,
+                boolean includeRuntimeMarkers, int lineFrom, int lineTo) {
+            this(minSeverity, maxItems, includeSnippets, waitMs, includeRuntimeMarkers,
+                    lineFrom, lineTo, false, "en"); //$NON-NLS-1$
         }
     }
+
+    /**
+     * Single rich check-description block — emitted once per unique
+     * {@code checkId} present in the diagnostics, only when the resolver
+     * found bundled Markdown. Checks with no shipped description are simply
+     * omitted from the {@code checkDetails} list.
+     */
+    public record CheckDetail(String checkId, String markdown) {}
 
     /**
      * Result of diagnostics collection.
@@ -141,7 +193,18 @@ public class EdtDiagnosticsCollector {
             List<EdtDiagnostic> diagnostics,
             int errorCount,
             int warningCount,
-            int infoCount) {
+            int infoCount,
+            List<CheckDetail> checkDetails) {
+
+        /**
+         * Backwards-compatible constructor for callers (and tests) that
+         * predate {@code checkDetails}. Defaults to an empty list.
+         */
+        public DiagnosticsResult(
+                String filePath, boolean editorDirty, List<EdtDiagnostic> diagnostics,
+                int errorCount, int warningCount, int infoCount) {
+            this(filePath, editorDirty, diagnostics, errorCount, warningCount, infoCount, List.of());
+        }
 
         public boolean hasErrors() {
             return errorCount > 0;
@@ -175,8 +238,47 @@ public class EdtDiagnosticsCollector {
                 }
             }
 
+            if (checkDetails != null && !checkDetails.isEmpty()) {
+                sb.append("\n## Check details\n\n"); //$NON-NLS-1$
+                boolean first = true;
+                for (CheckDetail detail : checkDetails) {
+                    if (!first) {
+                        sb.append("\n---\n\n"); //$NON-NLS-1$
+                    }
+                    first = false;
+                    sb.append("### ").append(detail.checkId()).append("\n\n"); //$NON-NLS-1$ //$NON-NLS-2$
+                    sb.append(detail.markdown());
+                    if (!detail.markdown().endsWith("\n")) { //$NON-NLS-1$
+                        sb.append("\n"); //$NON-NLS-1$
+                    }
+                }
+            }
+
             return sb.toString();
         }
+    }
+
+    /**
+     * Builds a deduplicated {@link CheckDetail} list for the diagnostics. Only
+     * checks whose contributor bundle actually ships an HTML description make
+     * it into the list — others are silently omitted so callers don't pay
+     * tokens for empty entries.
+     */
+    static List<CheckDetail> buildCheckDetails(List<EdtDiagnostic> diagnostics, String locale) {
+        if (diagnostics == null || diagnostics.isEmpty()) {
+            return List.of();
+        }
+        CheckInfoResolver resolver = CheckInfoResolver.getInstance();
+        LinkedHashSet<String> seenIds = new LinkedHashSet<>();
+        List<CheckDetail> details = new ArrayList<>();
+        for (EdtDiagnostic d : diagnostics) {
+            String id = d.checkId();
+            if (id == null || id.isBlank() || !seenIds.add(id)) {
+                continue;
+            }
+            resolver.findMarkdown(id, locale).ifPresent(md -> details.add(new CheckDetail(id, md)));
+        }
+        return List.copyOf(details);
     }
 
     /**
@@ -249,7 +351,11 @@ public class EdtDiagnosticsCollector {
                     int warnings = (int) diagnostics.stream().filter(d -> d.severity() == Severity.WARNING).count();
                     int infos = diagnostics.size() - errors - warnings;
 
-                    future.complete(new DiagnosticsResult(filePath, dirty, diagnostics, errors, warnings, infos));
+                    List<CheckDetail> details = q.includeCheckHelp()
+                            ? buildCheckDetails(diagnostics, q.helpLocale())
+                            : List.of();
+                    future.complete(new DiagnosticsResult(
+                            filePath, dirty, diagnostics, errors, warnings, infos, details));
 
                 } catch (Exception e) {
                     LOG.error("Error collecting diagnostics: %s", e.getMessage()); //$NON-NLS-1$
@@ -295,6 +401,7 @@ public class EdtDiagnosticsCollector {
                     collectRuntimeFileMarkers(context, query, diagnostics, seen);
                 }
                 collectFromOpenEditorAnnotations(context.file(), resultPath, query, diagnostics, seen);
+                collectFromDcsSchemaValidator(context.file(), resultPath, query, diagnostics, seen);
 
                 diagnostics.sort(Comparator
                         .comparing((EdtDiagnostic d) -> d.severity().getLevel()).reversed()
@@ -310,7 +417,11 @@ public class EdtDiagnosticsCollector {
 
                 diagInfo("[get_diagnostics] result: %d items (errors=%d warnings=%d infos=%d) path='%s'", //$NON-NLS-1$
                         diagnostics.size(), errors, warnings, infos, resultPath);
-                return new DiagnosticsResult(resultPath, false, diagnostics, errors, warnings, infos);
+                List<CheckDetail> details = query.includeCheckHelp()
+                        ? buildCheckDetails(diagnostics, query.helpLocale())
+                        : List.of();
+                return new DiagnosticsResult(
+                        resultPath, false, diagnostics, errors, warnings, infos, details);
 
             } catch (IllegalArgumentException e) {
                 LOG.warn("[get_diagnostics] failed for path='%s': %s", filePath, e.getMessage()); //$NON-NLS-1$
@@ -737,7 +848,11 @@ public class EdtDiagnosticsCollector {
                 int warnings = (int) diagnostics.stream().filter(d -> d.severity() == Severity.WARNING).count();
                 int infos = diagnostics.size() - errors - warnings;
 
-                return new DiagnosticsResult("/" + projectName, false, diagnostics, errors, warnings, infos); //$NON-NLS-1$
+                List<CheckDetail> details = query.includeCheckHelp()
+                        ? buildCheckDetails(diagnostics, query.helpLocale())
+                        : List.of();
+                return new DiagnosticsResult(
+                        "/" + projectName, false, diagnostics, errors, warnings, infos, details); //$NON-NLS-1$
 
             } catch (Exception e) {
                 LOG.error("Error collecting diagnostics for project %s: %s", projectName, e.getMessage()); //$NON-NLS-1$
@@ -791,7 +906,11 @@ public class EdtDiagnosticsCollector {
                 int warnings = (int) diagnostics.stream().filter(d -> d.severity() == Severity.WARNING).count();
                 int infos = diagnostics.size() - errors - warnings;
 
-                return new DiagnosticsResult("/workspace", false, diagnostics, errors, warnings, infos); //$NON-NLS-1$
+                List<CheckDetail> details = query.includeCheckHelp()
+                        ? buildCheckDetails(diagnostics, query.helpLocale())
+                        : List.of();
+                return new DiagnosticsResult(
+                        "/workspace", false, diagnostics, errors, warnings, infos, details); //$NON-NLS-1$
             } catch (Exception e) {
                 LOG.error("Error collecting diagnostics for workspace: %s", e.getMessage()); //$NON-NLS-1$
                 return new DiagnosticsResult("/workspace", false, List.of(), 0, 0, 0); //$NON-NLS-1$
@@ -1213,6 +1332,7 @@ public class EdtDiagnosticsCollector {
      * No-op if the file is not currently open in any editor.</p>
      */
     private final BslLiveValidator bslLiveValidator = new BslLiveValidator();
+    private final DcsSchemaValidator dcsSchemaValidator = new DcsSchemaValidator();
 
     /**
      * Runs the Xtext BSL validator on the file even when no editor is open.
@@ -1259,6 +1379,49 @@ public class EdtDiagnosticsCollector {
             return Severity.INFO;
         }
         return switch (severity) {
+            case "error" -> Severity.ERROR; //$NON-NLS-1$
+            case "warning" -> Severity.WARNING; //$NON-NLS-1$
+            default -> Severity.INFO;
+        };
+    }
+
+    /**
+     * Surfaces DCS-schema problems for {@code .dcs} files (e.g. an {@code <editFormat>}
+     * element that EDT's lenient loader silently drops). Skips non-{@code .dcs} files
+     * inside the validator, so it is safe to call unconditionally.
+     *
+     * <p>The validator is a curated denylist (text scan for elements known to be invalid
+     * in a {@code .dcs} and silently dropped by EDT's importer), so findings are confident
+     * and surfaced at their natural severity — see {@link DcsSchemaValidator} for why full
+     * schema validation is not feasible here.</p>
+     */
+    private void collectFromDcsSchemaValidator(
+            IFile file, String filePath, DiagnosticsQuery query,
+            List<EdtDiagnostic> diagnostics, Set<String> seen) {
+        if (file == null) {
+            return;
+        }
+        List<DcsSchemaIssue> issues = dcsSchemaValidator.validate(file);
+        int sizeBefore = diagnostics.size();
+        for (DcsSchemaIssue issue : issues) {
+            Severity sev = dcsSchemaSeverity(issue.severity());
+            if (sev.getLevel() < query.minSeverity().getLevel()) {
+                continue;
+            }
+            int line = issue.line();
+            String key = "dcs-schema:" + line + ":" + issue.column() + ":" + issue.message(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            if (!seen.add(key)) {
+                continue;
+            }
+            diagnostics.add(EdtDiagnostic.fromAnnotation(
+                    filePath, line, -1, -1, "DCS schema: " + issue.message(), sev, "dcs-schema", null)); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        diagInfo("[get_diagnostics] dcs-schema: file=%s issuesScanned=%d emitted=%d", //$NON-NLS-1$
+                filePath, issues.size(), diagnostics.size() - sizeBefore);
+    }
+
+    private Severity dcsSchemaSeverity(String severity) {
+        return switch (severity == null ? "" : severity) { //$NON-NLS-1$
             case "error" -> Severity.ERROR; //$NON-NLS-1$
             case "warning" -> Severity.WARNING; //$NON-NLS-1$
             default -> Severity.INFO;

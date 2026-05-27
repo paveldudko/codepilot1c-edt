@@ -125,5 +125,10 @@ public class VibePreferencePage extends FieldEditorPreferencePage implements IWo
                 getFieldEditorParent());
         terminalTitlePrefix.setEmptyStringAllowed(true);
         addField(terminalTitlePrefix);
+
+        addField(new BooleanFieldEditor(
+                VibePreferenceConstants.PREF_DIAGNOSTICS_VERBOSE,
+                Messages.PreferencePage_DiagnosticsVerboseLabel,
+                getFieldEditorParent()));
     }
 }

@@ -80,6 +80,7 @@ public class Messages extends NLS {
     public static String PreferencePage_TerminalAlwaysUseActiveProjectLabel;
     public static String PreferencePage_TerminalNoColorLabel;
     public static String PreferencePage_TerminalTitlePrefixLabel;
+    public static String PreferencePage_DiagnosticsVerboseLabel;
     public static String PreferencePage_TestConnectionButton;
     public static String PreferencePage_TestSuccess;
     public static String PreferencePage_TestFailed;

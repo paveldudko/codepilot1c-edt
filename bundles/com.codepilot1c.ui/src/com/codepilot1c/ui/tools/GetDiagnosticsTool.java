@@ -76,6 +76,15 @@ public class GetDiagnosticsTool implements ITool {
                     "line_to": {
                         "type": "integer",
                         "description": "Верхняя граница диапазона строк (1-based, включительно). 0 = без ограничения. Диагностики без точной строки (lineNumber<=0) отсеиваются, если диапазон задан."
+                    },
+                    "include_check_help": {
+                        "type": "boolean",
+                        "description": "When true, append a 'Check details' section with the rich EDT check description (Markdown) for every unique check_id in the result. Checks whose contributor bundle ships no HTML description are silently omitted. Off by default — turn on only when the model needs guidance on how to fix the issue. For a two-step flow, leave this off and call get_diagnostics_details on selected check_ids instead."
+                    },
+                    "help_locale": {
+                        "type": "string",
+                        "enum": ["en", "ru"],
+                        "description": "Locale for check descriptions when include_check_help=true. Defaults to 'en' (matches the project's English-only code/UI). Falls back to English if the requested locale has no localized HTML."
                     }
                 },
                 "required": []
@@ -89,7 +98,11 @@ public class GetDiagnosticsTool implements ITool {
 
     @Override
     public String getDescription() {
-        return "Возвращает живые EDT diagnostics из UI workbench для проекта, файла или активного редактора."; //$NON-NLS-1$
+        return "Возвращает живые EDT diagnostics из UI workbench для проекта, файла или активного редактора. "  //$NON-NLS-1$
+                + "Для .dcs (scope=file) дополнительно проверяет курируемый набор элементов, недопустимых в схеме DCS " //$NON-NLS-1$
+                + "(напр. <editFormat>), которые импортёр EDT молча выкидывает вместе с набором данных. Это точечная " //$NON-NLS-1$
+                + "проверка, а НЕ полная валидация схемы: .dcs — это platform-формат, разбираемый ленивым BM-импортёром " //$NON-NLS-1$
+                + "EDT, поэтому строгий парсер недоступен. Для корректности структуры DCS всё равно открой схему в дизайнере."; //$NON-NLS-1$
     }
 
     @Override
@@ -122,6 +135,8 @@ public class GetDiagnosticsTool implements ITool {
         boolean includeRuntimeMarkers = getBooleanParam(parameters, "include_runtime_markers", true); //$NON-NLS-1$
         int lineFrom = getIntParam(parameters, "line_from", 0); //$NON-NLS-1$
         int lineTo = getIntParam(parameters, "line_to", 0); //$NON-NLS-1$
+        boolean includeCheckHelp = getBooleanParam(parameters, "include_check_help", false); //$NON-NLS-1$
+        String helpLocale = (String) parameters.getOrDefault("help_locale", "en"); //$NON-NLS-1$ //$NON-NLS-2$
 
         // Validate parameters
         if (maxItems < 0) maxItems = 0;
@@ -135,7 +150,8 @@ public class GetDiagnosticsTool implements ITool {
         Severity minSeverity = parseSeverity(severityStr);
 
         DiagnosticsQuery query = new DiagnosticsQuery(
-                minSeverity, maxItems, true, waitMs, includeRuntimeMarkers, lineFrom, lineTo);
+                minSeverity, maxItems, true, waitMs, includeRuntimeMarkers, lineFrom, lineTo,
+                includeCheckHelp, helpLocale);
         EdtDiagnosticsCollector collector = EdtDiagnosticsCollector.getInstance();
 
         String normalizedScope = normalizeScope(scope, path, projectName);
