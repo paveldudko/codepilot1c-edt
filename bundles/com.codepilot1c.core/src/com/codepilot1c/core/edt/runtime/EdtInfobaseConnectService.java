@@ -511,7 +511,18 @@ public class EdtInfobaseConnectService {
                 access == InfobaseAccess.INFOBASE ? (password == null ? "" : password) : null, //$NON-NLS-1$
                 null);
         try {
-            accessManager.storeSettings(reference, settings);
+            // EDT 2025.1 (services.core 20.x) persists access settings via storeSettings(ref, settings).
+            // EDT 2025.2 (services.core 21.x) dropped storeSettings in favour of updateSettings(ref,
+            // settings) — same signature. Both methods exist in the 20.x build target, so call the
+            // historical one and fall back at runtime when loaded into a 21.x EDT (where storeSettings
+            // resolves to NoSuchMethodError). Mirrors the getSettings/resolveSettings handling in
+            // EdtRuntimeService. NoSuchMethodError is an Error, not an Exception, so it must be caught
+            // explicitly — the outer catch(Exception) below would otherwise let it escape raw.
+            try {
+                accessManager.storeSettings(reference, settings);
+            } catch (NoSuchMethodError storeSettingsRemovedIn2025_2) {
+                accessManager.updateSettings(reference, settings);
+            }
         } catch (Exception e) {
             String detail = e.getMessage() != null && !e.getMessage().isBlank()
                     ? e.getMessage() : e.getClass().getSimpleName();
@@ -548,16 +559,33 @@ public class EdtInfobaseConnectService {
     // -- Helpers --------------------------------------------------------------------------------
 
     public static Path ensureFileInfobasePath(String rawPath) {
-        Path path = validateAndNormalizePath(rawPath);
-        if (Files.exists(path) && !Files.isDirectory(path)) {
+        // kind=file only *associates* an existing infobase folder with the project — it never
+        // writes into it (unlike standalone, which creates .codepilot-standalone/ there). So the
+        // workspace/home root constraint is relaxed here: an infobase directory may live anywhere
+        // (e.g. per-branch sandboxes under db\Branches\...). Path-traversal ('..') is still rejected,
+        // and we never CREATE a directory outside the sanctioned roots — an out-of-root path must
+        // already exist.
+        Path path = normalizeAndRejectTraversal(rawPath);
+        boolean exists = Files.exists(path);
+        if (exists && !Files.isDirectory(path)) {
             throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
                     "database_path must be a directory: " + path); //$NON-NLS-1$
+        }
+        if (!isInsideAllowedRoot(path)) {
+            if (!exists) {
+                throw new EdtToolException(EdtToolErrorCode.INVALID_PATH,
+                        "invalid_path: a file database_path outside the workspace/home must be an existing infobase directory: " //$NON-NLS-1$
+                                + path);
+            }
+            return path; // associate the existing folder; do not create anything
         }
         ensureDirectory(path);
         return path;
     }
 
     public static Path ensureStandaloneDataPath(String rawPath) {
+        // Standalone WRITES into database_path (.codepilot-standalone/ registry + publication),
+        // so it stays constrained to the workspace/home roots via validateAndNormalizePath.
         Path path = validateAndNormalizePath(rawPath);
         if (Files.exists(path) && !Files.isDirectory(path)) {
             throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
@@ -572,6 +600,20 @@ public class EdtInfobaseConnectService {
      * path to live inside the Eclipse workspace root or the current user's home directory.
      */
     public static Path validateAndNormalizePath(String rawPath) {
+        Path path = normalizeAndRejectTraversal(rawPath);
+        if (!isInsideAllowedRoot(path)) {
+            throw new EdtToolException(EdtToolErrorCode.INVALID_PATH,
+                    "invalid_path: database_path must be inside workspace or home directory"); //$NON-NLS-1$
+        }
+        return path;
+    }
+
+    /**
+     * Blank-check, reject raw {@code ..} segments (defense-in-depth before normalization folds
+     * them away), and return the normalized absolute path. Does NOT apply the workspace/home
+     * root constraint — callers add that where the path is written to.
+     */
+    private static Path normalizeAndRejectTraversal(String rawPath) {
         if (rawPath == null || rawPath.isBlank()) {
             throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
                     "database_path is required"); //$NON-NLS-1$
@@ -583,19 +625,13 @@ public class EdtInfobaseConnectService {
             throw new EdtToolException(EdtToolErrorCode.INVALID_PATH,
                     "invalid_path: database_path is not a valid filesystem path"); //$NON-NLS-1$
         }
-        // Defense-in-depth: reject any '..' segment before normalization folds it away.
         for (Path segment : raw) {
             if ("..".equals(segment.toString())) { //$NON-NLS-1$
                 throw new EdtToolException(EdtToolErrorCode.INVALID_PATH,
                         "invalid_path: database_path must not contain '..' segments"); //$NON-NLS-1$
             }
         }
-        Path path = raw.toAbsolutePath().normalize();
-        if (!isInsideAllowedRoot(path)) {
-            throw new EdtToolException(EdtToolErrorCode.INVALID_PATH,
-                    "invalid_path: database_path must be inside workspace or home directory"); //$NON-NLS-1$
-        }
-        return path;
+        return raw.toAbsolutePath().normalize();
     }
 
     private static boolean isInsideAllowedRoot(Path candidate) {

@@ -40,7 +40,7 @@ public class ConnectInfobaseTool extends AbstractTool {
                 },
                 "database_path": {
                   "type": "string",
-                  "description": "Filesystem path for file-binding, or infobase data path for the standalone server"
+                  "description": "kind=file: path to an EXISTING file-infobase folder — may live anywhere (e.g. a per-branch sandbox), only associated, not written to. kind=standalone: infobase data path that MUST be inside the workspace or home directory (the standalone server writes a .codepilot-standalone/ subtree there)."
                 },
                 "kind": {
                   "type": "string",
@@ -229,7 +229,8 @@ public class ConnectInfobaseTool extends AbstractTool {
             case INVALID_PATH -> {
                 json.addProperty("error", "invalid_path"); //$NON-NLS-1$ //$NON-NLS-2$
                 json.addProperty("hint", //$NON-NLS-1$
-                        "database_path must be inside workspace or home directory"); //$NON-NLS-1$
+                        "kind=file: point at an existing infobase folder (any location); " //$NON-NLS-1$
+                        + "kind=standalone: path must be inside the workspace or home directory"); //$NON-NLS-1$
             }
             case EDT_NOT_READY -> json.addProperty("error", "edt_not_ready"); //$NON-NLS-1$ //$NON-NLS-2$
             default -> { /* no extra shape */ }
