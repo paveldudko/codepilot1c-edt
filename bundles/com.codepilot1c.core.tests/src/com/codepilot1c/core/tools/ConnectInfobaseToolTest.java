@@ -340,7 +340,7 @@ public class ConnectInfobaseToolTest {
     }
 
     @Test
-    public void persistReferenceDoesNotReuseUuidWhenOnlyNameMatches() {
+    public void persistReferenceThrowsNameCollisionWhenNameTakenByDifferentInfobase() {
         StubInfobaseManager manager = new StubInfobaseManager(true);
         UUID existingUuid = UUID.randomUUID();
         manager.findByNames = List.of(
@@ -348,16 +348,21 @@ public class ConnectInfobaseToolTest {
         StubGateway gateway = new StubGateway(manager, noopAccessManager());
         TestableConnectService service = new TestableConnectService(gateway);
 
+        // Same display name but a different connection identity (e.g. a file-infobase folder named
+        // like an existing server infobase). EDT enforces unique names, so manager.add() would
+        // throw an opaque "already connected" and could disturb the project's association. The
+        // service must instead fail early with NAME_COLLISION and mutate nothing.
         InfobaseReference reference = stubReferenceWithState(null, "shared-name", //$NON-NLS-1$
                 "File=\"/tmp/new-target\""); //$NON-NLS-1$
 
-        service.invokePersistReference(reference);
-
-        assertEquals("a different infobase identity must be registered as a new entry", //$NON-NLS-1$
-                1, manager.addCalls.size());
-        assertNotNull(reference.getUuid());
-        assertFalse("UUID from a same-name but different infobase must not be reused", //$NON-NLS-1$
-                existingUuid.equals(reference.getUuid()));
+        try {
+            service.invokePersistReference(reference);
+            fail("expected NAME_COLLISION"); //$NON-NLS-1$
+        } catch (EdtToolException e) {
+            assertEquals(EdtToolErrorCode.NAME_COLLISION, e.getCode());
+        }
+        assertTrue("manager.add must NOT be called on a name collision", //$NON-NLS-1$
+                manager.addCalls.isEmpty());
     }
 
     @Test

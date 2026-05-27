@@ -70,6 +70,10 @@ public class ConnectInfobaseTool extends AbstractTool {
                 "runtime_version": {
                   "type": "string",
                   "description": "Optional 1C runtime version for 'standalone' kind (e.g. 8.3.24.1656)"
+                },
+                "infobase_name": {
+                  "type": "string",
+                  "description": "Optional display name for the infobase in EDT's registry. Defaults to the folder name. Pass a distinct name when the folder name collides with an existing infobase (e.g. a same-named server infobase) — otherwise the call fails with NAME_COLLISION."
                 }
               },
               "required": ["project_name", "database_path", "kind"]
@@ -129,9 +133,10 @@ public class ConnectInfobaseTool extends AbstractTool {
                 boolean force = Boolean.TRUE.equals(parameters.get("force")); //$NON-NLS-1$
                 Integer serverPort = asInteger(parameters.get("server_port")); //$NON-NLS-1$
                 String runtimeVersion = asString(parameters.get("runtime_version")); //$NON-NLS-1$
+                String infobaseName = asString(parameters.get("infobase_name")); //$NON-NLS-1$
 
                 ConnectRequest request = new ConnectRequest(projectName, databasePath, kind, login,
-                        password, setPrimary, serverPort, runtimeVersion, force);
+                        password, setPrimary, serverPort, runtimeVersion, force, infobaseName);
                 ConnectResult result = connectService.connect(request);
                 JsonObject payload = successPayload(opId, projectName, result);
                 return ToolResult.success(pretty(payload), ToolResult.ToolResultType.CODE);
@@ -233,6 +238,11 @@ public class ConnectInfobaseTool extends AbstractTool {
                         + "kind=standalone: path must be inside the workspace or home directory"); //$NON-NLS-1$
             }
             case EDT_NOT_READY -> json.addProperty("error", "edt_not_ready"); //$NON-NLS-1$ //$NON-NLS-2$
+            case NAME_COLLISION -> {
+                json.addProperty("error", "name_collision"); //$NON-NLS-1$ //$NON-NLS-2$
+                json.addProperty("hint", //$NON-NLS-1$
+                        "an infobase with this name already exists; pass a distinct infobase_name"); //$NON-NLS-1$
+            }
             default -> { /* no extra shape */ }
         }
         return json;

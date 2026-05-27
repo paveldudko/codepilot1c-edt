@@ -80,6 +80,7 @@ public class EdtInfobaseConnectService {
         private final Integer serverPort;
         private final String runtimeVersion;
         private final boolean force;
+        private final String infobaseName;
 
         public ConnectRequest(String projectName, String databasePath, ConnectionKind kind, String login,
                 String password, boolean setPrimary, Integer serverPort, String runtimeVersion) {
@@ -88,6 +89,13 @@ public class EdtInfobaseConnectService {
 
         public ConnectRequest(String projectName, String databasePath, ConnectionKind kind, String login,
                 String password, boolean setPrimary, Integer serverPort, String runtimeVersion, boolean force) {
+            this(projectName, databasePath, kind, login, password, setPrimary, serverPort, runtimeVersion, force,
+                    null);
+        }
+
+        public ConnectRequest(String projectName, String databasePath, ConnectionKind kind, String login,
+                String password, boolean setPrimary, Integer serverPort, String runtimeVersion, boolean force,
+                String infobaseName) {
             this.projectName = projectName;
             this.databasePath = databasePath;
             this.kind = kind;
@@ -97,6 +105,7 @@ public class EdtInfobaseConnectService {
             this.serverPort = serverPort;
             this.runtimeVersion = runtimeVersion;
             this.force = force;
+            this.infobaseName = infobaseName;
         }
 
         public String projectName() { return projectName; }
@@ -108,6 +117,7 @@ public class EdtInfobaseConnectService {
         public Integer serverPort() { return serverPort; }
         public String runtimeVersion() { return runtimeVersion; }
         public boolean force() { return force; }
+        public String infobaseName() { return infobaseName; }
     }
 
     public static final class ConnectResult {
@@ -198,13 +208,19 @@ public class EdtInfobaseConnectService {
         String replacedPrevious = checkExistingPrimary(project, request);
 
         InfobaseReference reference = InfobaseReferences.newFileInfobaseReference(filePathArg);
-        String infobaseName = reference.getName();
+        String infobaseName = request.infobaseName();
         if (infobaseName == null || infobaseName.isBlank()) {
+            infobaseName = reference.getName();
+        }
+        if (infobaseName == null || infobaseName.isBlank()) {
+            // Fall back to the folder name. NB: this can collide with an existing infobase of the
+            // same name (e.g. an auto-provisioned server infobase); persistReference() detects that
+            // and fails with NAME_COLLISION so the caller can retry with an explicit infobase_name.
             infobaseName = resolvedPath.getFileName() == null
                     ? "infobase" //$NON-NLS-1$
                     : resolvedPath.getFileName().toString();
-            reference.setName(infobaseName);
         }
+        reference.setName(infobaseName);
         persistReference(reference);
         storeAccessSettings(reference, request.login(), request.password());
         boolean primary = associate(project, reference, request.setPrimary());
@@ -226,13 +242,19 @@ public class EdtInfobaseConnectService {
         String replacedPrevious = checkExistingPrimary(project, request);
 
         InfobaseReference reference = InfobaseReferences.newFileInfobaseReference(filePathArg);
-        String infobaseName = reference.getName();
+        String infobaseName = request.infobaseName();
         if (infobaseName == null || infobaseName.isBlank()) {
+            infobaseName = reference.getName();
+        }
+        if (infobaseName == null || infobaseName.isBlank()) {
+            // Fall back to the folder name. NB: this can collide with an existing infobase of the
+            // same name (e.g. an auto-provisioned server infobase); persistReference() detects that
+            // and fails with NAME_COLLISION so the caller can retry with an explicit infobase_name.
             infobaseName = resolvedPath.getFileName() == null
                     ? "infobase" //$NON-NLS-1$
                     : resolvedPath.getFileName().toString();
-            reference.setName(infobaseName);
         }
+        reference.setName(infobaseName);
 
         // EDT's StandaloneServerInfobase constructor requires a non-null UUID;
         // newFileInfobaseReference() does not populate one, so assign before the EDT call.
@@ -396,6 +418,19 @@ public class EdtInfobaseConnectService {
                 reference.setUuid(UUID.randomUUID());
             }
             return;
+        }
+        // findExisting() returned empty, so no registered infobase shares our identity. If one
+        // nonetheless shares our NAME, it is a genuine collision (e.g. an auto-provisioned server
+        // infobase named like the file-infobase folder). EDT enforces unique names, so a bare
+        // manager.add() would throw an opaque "already connected" and, as observed, can disturb the
+        // project's current association. Fail BEFORE any mutation, with an actionable code.
+        String referenceName = reference.getName();
+        if (referenceName != null && !referenceName.isBlank()
+                && !findCandidatesByName(manager, referenceName).isEmpty()) {
+            throw new EdtToolException(EdtToolErrorCode.NAME_COLLISION,
+                    "name_collision: an infobase named '" + referenceName //$NON-NLS-1$
+                            + "' already exists with a different connection. " //$NON-NLS-1$
+                            + "Pass a distinct infobase_name to connect this one."); //$NON-NLS-1$
         }
         try {
             manager.add(reference, null);
