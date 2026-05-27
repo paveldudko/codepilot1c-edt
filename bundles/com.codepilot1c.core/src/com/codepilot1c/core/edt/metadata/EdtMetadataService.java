@@ -312,6 +312,8 @@ public class EdtMetadataService {
                     transaction,
                     opId,
                     fqn);
+            // Reports need a variants storage or the DCS designer won't open them.
+            applyReportVariantsStorageDefault(txConfiguration, txObject, request.kind());
             LOG.debug("[%s] Eager linked object into Configuration collections", opId); //$NON-NLS-1$
             LOG.debug("[%s] Transaction steps completed for %s", opId, fqn); //$NON-NLS-1$
             return null;
@@ -6609,26 +6611,82 @@ public class EdtMetadataService {
     }
 
     private MdObject findTopLevel(Configuration configuration, String type, String name) {
-        String normalized = normalizeToken(type);
-        List<? extends MdObject> topLevel = switch (normalized) {
-            case "catalog", "справочник" -> configuration.getCatalogs(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "document", "документ" -> configuration.getDocuments(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "informationregister", "регистрсведений" -> configuration.getInformationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "accumulationregister", "регистрнакопления" -> configuration.getAccumulationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "commonmodule", "общиймодуль" -> configuration.getCommonModules(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "enum", "перечисление" -> configuration.getEnums(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "report", "отчет", "отчёт" -> configuration.getReports(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            case "dataprocessor", "обработка" -> configuration.getDataProcessors(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "constant", "константа" -> configuration.getConstants(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "subsystem", "subsystems", "подсистема" -> configuration.getSubsystems(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            default -> Collections.emptyList();
-        };
-        for (MdObject object : topLevel) {
+        MetadataKind kind;
+        try {
+            kind = MetadataKind.fromString(type);
+        } catch (MetadataOperationException e) {
+            // Unknown type prefix — treat as not resolvable rather than aborting the whole operation.
+            return null;
+        }
+        for (MdObject object : topLevelCollection(configuration, kind)) {
             if (name.equalsIgnoreCase(object.getName())) {
                 return object;
             }
         }
         return null;
+    }
+
+    /**
+     * Maps a metadata kind to its owning top-level collection on the configuration.
+     *
+     * <p>Mirrors the typed-collection switch in {@link #addTopLevelObject} so that FQN
+     * resolution ({@link #resolveByFqn}) recognises every kind the plugin can create —
+     * not just the handful that the previous hardcoded switch listed. Missing kinds
+     * (SettingsStorage, Role, charts, services, …) used to fall through to an empty list,
+     * making {@code update_metadata} reject valid references with {@code METADATA_NOT_FOUND}
+     * even though {@code edt_validate_request} accepted them.</p>
+     */
+    private List<? extends MdObject> topLevelCollection(Configuration configuration, MetadataKind kind) {
+        return switch (kind) {
+            case CATALOG -> configuration.getCatalogs();
+            case DOCUMENT -> configuration.getDocuments();
+            case INFORMATION_REGISTER -> configuration.getInformationRegisters();
+            case ACCUMULATION_REGISTER -> configuration.getAccumulationRegisters();
+            case ACCOUNTING_REGISTER -> configuration.getAccountingRegisters();
+            case CALCULATION_REGISTER -> configuration.getCalculationRegisters();
+            case COMMON_MODULE -> configuration.getCommonModules();
+            case COMMON_ATTRIBUTE -> configuration.getCommonAttributes();
+            case ENUM -> configuration.getEnums();
+            case REPORT -> configuration.getReports();
+            case DATA_PROCESSOR -> configuration.getDataProcessors();
+            case CONSTANT -> configuration.getConstants();
+            case COMMAND_GROUP -> configuration.getCommandGroups();
+            case INTERFACE -> configuration.getInterfaces();
+            case LANGUAGE -> configuration.getLanguages();
+            case STYLE -> configuration.getStyles();
+            case STYLE_ITEM -> configuration.getStyleItems();
+            case SESSION_PARAMETER -> configuration.getSessionParameters();
+            case SETTINGS_STORAGE -> configuration.getSettingsStorages();
+            case XDTO_PACKAGE -> configuration.getXDTOPackages();
+            case WS_REFERENCE -> configuration.getWsReferences();
+            case ROLE -> configuration.getRoles();
+            case SUBSYSTEM -> configuration.getSubsystems();
+            case EXCHANGE_PLAN -> configuration.getExchangePlans();
+            case CHART_OF_ACCOUNTS -> configuration.getChartsOfAccounts();
+            case CHART_OF_CHARACTERISTIC_TYPES -> configuration.getChartsOfCharacteristicTypes();
+            case CHART_OF_CALCULATION_TYPES -> configuration.getChartsOfCalculationTypes();
+            case BUSINESS_PROCESS -> configuration.getBusinessProcesses();
+            case TASK -> configuration.getTasks();
+            case COMMON_FORM -> configuration.getCommonForms();
+            case COMMON_COMMAND -> configuration.getCommonCommands();
+            case COMMON_TEMPLATE -> configuration.getCommonTemplates();
+            case COMMON_PICTURE -> configuration.getCommonPictures();
+            case SCHEDULED_JOB -> configuration.getScheduledJobs();
+            case FILTER_CRITERION -> configuration.getFilterCriteria();
+            case DEFINED_TYPE -> configuration.getDefinedTypes();
+            case SEQUENCE -> configuration.getSequences();
+            case DOCUMENT_JOURNAL -> configuration.getDocumentJournals();
+            case DOCUMENT_NUMERATOR -> configuration.getDocumentNumerators();
+            case EVENT_SUBSCRIPTION -> configuration.getEventSubscriptions();
+            case FUNCTIONAL_OPTION -> configuration.getFunctionalOptions();
+            case FUNCTIONAL_OPTIONS_PARAMETER -> configuration.getFunctionalOptionsParameters();
+            case WEB_SERVICE -> configuration.getWebServices();
+            case HTTP_SERVICE -> configuration.getHttpServices();
+            case EXTERNAL_DATA_SOURCE -> configuration.getExternalDataSources();
+            case INTEGRATION_SERVICE -> configuration.getIntegrationServices();
+            case BOT -> configuration.getBots();
+            case WEB_SOCKET_CLIENT -> configuration.getWebSocketClients();
+        };
     }
 
     private MdObject findNestedChild(MdObject parent, String marker, String childName) {
@@ -10272,10 +10330,12 @@ public class EdtMetadataService {
     }
 
     private void addTopLevelObject(Configuration configuration, MetadataKind kind, MdObject object) {
-        // In EDT model, top-level typed collections may be backed by generic content.
-        // First, ensure generic content link exists.
-        addMdObjectIfMissing(configuration.getContent(), object);
-
+        // Link the object into its typed collection ONLY. The generic configuration
+        // <content> list must not receive freshly-created objects: in an extension it is
+        // reserved for adopted base-configuration objects, so adding new objects there emits
+        // spurious <content>X</content> entries in Configuration.mdo. The typed collection
+        // below is what drives .mdo serialization, EDT UI visibility and the post-create
+        // verification (hasConfigurationEntry checks the typed tag, not <content>).
         switch (kind) {
             case CATALOG -> configuration.getCatalogs().add((com._1c.g5.v8.dt.metadata.mdclass.Catalog) object);
             case DOCUMENT -> configuration.getDocuments().add((Document) object);
@@ -10344,15 +10404,42 @@ public class EdtMetadataService {
         }
     }
 
-    private void addMdObjectIfMissing(List<? extends MdObject> container, MdObject object) {
-        if (container == null || object == null) {
+    /**
+     * For freshly-created reports, defaults the variants storage to the configuration-wide
+     * reports-variants storage. EDT's DCS designer refuses to open a report whose
+     * {@code variantsStorage} is unset («Editing of object is not supported»); the
+     * configuration's {@code reportsVariantsStorage} (or, failing that, a SettingsStorage
+     * named {@code *ReportsVariantsStorage}) is the conventional target. No-op when the
+     * property was already supplied by the caller or cannot be resolved.
+     */
+    private void applyReportVariantsStorageDefault(Configuration configuration, MdObject object, MetadataKind kind) {
+        if (kind != MetadataKind.REPORT || configuration == null || object == null) {
             return;
         }
-        if (!containsMdObjectName(container, object.getName())) {
-            @SuppressWarnings("unchecked")
-            List<MdObject> mutable = (List<MdObject>) container;
-            mutable.add(object);
+        EStructuralFeature variantsStorage = object.eClass().getEStructuralFeature("variantsStorage"); //$NON-NLS-1$
+        if (variantsStorage == null || object.eGet(variantsStorage) != null) {
+            return;
         }
+        MdObject storage = resolveDefaultReportsVariantsStorage(configuration);
+        if (storage != null) {
+            object.eSet(variantsStorage, storage);
+        }
+    }
+
+    private MdObject resolveDefaultReportsVariantsStorage(Configuration configuration) {
+        EStructuralFeature configDefault =
+                configuration.eClass().getEStructuralFeature("reportsVariantsStorage"); //$NON-NLS-1$
+        if (configDefault != null && configuration.eGet(configDefault) instanceof MdObject storage) {
+            return storage;
+        }
+        // Fallback: a SettingsStorage that follows the conventional reports-variants naming.
+        for (var settingsStorage : configuration.getSettingsStorages()) {
+            String storageName = settingsStorage.getName();
+            if (storageName != null && storageName.endsWith("ReportsVariantsStorage")) { //$NON-NLS-1$
+                return settingsStorage;
+            }
+        }
+        return null;
     }
 
     private MdObject attachTopLevelObject(

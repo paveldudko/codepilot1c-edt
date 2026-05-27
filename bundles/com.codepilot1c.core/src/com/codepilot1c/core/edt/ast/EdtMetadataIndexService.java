@@ -3,6 +3,7 @@ package com.codepilot1c.core.edt.ast;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -204,11 +205,15 @@ public class EdtMetadataIndexService {
             collected = gateway.getBmModelManager().executeReadOnlyTask(project, tx -> {
                 Configuration txConfiguration = tx.toTransactionObject(configuration);
                 Configuration source = txConfiguration != null ? txConfiguration : configuration;
-                List<MetadataIndexResult.Item> scanned = collect(source, scope, nameFilter, language);
-                if (!scanned.isEmpty()) {
-                    return scanned;
-                }
-                return collectFromKnownCollections(source, scope, nameFilter, language);
+                // Typed getters are the authoritative source: they return every top-level kind,
+                // including those exposed through derived references (settingsStorages,
+                // eventSubscriptions, web/HTTP services, functionalOptions, commonForms, …) that the
+                // reflective pass skips because it filters out derived/volatile EReferences. The
+                // reflective pass is kept only as a supplement (dedup by FQN) to guard against
+                // future model additions.
+                List<MetadataIndexResult.Item> known = collectFromKnownCollections(source, scope, nameFilter, language);
+                List<MetadataIndexResult.Item> reflective = collect(source, scope, nameFilter, language);
+                return mergeByFqn(known, reflective);
             });
         } catch (EdtAstException e) {
             throw e;
@@ -258,7 +263,12 @@ public class EdtMetadataIndexService {
             }
             String collectionToken = normalize(reference.getName());
             String canonicalCollection = canonicalScope(reference.getName());
-            if (!isSupportedTopLevelCollection(canonicalCollection)) {
+            // Skip the generic <content> aggregation: in an extension it lists adopted base
+            // objects that are already reported via their typed collections. Every other
+            // containment-many MdObject reference is a real top-level kind and must be indexed.
+            // settingsStorages, charts, web/HTTP services, event subscriptions, … were silently
+            // dropped before because they were absent from the display-label allow-list.
+            if ("content".equals(collectionToken)) { //$NON-NLS-1$
                 continue;
             }
             Object raw = configuration.eGet(reference);
@@ -269,9 +279,10 @@ public class EdtMetadataIndexService {
             String singularToken = singularize(collectionToken);
 
             for (Object element : collection) {
-                if (!(element instanceof EObject eObject)) {
+                if (!(element instanceof MdObject)) {
                     continue;
                 }
+                EObject eObject = (EObject) element;
                 if (eObject == configuration) {
                     continue;
                 }
@@ -327,7 +338,10 @@ public class EdtMetadataIndexService {
         Set<String> seenFqns = new LinkedHashSet<>();
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "catalogs", configuration.getCatalogs()); //$NON-NLS-1$
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "documents", configuration.getDocuments()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "documentjournals", configuration.getDocumentJournals()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "documentnumerators", configuration.getDocumentNumerators()); //$NON-NLS-1$
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commonmodules", configuration.getCommonModules()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commonattributes", configuration.getCommonAttributes()); //$NON-NLS-1$
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "enums", configuration.getEnums()); //$NON-NLS-1$
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "reports", configuration.getReports()); //$NON-NLS-1$
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "dataprocessors", configuration.getDataProcessors()); //$NON-NLS-1$
@@ -346,10 +360,56 @@ public class EdtMetadataIndexService {
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "subsystems", configuration.getSubsystems()); //$NON-NLS-1$
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "roles", configuration.getRoles()); //$NON-NLS-1$
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "interfaces", configuration.getInterfaces()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "sessions", configuration.getSessionParameters()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "sessionparameters", configuration.getSessionParameters()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "settingsstorages", configuration.getSettingsStorages()); //$NON-NLS-1$
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "scheduledjobs", configuration.getScheduledJobs()); //$NON-NLS-1$
         appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commoncommands", configuration.getCommonCommands()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commandgroups", configuration.getCommandGroups()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commonforms", configuration.getCommonForms()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commontemplates", configuration.getCommonTemplates()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commonpictures", configuration.getCommonPictures()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "filtercriteria", configuration.getFilterCriteria()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "definedtypes", configuration.getDefinedTypes()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "eventsubscriptions", configuration.getEventSubscriptions()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "functionaloptions", configuration.getFunctionalOptions()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "functionaloptionsparameters", configuration.getFunctionalOptionsParameters()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "xdtopackages", configuration.getXDTOPackages()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "wsreferences", configuration.getWsReferences()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "webservices", configuration.getWebServices()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "httpservices", configuration.getHttpServices()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "integrationservices", configuration.getIntegrationServices()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "externaldatasources", configuration.getExternalDataSources()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "languages", configuration.getLanguages()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "styles", configuration.getStyles()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "styleitems", configuration.getStyleItems()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "bots", configuration.getBots()); //$NON-NLS-1$
+        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "websocketclients", configuration.getWebSocketClients()); //$NON-NLS-1$
         return items;
+    }
+
+    /**
+     * Merges two scan passes, keeping {@code primary}'s entry for any FQN present in both.
+     * Used to let the authoritative typed-getter pass win over the reflective supplement.
+     */
+    private List<MetadataIndexResult.Item> mergeByFqn(
+            List<MetadataIndexResult.Item> primary,
+            List<MetadataIndexResult.Item> supplement) {
+        Map<String, MetadataIndexResult.Item> byFqn = new LinkedHashMap<>();
+        for (MetadataIndexResult.Item item : primary) {
+            byFqn.putIfAbsent(indexKey(item), item);
+        }
+        for (MetadataIndexResult.Item item : supplement) {
+            byFqn.putIfAbsent(indexKey(item), item);
+        }
+        return new ArrayList<>(byFqn.values());
+    }
+
+    private String indexKey(MetadataIndexResult.Item item) {
+        String fqn = item.getFqn();
+        if (fqn != null && !fqn.isBlank()) {
+            return normalize(fqn);
+        }
+        return normalize(safe(item.getKind()) + "." + safe(item.getName())); //$NON-NLS-1$
     }
 
     private void appendKnownCollection(
@@ -404,13 +464,6 @@ public class EdtMetadataIndexService {
                     hasAnyFeature(object, OBJECT_MODULE_FEATURES),
                     hasAnyFeature(object, List.of("managerModule")))); //$NON-NLS-1$
         }
-    }
-
-    private boolean isSupportedTopLevelCollection(String canonicalCollection) {
-        if (canonicalCollection == null || canonicalCollection.isBlank()) {
-            return false;
-        }
-        return TYPE_LABELS_EN.containsKey(canonicalCollection) || TYPE_LABELS_RU.containsKey(canonicalCollection);
     }
 
     private boolean matchesScope(String scope, String collectionToken, String singularToken, String kind) {
