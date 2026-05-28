@@ -474,9 +474,16 @@ public class QaRunTool extends AbstractTool {
                     return ToolResult.failure("QA_RUN_ERROR: EDT runtime is required for update_db"); //$NON-NLS-1$
                 }
 
-                int timeout = extractTimeout(parameters, config);
+                TimeoutResolution timeoutRes = extractTimeoutResolution(parameters, config);
+                if (timeoutRes.clamped()) {
+                    LOG.warn("[%s] timeout_s=%d (source=%s) below MIN_TIMEOUT_SECONDS=%d, clamped to %d", //$NON-NLS-1$
+                            opId, Integer.valueOf(timeoutRes.requested()), timeoutRes.source(),
+                            Integer.valueOf(MIN_TIMEOUT_SECONDS), Integer.valueOf(timeoutRes.seconds()));
+                }
+                int timeout = timeoutRes.seconds();
                 long start = System.currentTimeMillis();
-                ProcessResult processResult = runProcess(processBuilder, logFile, timeout, workspaceRoot, opId);
+                ProcessResult processResult = runProcess(processBuilder, logFile, timeout, workspaceRoot, opId,
+                        timeoutRes.source());
                 long durationMs = System.currentTimeMillis() - start;
 
                 QaJUnitReport report = null;
@@ -851,29 +858,36 @@ public class QaRunTool extends AbstractTool {
         return value;
     }
 
-    private static int extractTimeout(Map<String, Object> parameters, QaConfig config) {
-        if (parameters == null) {
-            return extractTimeoutFromConfig(config);
-        }
-        Object value = parameters.get("timeout_s"); //$NON-NLS-1$
-        if (value instanceof Number number) {
-            int timeout = number.intValue();
-            if (timeout <= 0) {
-                return extractTimeoutFromConfig(config);
-            }
-            return Math.max(timeout, MIN_TIMEOUT_SECONDS);
-        }
-        return extractTimeoutFromConfig(config);
+    /**
+     * Result of {@link #extractTimeoutResolution(Map, QaConfig)} carrying both the effective
+     * timeout and where it came from. The {@code source} is surfaced in the spawn log marker so
+     * operators can tell whether their tool-param landed or whether qa-config/the default won.
+     * {@code clamped=true} means the requested value was raised to {@link #MIN_TIMEOUT_SECONDS} —
+     * previously this happened silently and {@code timeout_s=180} appeared as {@code 300s} with no
+     * indication that the request had been adjusted.
+     */
+    private record TimeoutResolution(int seconds, String source, int requested, boolean clamped) {
     }
 
-    private static int extractTimeoutFromConfig(QaConfig config) {
-        if (config != null && config.test_runner != null && config.test_runner.timeout_seconds != null) {
-            int timeout = config.test_runner.timeout_seconds.intValue();
-            if (timeout > 0) {
-                return Math.max(timeout, MIN_TIMEOUT_SECONDS);
+    private static TimeoutResolution extractTimeoutResolution(Map<String, Object> parameters, QaConfig config) {
+        if (parameters != null) {
+            Object value = parameters.get("timeout_s"); //$NON-NLS-1$
+            if (value instanceof Number number) {
+                int requested = number.intValue();
+                if (requested > 0) {
+                    int effective = Math.max(requested, MIN_TIMEOUT_SECONDS);
+                    return new TimeoutResolution(effective, "tool-param", requested, effective != requested); //$NON-NLS-1$
+                }
             }
         }
-        return DEFAULT_TIMEOUT_SECONDS;
+        if (config != null && config.test_runner != null && config.test_runner.timeout_seconds != null) {
+            int requested = config.test_runner.timeout_seconds.intValue();
+            if (requested > 0) {
+                int effective = Math.max(requested, MIN_TIMEOUT_SECONDS);
+                return new TimeoutResolution(effective, "qa-config", requested, effective != requested); //$NON-NLS-1$
+            }
+        }
+        return new TimeoutResolution(DEFAULT_TIMEOUT_SECONDS, "default", DEFAULT_TIMEOUT_SECONDS, false); //$NON-NLS-1$
     }
 
     private static List<String> asStringList(Object value) {
@@ -1075,7 +1089,7 @@ public class QaRunTool extends AbstractTool {
     }
 
     private static ProcessResult runProcess(ProcessBuilder builder, File logFile, int timeoutSeconds,
-            File workingDir, String opId) throws IOException, InterruptedException {
+            File workingDir, String opId, String timeoutSource) throws IOException, InterruptedException {
         if (builder == null) {
             throw new IOException("ProcessBuilder is null"); //$NON-NLS-1$
         }
@@ -1088,8 +1102,9 @@ public class QaRunTool extends AbstractTool {
         // Spawn marker: gives the caller a pid to correlate with the OS process tree and the
         // configured timeout — without this, vibe.log goes silent between START and the eventual
         // exit/timeout, making a hung 1cv8 indistinguishable from "still running".
-        LOG.info("[%s] qa_run spawned (pid=%d, timeout=%ds, logfile=%s)", opId, //$NON-NLS-1$
+        LOG.info("[%s] qa_run spawned (pid=%d, timeout=%ds [source=%s], logfile=%s)", opId, //$NON-NLS-1$
                 Long.valueOf(pid), Integer.valueOf(timeoutSeconds),
+                timeoutSource == null ? "?" : timeoutSource, //$NON-NLS-1$
                 logFile == null ? "<none>" : logFile.getAbsolutePath()); //$NON-NLS-1$
 
         StreamTee tee = new StreamTee(process, logFile);
