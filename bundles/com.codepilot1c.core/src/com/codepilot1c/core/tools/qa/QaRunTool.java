@@ -103,7 +103,7 @@ public class QaRunTool extends AbstractTool {
                 },
                 "timeout_s": {
                   "type": "integer",
-                  "description": "Таймаут выполнения в секундах"
+                  "description": "Таймаут выполнения в секундах. Минимум — 300; меньшие значения молча поднимаются до 300 (плагин ставит WARN в vibe.log с указанием источника). Vanessa-Automation в TestManager-режиме обычно стартует за 20–40 секунд — добавь буфер на тесты."
                 },
                 "skip_status_check": {
                   "type": "boolean",
@@ -1600,6 +1600,26 @@ public class QaRunTool extends AbstractTool {
             Pattern.UNICODE_CASE | Pattern.UNICODE_CHARACTER_CLASS);
 
     /**
+     * Gherkin/Vanessa "feature header" detection. Accepts both Russian forms — modern
+     * {@code Функциональность:} (Vanessa's preferred spelling) and legacy {@code Функционал:} —
+     * plus English {@code Feature:}. Detected via regex rather than {@code startsWith} because
+     * the previous {@code startsWith("функционал:")} check failed on {@code Функциональность:}
+     * (the substring "функционал" is followed by "ьность", not the colon) — see
+     * codepilot1c-feedback/2026-05-28-qa-run-auto-inject-bug.md.
+     */
+    private static final Pattern FEATURE_HEADER_LINE = Pattern.compile(
+            "^\\s*(функциональность|функционал|feature)\\s*:",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.UNICODE_CHARACTER_CLASS);
+
+    private static final Pattern BACKGROUND_HEADER_LINE = Pattern.compile(
+            "^\\s*(контекст|предыстория|background)\\s*:",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.UNICODE_CHARACTER_CLASS);
+
+    private static final Pattern SCENARIO_HEADER_LINE = Pattern.compile(
+            "^\\s*(сценарий|структура\\s+сценария|контур\\s+сценария|scenario(\\s+outline)?)\\s*:",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.UNICODE_CHARACTER_CLASS);
+
+    /**
      * Pre-processes each feature so qa_run can drive TestClient spawning headless: when the
      * feature lacks the "open TestClient with creds" step, a {@code Контекст:} block carrying
      * the {@link TestClientCreds} is prepended into a per-run injected copy and that copy is used
@@ -1612,6 +1632,7 @@ public class QaRunTool extends AbstractTool {
         List<File> result = new ArrayList<>(sources.size());
         int injected = 0;
         int skipped = 0;
+        int unchanged = 0;
         for (File source : sources) {
             File effective = source;
             try {
@@ -1620,14 +1641,26 @@ public class QaRunTool extends AbstractTool {
                     skipped++;
                 } else {
                     String injectedContent = injectTestClientBackground(content, creds);
-                    Path relativePath = featuresDir != null
-                            ? featuresDir.toPath().relativize(source.toPath())
-                            : source.toPath().getFileName();
-                    Path destPath = injectedDir.toPath().resolve(relativePath);
-                    Files.createDirectories(destPath.getParent() == null ? injectedDir.toPath() : destPath.getParent());
-                    Files.writeString(destPath, injectedContent, StandardCharsets.UTF_8);
-                    effective = destPath.toFile();
-                    injected++;
+                    if (injectedContent == content || injectedContent.equals(content)) {
+                        // Helper bailed out (no recognized header etc.). Don't write a misleading
+                        // "injected" copy that is byte-identical to the original — leave the
+                        // feature path pointing at the original so the operator can see why the
+                        // run did nothing, and warn so a future feature with a new header form
+                        // surfaces immediately instead of failing silently.
+                        LOG.warn("[%s] auto-inject: feature %s has no recognized Функциональность/Функционал/Feature header; leaving original in СписокФичДляВыполнения", //$NON-NLS-1$
+                                opId, source.getAbsolutePath());
+                        unchanged++;
+                    } else {
+                        Path relativePath = featuresDir != null
+                                ? featuresDir.toPath().relativize(source.toPath())
+                                : source.toPath().getFileName();
+                        Path destPath = injectedDir.toPath().resolve(relativePath);
+                        Files.createDirectories(destPath.getParent() == null
+                                ? injectedDir.toPath() : destPath.getParent());
+                        Files.writeString(destPath, injectedContent, StandardCharsets.UTF_8);
+                        effective = destPath.toFile();
+                        injected++;
+                    }
                 }
             } catch (IOException | RuntimeException e) {
                 LOG.warn("[%s] failed to inject TestClient creds into %s: %s — using original", //$NON-NLS-1$
@@ -1635,16 +1668,19 @@ public class QaRunTool extends AbstractTool {
             }
             result.add(effective);
         }
-        LOG.info("[%s] qa_run test_client creds auto-inject: features=%d, injected=%d, skipped_existing=%d", //$NON-NLS-1$
-                opId, Integer.valueOf(sources.size()), Integer.valueOf(injected), Integer.valueOf(skipped));
+        LOG.info("[%s] qa_run test_client creds auto-inject: features=%d, injected=%d, skipped_existing=%d, unchanged=%d", //$NON-NLS-1$
+                opId, Integer.valueOf(sources.size()), Integer.valueOf(injected),
+                Integer.valueOf(skipped), Integer.valueOf(unchanged));
         return result;
     }
 
     /**
-     * Inserts a {@code Контекст:} block carrying the auth step after the first
-     * {@code Функционал:} (or English {@code Feature:}) header. If a Контекст/Background block
-     * already exists, the new {@code Дано} is appended inside it; otherwise a new block is
-     * created right after the feature header. Visible for unit testing.
+     * Inserts a {@code Контекст:} block carrying the auth step into a Gherkin/Vanessa feature.
+     * If a {@code Контекст:}/{@code Background:} block already exists, the new {@code Дано} is
+     * appended inside it; otherwise a new block is created right before the first
+     * {@code Сценарий:}/{@code Scenario:} (so the feature's description prose stays in place).
+     * Returns the original content reference unchanged when no feature header is detected.
+     * Visible for unit testing.
      */
     static String injectTestClientBackground(String content, TestClientCreds creds) {
         if (content == null || creds == null) {
@@ -1655,21 +1691,23 @@ public class QaRunTool extends AbstractTool {
         int backgroundIdx = -1;
         int firstScenarioIdx = -1;
         for (int i = 0; i < lines.length; i++) {
-            String trimmed = lines[i].stripLeading();
-            String lower = trimmed.toLowerCase(Locale.ROOT);
-            if (headerIdx < 0 && (lower.startsWith("функционал:") || lower.startsWith("feature:"))) { //$NON-NLS-1$ //$NON-NLS-2$
+            String line = lines[i];
+            if (headerIdx < 0 && FEATURE_HEADER_LINE.matcher(line).find()) {
                 headerIdx = i;
-            } else if (backgroundIdx < 0 && (lower.startsWith("контекст:") || lower.startsWith("background:"))) { //$NON-NLS-1$ //$NON-NLS-2$
+                continue;
+            }
+            if (backgroundIdx < 0 && BACKGROUND_HEADER_LINE.matcher(line).find()) {
                 backgroundIdx = i;
-            } else if (firstScenarioIdx < 0 && (lower.startsWith("сценарий") //$NON-NLS-1$
-                    || lower.startsWith("scenario") //$NON-NLS-1$
-                    || lower.startsWith("структура сценария"))) { //$NON-NLS-1$
+                continue;
+            }
+            if (firstScenarioIdx < 0 && SCENARIO_HEADER_LINE.matcher(line).find()) {
                 firstScenarioIdx = i;
                 break;
             }
         }
         if (headerIdx < 0) {
-            // No Функционал header — feature is malformed or non-standard; leave it alone.
+            // No recognized feature header — leave the file alone, return the SAME reference so
+            // the wrapper can detect "no change" via identity equality and skip the write.
             return content;
         }
         String givenLine = String.format(
@@ -1686,14 +1724,25 @@ public class QaRunTool extends AbstractTool {
                 }
             }
         } else {
-            // No Контекст block — insert a fresh one after Функционал header.
+            // No Контекст block — insert a fresh one right BEFORE the first scenario so the
+            // feature's description prose between Функциональность: and Сценарий: stays above
+            // the new block (canonical Gherkin layout). Fall back to "right after the header"
+            // only if no scenario was found (malformed feature, but we still want to inject).
+            int insertIdx = firstScenarioIdx >= 0 ? firstScenarioIdx : (headerIdx + 1);
+            boolean inserted = false;
             for (int i = 0; i < lines.length; i++) {
-                out.add(lines[i]);
-                if (i == headerIdx) {
-                    out.add(""); //$NON-NLS-1$
+                if (!inserted && i == insertIdx) {
                     out.add("  Контекст:"); //$NON-NLS-1$
                     out.add(givenLine);
+                    out.add(""); //$NON-NLS-1$
+                    inserted = true;
                 }
+                out.add(lines[i]);
+            }
+            if (!inserted) {
+                // insertIdx was past end-of-lines (e.g., feature with header only); append.
+                out.add("  Контекст:"); //$NON-NLS-1$
+                out.add(givenLine);
             }
         }
         return String.join(System.lineSeparator(), out);
