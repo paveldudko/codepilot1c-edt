@@ -155,6 +155,9 @@ public class QaConfig {
         if (isBlank(config.paths.steps_dir) && !isBlank(config.paths.libraries_dir)) {
             config.paths.steps_dir = config.paths.libraries_dir;
         }
+        if (config.vanessa.auto_inject_test_client_creds == null) {
+            config.vanessa.auto_inject_test_client_creds = Boolean.TRUE;
+        }
         if (config.test_clients.isEmpty()) {
             boolean runtimeOrManager = Boolean.TRUE.equals(config.edt.use_runtime)
                     || Boolean.TRUE.equals(config.test_runner.use_test_manager);
@@ -186,6 +189,13 @@ public class QaConfig {
         public Boolean junit_report_enabled;
         public String path_to_va;
         public String version;
+        /**
+         * When {@code true} (default), qa_run injects a Background opening a TestClient session
+         * with the provided test_client_login/test_client_password into each feature that does
+         * not already declare one. Set to {@code false} to disable; useful when feature authors
+         * want full control over the TestClient registration step.
+         */
+        public Boolean auto_inject_test_client_creds;
     }
 
     public static class TestManager {

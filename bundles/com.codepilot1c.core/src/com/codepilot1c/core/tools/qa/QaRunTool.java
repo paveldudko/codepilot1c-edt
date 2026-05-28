@@ -149,6 +149,14 @@ public class QaRunTool extends AbstractTool {
                 "update_db": {
                   "type": "boolean",
                   "description": "Обновить базу перед запуском тестов (по умолчанию true)"
+                },
+                "test_client_login": {
+                  "type": "string",
+                  "description": "Логин test-аккаунта для TestClient (не пишется в файлы конфига). Если задан вместе с test_client_password, плагин при vanessa.auto_inject_test_client_creds=true (default) инжектит Контекст со step'ом 'Я открыл сеанс TestClient от имени \"<login>\" с паролем \"<password>\" или подключаю уже существующий' в каждую feature, у которой ещё нет такого step'а. Также подставляется в va-params.json как ДанныеКлиентовТестирования[i].Логин (если оба заданы — приоритет над EDT-association). Env-fallback: VANESSA_TEST_CLIENT_LOGIN."
+                },
+                "test_client_password": {
+                  "type": "string",
+                  "description": "Пароль test-аккаунта для TestClient (никогда не возвращается в результате; пара к test_client_login). Env-fallback: VANESSA_TEST_CLIENT_PASSWORD."
                 }
               }
             }
@@ -402,11 +410,28 @@ public class QaRunTool extends AbstractTool {
                 File templatePath = QaPaths.resolve(config.vanessa.params_template, workspaceRoot);
                 JsonObject vaParams = QaJson.loadObject(templatePath);
 
+                // Resolve TestClient credentials from tool params (with env-var fallback).
+                // Owner intent: test creds are per-call and never persisted in qa-config or
+                // EDT-association (which carries the developer's personal account). See
+                // codepilot1c-feedback/2026-05-28-qa-run-test-creds-as-tool-params.md.
+                TestClientCreds testClientCreds = resolveTestClientCreds(opId, parameters);
+
+                // Auto-inject the "open TestClient with creds" Background into features that
+                // don't already declare one — closes the headless qa_run UX loop documented in
+                // codepilot1c-feedback/2026-05-28-qa-run-green-catalog-feature.md.
+                List<File> effectiveFeatureFiles = featureSelection.files();
+                boolean autoInject = !Boolean.FALSE.equals(config.vanessa.auto_inject_test_client_creds);
+                if (autoInject && testClientCreds != null) {
+                    File injectedDir = new File(runDir, "features-injected"); //$NON-NLS-1$
+                    effectiveFeatureFiles = injectTestClientCredsIntoFeatures(opId,
+                            featureSelection.files(), featuresDir, injectedDir, testClientCreds);
+                }
+
                 applyCommonParams(vaParams, config, featuresDir, stepsDir, junitDir, screenshotsDir);
-                applyFilters(vaParams, parameters, featureSelection.files());
+                applyFilters(vaParams, parameters, effectiveFeatureFiles);
                 if (useTestManager) {
                     applyTestClients(vaParams, config, edtInfobaseConnection, useProjectInfobaseForClients,
-                            accessSettings);
+                            accessSettings, testClientCreds);
                 }
 
                 File paramsFile = new File(runDir, "va-params.json"); //$NON-NLS-1$
@@ -575,7 +600,8 @@ public class QaRunTool extends AbstractTool {
 
     private static void applyTestClients(JsonObject params, QaConfig config,
                                          String edtInfobaseConnection, boolean useProjectInfobase,
-                                         EdtRuntimeService.AccessSettings accessSettings) {
+                                         EdtRuntimeService.AccessSettings accessSettings,
+                                         TestClientCreds testClientCreds) {
         if (config.test_clients == null || config.test_clients.isEmpty()) {
             return;
         }
@@ -599,21 +625,24 @@ public class QaRunTool extends AbstractTool {
             }
             // Vanessa-Automation surfaces user/password as separate Логин/Пароль fields in
             // ДанныеКлиентовТестирования — its own BDD step signature in the bundled
-            // steps_catalog.json (line 5848: "Я подключаю клиент тестирования с параметрами |
-            // 'Имя подключения' | 'Порт' | 'Строка соединения' | 'Логин' | 'Пароль' | …")
-            // uses these exact column names. Embedding /N /P inside ДопПараметры makes
-            // Vanessa's internal parser keep only /N and silently drop /P, which then
-            // surfaces as a password prompt on every spawned TestClient (retest in
-            // codepilot1c-feedback/2026-05-28-qa-run-thin-and-creds-retest.md).
-            if (effectiveSettings != null && effectiveSettings.isInfobaseAuthentication()) {
-                String user = effectiveSettings.getUserName();
-                String password = effectiveSettings.getPassword();
-                if (user != null && !user.isBlank()) {
-                    obj.addProperty("Логин", user); //$NON-NLS-1$
-                }
-                if (password != null && !password.isBlank()) {
-                    obj.addProperty("Пароль", password); //$NON-NLS-1$
-                }
+            // steps_catalog.json (line 5848) uses these exact column names. Tool-supplied
+            // testClientCreds take priority over EDT-association so the test account stays
+            // decoupled from the developer's personal one (see
+            // codepilot1c-feedback/2026-05-28-qa-run-test-creds-as-tool-params.md).
+            String credLogin = null;
+            String credPassword = null;
+            if (testClientCreds != null) {
+                credLogin = testClientCreds.login();
+                credPassword = testClientCreds.password();
+            } else if (effectiveSettings != null && effectiveSettings.isInfobaseAuthentication()) {
+                credLogin = effectiveSettings.getUserName();
+                credPassword = effectiveSettings.getPassword();
+            }
+            if (credLogin != null && !credLogin.isBlank()) {
+                obj.addProperty("Логин", credLogin); //$NON-NLS-1$
+            }
+            if (credPassword != null && !credPassword.isBlank()) {
+                obj.addProperty("Пароль", credPassword); //$NON-NLS-1$
             }
             obj.addProperty("ДопПараметры", mergeAdditionalParams(client.additional, effectiveSettings)); //$NON-NLS-1$
             obj.addProperty("ТипКлиента", normalizeClientType(client.type)); //$NON-NLS-1$
@@ -1518,6 +1547,168 @@ public class QaRunTool extends AbstractTool {
     private static String getPreferenceEpfPath() {
         IEclipsePreferences prefs = InstanceScope.INSTANCE.getNode(VibeCorePlugin.PLUGIN_ID);
         return prefs.get(VibePreferenceConstants.PREF_QA_VA_EPF_PATH, ""); //$NON-NLS-1$
+    }
+
+    /**
+     * TestClient credentials surfaced as tool parameters (with env-var fallback). Kept separate
+     * from the EDT-association so the developer's personal account does not leak into committed
+     * features or shared qa-config. Resolved per-call by {@link #resolveTestClientCreds}.
+     */
+    record TestClientCreds(String login, String password) {
+    }
+
+    /**
+     * Resolves the effective {@link TestClientCreds} from tool params and env-vars. Returns
+     * {@code null} when neither half of the pair is provided; warns and returns {@code null} when
+     * only one half is provided (caller proceeds as if no creds were given).
+     */
+    private static TestClientCreds resolveTestClientCreds(String opId, Map<String, Object> parameters) {
+        String login = resolveTestClientCred(parameters, "test_client_login", "VANESSA_TEST_CLIENT_LOGIN"); //$NON-NLS-1$ //$NON-NLS-2$
+        String password = resolveTestClientCred(parameters, "test_client_password", "VANESSA_TEST_CLIENT_PASSWORD"); //$NON-NLS-1$ //$NON-NLS-2$
+        boolean hasLogin = login != null && !login.isBlank();
+        boolean hasPassword = password != null && !password.isBlank();
+        if (hasLogin && hasPassword) {
+            return new TestClientCreds(login, password);
+        }
+        if (hasLogin || hasPassword) {
+            LOG.warn("[%s] test_client creds incomplete (login=%s, password=%s); skipping auto-inject", //$NON-NLS-1$
+                    opId, Boolean.valueOf(hasLogin), Boolean.valueOf(hasPassword));
+        }
+        return null;
+    }
+
+    private static String resolveTestClientCred(Map<String, Object> parameters, String paramKey, String envVar) {
+        if (parameters != null) {
+            Object value = parameters.get(paramKey);
+            if (value instanceof String text && !text.isBlank()) {
+                return text;
+            }
+        }
+        String envValue = System.getenv(envVar);
+        return (envValue != null && !envValue.isBlank()) ? envValue : null;
+    }
+
+    /**
+     * Pattern matching the Russian {@code "от имени … с паролем …"} step that already encodes
+     * TestClient credentials — when present in a feature (Background or Scenario), the file is
+     * left untouched (the author opted in to manage the registration themselves). Case-insensitive,
+     * Unicode-aware. The two anchors must appear on the SAME line (the canonical form), so a feature
+     * whose narration happens to mention "от имени" and elsewhere "с паролем" doesn't false-match.
+     */
+    private static final Pattern OPEN_TESTCLIENT_AUTH_STEP_LINE = Pattern.compile(
+            "(?im)^.*\\bот\\s+имени\\b.*\\bс\\s+паролем\\b.*$",
+            Pattern.UNICODE_CASE | Pattern.UNICODE_CHARACTER_CLASS);
+
+    /**
+     * Pre-processes each feature so qa_run can drive TestClient spawning headless: when the
+     * feature lacks the "open TestClient with creds" step, a {@code Контекст:} block carrying
+     * the {@link TestClientCreds} is prepended into a per-run injected copy and that copy is used
+     * for the Vanessa session. Originals on disk are never touched. Failure to read/write a
+     * single feature logs a warning and falls back to the original — the run continues rather
+     * than blocking on a pre-processing edge case.
+     */
+    private static List<File> injectTestClientCredsIntoFeatures(String opId, List<File> sources,
+            File featuresDir, File injectedDir, TestClientCreds creds) {
+        List<File> result = new ArrayList<>(sources.size());
+        int injected = 0;
+        int skipped = 0;
+        for (File source : sources) {
+            File effective = source;
+            try {
+                String content = Files.readString(source.toPath(), StandardCharsets.UTF_8);
+                if (OPEN_TESTCLIENT_AUTH_STEP_LINE.matcher(content).find()) {
+                    skipped++;
+                } else {
+                    String injectedContent = injectTestClientBackground(content, creds);
+                    Path relativePath = featuresDir != null
+                            ? featuresDir.toPath().relativize(source.toPath())
+                            : source.toPath().getFileName();
+                    Path destPath = injectedDir.toPath().resolve(relativePath);
+                    Files.createDirectories(destPath.getParent() == null ? injectedDir.toPath() : destPath.getParent());
+                    Files.writeString(destPath, injectedContent, StandardCharsets.UTF_8);
+                    effective = destPath.toFile();
+                    injected++;
+                }
+            } catch (IOException | RuntimeException e) {
+                LOG.warn("[%s] failed to inject TestClient creds into %s: %s — using original", //$NON-NLS-1$
+                        opId, source.getAbsolutePath(), e.getMessage());
+            }
+            result.add(effective);
+        }
+        LOG.info("[%s] qa_run test_client creds auto-inject: features=%d, injected=%d, skipped_existing=%d", //$NON-NLS-1$
+                opId, Integer.valueOf(sources.size()), Integer.valueOf(injected), Integer.valueOf(skipped));
+        return result;
+    }
+
+    /**
+     * Inserts a {@code Контекст:} block carrying the auth step after the first
+     * {@code Функционал:} (or English {@code Feature:}) header. If a Контекст/Background block
+     * already exists, the new {@code Дано} is appended inside it; otherwise a new block is
+     * created right after the feature header. Visible for unit testing.
+     */
+    static String injectTestClientBackground(String content, TestClientCreds creds) {
+        if (content == null || creds == null) {
+            return content;
+        }
+        String[] lines = content.split("\\R", -1); //$NON-NLS-1$
+        int headerIdx = -1;
+        int backgroundIdx = -1;
+        int firstScenarioIdx = -1;
+        for (int i = 0; i < lines.length; i++) {
+            String trimmed = lines[i].stripLeading();
+            String lower = trimmed.toLowerCase(Locale.ROOT);
+            if (headerIdx < 0 && (lower.startsWith("функционал:") || lower.startsWith("feature:"))) { //$NON-NLS-1$ //$NON-NLS-2$
+                headerIdx = i;
+            } else if (backgroundIdx < 0 && (lower.startsWith("контекст:") || lower.startsWith("background:"))) { //$NON-NLS-1$ //$NON-NLS-2$
+                backgroundIdx = i;
+            } else if (firstScenarioIdx < 0 && (lower.startsWith("сценарий") //$NON-NLS-1$
+                    || lower.startsWith("scenario") //$NON-NLS-1$
+                    || lower.startsWith("структура сценария"))) { //$NON-NLS-1$
+                firstScenarioIdx = i;
+                break;
+            }
+        }
+        if (headerIdx < 0) {
+            // No Функционал header — feature is malformed or non-standard; leave it alone.
+            return content;
+        }
+        String givenLine = String.format(
+                "    Дано Я открыл сеанс TestClient от имени \"%s\" с паролем \"%s\" или подключаю уже существующий", //$NON-NLS-1$
+                escapeForGherkinQuotedString(creds.login()),
+                escapeForGherkinQuotedString(creds.password()));
+        List<String> out = new ArrayList<>(lines.length + 4);
+        if (backgroundIdx >= 0) {
+            // Append our Дано inside the existing Контекст block, right after its header line.
+            for (int i = 0; i < lines.length; i++) {
+                out.add(lines[i]);
+                if (i == backgroundIdx) {
+                    out.add(givenLine);
+                }
+            }
+        } else {
+            // No Контекст block — insert a fresh one after Функционал header.
+            for (int i = 0; i < lines.length; i++) {
+                out.add(lines[i]);
+                if (i == headerIdx) {
+                    out.add(""); //$NON-NLS-1$
+                    out.add("  Контекст:"); //$NON-NLS-1$
+                    out.add(givenLine);
+                }
+            }
+        }
+        return String.join(System.lineSeparator(), out);
+    }
+
+    /**
+     * Conservative escape for a value going inside a Gherkin {@code "..."} string. Gherkin does
+     * not standardize backslash escapes, but the 1C-style {@code ""} doubling is the established
+     * convention and Vanessa handles it. Strip control characters that would corrupt the step.
+     */
+    private static String escapeForGherkinQuotedString(String value) {
+        if (value == null) {
+            return ""; //$NON-NLS-1$
+        }
+        return value.replace("\"", "\"\""); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private static class ProcessResult {
