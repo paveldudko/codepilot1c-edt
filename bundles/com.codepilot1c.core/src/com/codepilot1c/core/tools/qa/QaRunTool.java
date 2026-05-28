@@ -597,6 +597,24 @@ public class QaRunTool extends AbstractTool {
             if (client.port != null) {
                 obj.addProperty("ПортЗапускаТестКлиента", client.port); //$NON-NLS-1$
             }
+            // Vanessa-Automation surfaces user/password as separate Логин/Пароль fields in
+            // ДанныеКлиентовТестирования — its own BDD step signature in the bundled
+            // steps_catalog.json (line 5848: "Я подключаю клиент тестирования с параметрами |
+            // 'Имя подключения' | 'Порт' | 'Строка соединения' | 'Логин' | 'Пароль' | …")
+            // uses these exact column names. Embedding /N /P inside ДопПараметры makes
+            // Vanessa's internal parser keep only /N and silently drop /P, which then
+            // surfaces as a password prompt on every spawned TestClient (retest in
+            // codepilot1c-feedback/2026-05-28-qa-run-thin-and-creds-retest.md).
+            if (effectiveSettings != null && effectiveSettings.isInfobaseAuthentication()) {
+                String user = effectiveSettings.getUserName();
+                String password = effectiveSettings.getPassword();
+                if (user != null && !user.isBlank()) {
+                    obj.addProperty("Логин", user); //$NON-NLS-1$
+                }
+                if (password != null && !password.isBlank()) {
+                    obj.addProperty("Пароль", password); //$NON-NLS-1$
+                }
+            }
             obj.addProperty("ДопПараметры", mergeAdditionalParams(client.additional, effectiveSettings)); //$NON-NLS-1$
             obj.addProperty("ТипКлиента", normalizeClientType(client.type)); //$NON-NLS-1$
             obj.addProperty("ИмяКомпьютера", safe(client.host)); //$NON-NLS-1$
@@ -659,18 +677,11 @@ public class QaRunTool extends AbstractTool {
             if (accessSettings.isInfobaseAuthentication()) {
                 String user = accessSettings.getUserName();
                 String password = accessSettings.getPassword();
-                if (user != null && !user.isBlank() && !containsOption(result, "/N")) { //$NON-NLS-1$
-                    // Vanessa-Automation re-parses ДопПараметры via its own tokenizer before
-                    // spawning the TestClient — it accepts /N"<value>" (no space, value quoted)
-                    // and silently drops anything formatted as "/N <space> value". The space
-                    // form caused /P to disappear entirely, the TestClient launched with an
-                    // empty password prompt, then Vanessa registered a 25-second connection
-                    // timeout. Always emit the quoted no-space form.
-                    parts.add(formatVanessaAuthFlag("/N", user)); //$NON-NLS-1$
-                }
-                if (password != null && !password.isBlank() && !containsOption(result, "/P")) { //$NON-NLS-1$
-                    parts.add(formatVanessaAuthFlag("/P", password)); //$NON-NLS-1$
-                }
+                // NB: /N /P are no longer injected into ДопПараметры. Vanessa surfaces them as
+                // separate Логин/Пароль fields in ДанныеКлиентовТестирования (handled in
+                // applyTestClients). Embedding them here was ignored by Vanessa's internal
+                // ДопПараметры parser anyway — see retest in
+                // codepilot1c-feedback/2026-05-28-qa-run-thin-and-creds-retest.md.
             }
         }
         return String.join(" ", parts).trim();
@@ -689,19 +700,6 @@ public class QaRunTool extends AbstractTool {
             return false;
         }
         return value.toLowerCase(Locale.ROOT).contains(token.toLowerCase(Locale.ROOT));
-    }
-
-    /**
-     * Formats an {@code /N} or {@code /P} flag for the {@code ДопПараметры} string sent to
-     * Vanessa-Automation. Vanessa re-tokenizes the string with its own parser before spawning
-     * each TestClient and only the {@code /Flag"<value>"} form (no separator, value quoted)
-     * survives intact — the space-separated {@code /Flag <space> value} form causes the value
-     * to be misread and adjacent flags to be dropped. Embedded quotes are doubled per the 1C
-     * convention.
-     */
-    private static String formatVanessaAuthFlag(String flag, String value) {
-        String safe = value == null ? "" : value.replace("\"", "\"\""); //$NON-NLS-1$ //$NON-NLS-2$
-        return flag + "\"" + safe + "\""; //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private static String quoteIfNeeded(String value) {
