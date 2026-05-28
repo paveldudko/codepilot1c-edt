@@ -103,6 +103,85 @@ public class ConnectInfobaseToolTest {
     }
 
     @Test
+    public void serverKindForwardsSrvrRefAndReportsConnectionString() {
+        RecordingConnectService service = new RecordingConnectService();
+        service.responseBuilder = req -> new ConnectResult(ConnectionKind.SERVER,
+                "Srvr=\"" + req.serverAddress() + "\";Ref=\"" + req.serverRef() + "\";", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                req.serverRef(), req.login(), null, req.setPrimary());
+        ConnectInfobaseTool tool = new ConnectInfobaseTool(service);
+
+        Map<String, Object> params = new HashMap<>();
+        params.put("project_name", "Demo"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("kind", "server"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("srvr", "term-dev-3.erpdev.team"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("ref", "BF-5946"); //$NON-NLS-1$ //$NON-NLS-2$
+        // database_path intentionally omitted — not required for kind=server.
+
+        ToolResult result = tool.execute(params).join();
+
+        assertTrue(result.isSuccess());
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        JsonObject infobase = json.getAsJsonObject("infobase"); //$NON-NLS-1$
+        assertEquals("server", infobase.get("kind").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("Srvr=\"term-dev-3.erpdev.team\";Ref=\"BF-5946\";", //$NON-NLS-1$
+                infobase.get("path").getAsString()); //$NON-NLS-1$
+
+        ConnectRequest observed = service.lastRequest;
+        assertNotNull(observed);
+        assertEquals(ConnectionKind.SERVER, observed.kind());
+        assertEquals("term-dev-3.erpdev.team", observed.serverAddress()); //$NON-NLS-1$
+        assertEquals("BF-5946", observed.serverRef()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void serverKindWithoutSrvrFails() {
+        ConnectInfobaseTool tool = new ConnectInfobaseTool(new RecordingConnectService());
+
+        Map<String, Object> params = new HashMap<>();
+        params.put("project_name", "Demo"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("kind", "server"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("ref", "BF-5946"); //$NON-NLS-1$ //$NON-NLS-2$
+        // srvr omitted.
+
+        ToolResult result = tool.execute(params).join();
+        assertFalse(result.isSuccess());
+        JsonObject json = JsonParser.parseString(result.getErrorMessage()).getAsJsonObject();
+        assertEquals(EdtToolErrorCode.INVALID_ARGUMENT.name(), json.get("error_code").getAsString()); //$NON-NLS-1$
+        assertTrue(json.get("message").getAsString().toLowerCase().contains("srvr")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void connectionKindParsesServer() {
+        assertEquals(ConnectionKind.SERVER, ConnectionKind.parse("server")); //$NON-NLS-1$
+        assertEquals(ConnectionKind.SERVER, ConnectionKind.parse("  SERVER  ")); //$NON-NLS-1$
+        assertEquals(ConnectionKind.FILE, ConnectionKind.parse("file")); //$NON-NLS-1$
+        assertNull(ConnectionKind.parse("cluster")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void serviceValidateRequiresSrvrAndRefForServerKind() {
+        EdtInfobaseConnectService service = new EdtInfobaseConnectService();
+        // Blank srvr -> INVALID_ARGUMENT before any EDT/workspace access (validate runs first).
+        try {
+            service.connect(new ConnectRequest("Demo", null, ConnectionKind.SERVER, null, null, //$NON-NLS-1$
+                    true, null, null, false, null, "", "BF-5946")); //$NON-NLS-1$ //$NON-NLS-2$
+            fail("expected INVALID_ARGUMENT for missing srvr"); //$NON-NLS-1$
+        } catch (EdtToolException e) {
+            assertEquals(EdtToolErrorCode.INVALID_ARGUMENT, e.getCode());
+            assertTrue(e.getMessage().toLowerCase().contains("srvr")); //$NON-NLS-1$
+        }
+        // srvr present, ref blank -> INVALID_ARGUMENT mentioning ref.
+        try {
+            service.connect(new ConnectRequest("Demo", null, ConnectionKind.SERVER, null, null, //$NON-NLS-1$
+                    true, null, null, false, null, "term-dev-3", "")); //$NON-NLS-1$ //$NON-NLS-2$
+            fail("expected INVALID_ARGUMENT for missing ref"); //$NON-NLS-1$
+        } catch (EdtToolException e) {
+            assertEquals(EdtToolErrorCode.INVALID_ARGUMENT, e.getCode());
+            assertTrue(e.getMessage().toLowerCase().contains("ref")); //$NON-NLS-1$
+        }
+    }
+
+    @Test
     public void missingRequiredFieldFails() {
         ConnectInfobaseTool tool = new ConnectInfobaseTool(new RecordingConnectService());
 
@@ -828,12 +907,19 @@ public class ConnectInfobaseToolTest {
             if (request.projectName() == null || request.projectName().isBlank()) {
                 throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT, "project_name is required"); //$NON-NLS-1$
             }
-            if (request.databasePath() == null || request.databasePath().isBlank()) {
-                throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT, "database_path is required"); //$NON-NLS-1$
-            }
             if (request.kind() == null) {
                 throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
-                        "kind is required and must be 'file' or 'standalone'"); //$NON-NLS-1$
+                        "kind is required and must be 'file', 'standalone' or 'server'"); //$NON-NLS-1$
+            }
+            if (request.kind() == ConnectionKind.SERVER) {
+                if (request.serverAddress() == null || request.serverAddress().isBlank()) {
+                    throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT, "srvr is required for kind=server"); //$NON-NLS-1$
+                }
+                if (request.serverRef() == null || request.serverRef().isBlank()) {
+                    throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT, "ref is required for kind=server"); //$NON-NLS-1$
+                }
+            } else if (request.databasePath() == null || request.databasePath().isBlank()) {
+                throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT, "database_path is required"); //$NON-NLS-1$
             }
             this.lastRequest = request;
             return responseBuilder.build(request);

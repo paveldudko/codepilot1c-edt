@@ -51,7 +51,8 @@ public class EdtInfobaseConnectService {
 
     public enum ConnectionKind {
         FILE,
-        STANDALONE;
+        STANDALONE,
+        SERVER;
 
         public static ConnectionKind parse(String raw) {
             if (raw == null) {
@@ -66,6 +67,9 @@ public class EdtInfobaseConnectService {
             }
             if ("standalone".equalsIgnoreCase(trimmed)) { //$NON-NLS-1$
                 return STANDALONE;
+            }
+            if ("server".equalsIgnoreCase(trimmed)) { //$NON-NLS-1$
+                return SERVER;
             }
             return null;
         }
@@ -82,6 +86,8 @@ public class EdtInfobaseConnectService {
         private final String runtimeVersion;
         private final boolean force;
         private final String infobaseName;
+        private final String serverAddress;
+        private final String serverRef;
 
         public ConnectRequest(String projectName, String databasePath, ConnectionKind kind, String login,
                 String password, boolean setPrimary, Integer serverPort, String runtimeVersion) {
@@ -97,6 +103,13 @@ public class EdtInfobaseConnectService {
         public ConnectRequest(String projectName, String databasePath, ConnectionKind kind, String login,
                 String password, boolean setPrimary, Integer serverPort, String runtimeVersion, boolean force,
                 String infobaseName) {
+            this(projectName, databasePath, kind, login, password, setPrimary, serverPort, runtimeVersion, force,
+                    infobaseName, null, null);
+        }
+
+        public ConnectRequest(String projectName, String databasePath, ConnectionKind kind, String login,
+                String password, boolean setPrimary, Integer serverPort, String runtimeVersion, boolean force,
+                String infobaseName, String serverAddress, String serverRef) {
             this.projectName = projectName;
             this.databasePath = databasePath;
             this.kind = kind;
@@ -107,6 +120,8 @@ public class EdtInfobaseConnectService {
             this.runtimeVersion = runtimeVersion;
             this.force = force;
             this.infobaseName = infobaseName;
+            this.serverAddress = serverAddress;
+            this.serverRef = serverRef;
         }
 
         public String projectName() { return projectName; }
@@ -119,6 +134,10 @@ public class EdtInfobaseConnectService {
         public String runtimeVersion() { return runtimeVersion; }
         public boolean force() { return force; }
         public String infobaseName() { return infobaseName; }
+        /** kind=server: cluster server address (the {@code Srvr} key), e.g. "host" or "host:port". */
+        public String serverAddress() { return serverAddress; }
+        /** kind=server: infobase name on the cluster (the {@code Ref} key). */
+        public String serverRef() { return serverRef; }
     }
 
     public static final class ConnectResult {
@@ -175,6 +194,7 @@ public class EdtInfobaseConnectService {
         return switch (request.kind()) {
             case FILE -> connectFile(project, request);
             case STANDALONE -> connectStandalone(project, request);
+            case SERVER -> connectServer(project, request);
         };
     }
 
@@ -182,13 +202,67 @@ public class EdtInfobaseConnectService {
         if (request.projectName() == null || request.projectName().isBlank()) {
             throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT, "project_name is required"); //$NON-NLS-1$
         }
-        if (request.databasePath() == null || request.databasePath().isBlank()) {
-            throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT, "database_path is required"); //$NON-NLS-1$
-        }
         if (request.kind() == null) {
             throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
-                    "kind is required and must be 'file' or 'standalone'"); //$NON-NLS-1$
+                    "kind is required and must be 'file', 'standalone' or 'server'"); //$NON-NLS-1$
         }
+        if (request.kind() == ConnectionKind.SERVER) {
+            // Server binding identifies the infobase by Srvr/Ref, not a filesystem path.
+            if (request.serverAddress() == null || request.serverAddress().isBlank()) {
+                throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
+                        "srvr is required for kind=server (cluster server address)"); //$NON-NLS-1$
+            }
+            if (request.serverRef() == null || request.serverRef().isBlank()) {
+                throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
+                        "ref is required for kind=server (infobase name on the cluster)"); //$NON-NLS-1$
+            }
+        } else if (request.databasePath() == null || request.databasePath().isBlank()) {
+            throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT, "database_path is required"); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Binds a client/server (cluster) infobase identified by {@code Srvr}/{@code Ref}. The only
+     * server-specific step is building the {@link InfobaseReference} via
+     * {@code newServerInfobaseReference(server, ref)} — the rest reuses the same name-collision,
+     * adopt-existing, persist, access-settings and associate machinery as {@link #connectFile},
+     * which all operate on the reference's identity (UUID / connection string) regardless of kind.
+     */
+    private ConnectResult connectServer(IProject project, ConnectRequest request) {
+        String server = request.serverAddress().trim();
+        String ref = request.serverRef().trim();
+
+        String replacedPrevious = checkExistingPrimary(project, request);
+
+        InfobaseReference reference = InfobaseReferences.newServerInfobaseReference(server, ref);
+        String infobaseName = request.infobaseName();
+        if (infobaseName == null || infobaseName.isBlank()) {
+            infobaseName = reference.getName();
+        }
+        if (infobaseName == null || infobaseName.isBlank()) {
+            infobaseName = ref;
+        }
+        reference.setName(infobaseName);
+        // Adopt an existing same-connection association entry (name+UUID) so setDefaultInfobase
+        // targets it; throws PATH_ALREADY_ASSOCIATED_AS on an explicit conflicting infobase_name.
+        adoptExistingAssociationName(project, reference, request.infobaseName());
+        if (reference.getName() != null && !reference.getName().isBlank()) {
+            infobaseName = reference.getName();
+        }
+        persistReference(reference);
+        storeAccessSettings(reference, request.login(), request.password());
+        boolean primary = associate(project, reference, request.setPrimary());
+
+        String connectionString = infobaseIdentity(reference);
+        if (connectionString == null || connectionString.isBlank()) {
+            connectionString = "Srvr=\"" + server + "\";Ref=\"" + ref + "\";"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        }
+
+        LOG.info("connect_infobase(server) project=%s srvr=%s ref=%s primary=%s", //$NON-NLS-1$
+                request.projectName(), server, ref, Boolean.valueOf(primary));
+
+        return new ConnectResult(ConnectionKind.SERVER, connectionString, infobaseName,
+                sanitizeLogin(request.login()), null, primary, replacedPrevious);
     }
 
     private IProject resolveProject(String projectName) {

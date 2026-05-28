@@ -40,12 +40,20 @@ public class ConnectInfobaseTool extends AbstractTool {
                 },
                 "database_path": {
                   "type": "string",
-                  "description": "kind=file: path to an EXISTING file-infobase folder — may live anywhere (e.g. a per-branch sandbox), only associated, not written to. kind=standalone: infobase data path that MUST be inside the workspace or home directory (the standalone server writes a .codepilot-standalone/ subtree there)."
+                  "description": "REQUIRED for kind=file/standalone (ignored for kind=server). kind=file: path to an EXISTING file-infobase folder — may live anywhere (e.g. a per-branch sandbox), only associated, not written to. kind=standalone: infobase data path that MUST be inside the workspace or home directory (the standalone server writes a .codepilot-standalone/ subtree there)."
                 },
                 "kind": {
                   "type": "string",
-                  "enum": ["file", "standalone"],
-                  "description": "Connection mode: 'file' for file-based infobase, 'standalone' for the local standalone server"
+                  "enum": ["file", "standalone", "server"],
+                  "description": "Connection mode: 'file' for a file-based infobase, 'standalone' for the local standalone server, 'server' for a client/server (cluster) infobase identified by srvr+ref."
+                },
+                "srvr": {
+                  "type": "string",
+                  "description": "kind=server: cluster server address (the Srvr key), e.g. 'host' or 'host:port'."
+                },
+                "ref": {
+                  "type": "string",
+                  "description": "kind=server: infobase name on the cluster (the Ref key)."
                 },
                 "login": {
                   "type": "string",
@@ -76,7 +84,7 @@ public class ConnectInfobaseTool extends AbstractTool {
                   "description": "Optional display name for the infobase in EDT's registry. Defaults to the folder name. Pass a distinct name when the folder name collides with an existing infobase (e.g. a same-named server infobase) — otherwise the call fails with NAME_COLLISION."
                 }
               },
-              "required": ["project_name", "database_path", "kind"]
+              "required": ["project_name", "kind"]
             }
             """; //$NON-NLS-1$
 
@@ -124,7 +132,7 @@ public class ConnectInfobaseTool extends AbstractTool {
                 ConnectionKind kind = ConnectionKind.parse(rawKind);
                 if (kind == null) {
                     throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
-                            "kind must be 'file' or 'standalone', got: " + rawKind); //$NON-NLS-1$
+                            "kind must be 'file', 'standalone' or 'server', got: " + rawKind); //$NON-NLS-1$
                 }
                 String databasePath = asString(parameters.get("database_path")); //$NON-NLS-1$
                 String login = asString(parameters.get("login")); //$NON-NLS-1$
@@ -134,9 +142,11 @@ public class ConnectInfobaseTool extends AbstractTool {
                 Integer serverPort = asInteger(parameters.get("server_port")); //$NON-NLS-1$
                 String runtimeVersion = asString(parameters.get("runtime_version")); //$NON-NLS-1$
                 String infobaseName = asString(parameters.get("infobase_name")); //$NON-NLS-1$
+                String srvr = asString(parameters.get("srvr")); //$NON-NLS-1$
+                String ref = asString(parameters.get("ref")); //$NON-NLS-1$
 
                 ConnectRequest request = new ConnectRequest(projectName, databasePath, kind, login,
-                        password, setPrimary, serverPort, runtimeVersion, force, infobaseName);
+                        password, setPrimary, serverPort, runtimeVersion, force, infobaseName, srvr, ref);
                 ConnectResult result = connectService.connect(request);
                 JsonObject payload = successPayload(opId, projectName, result);
                 return ToolResult.success(pretty(payload), ToolResult.ToolResultType.CODE);
