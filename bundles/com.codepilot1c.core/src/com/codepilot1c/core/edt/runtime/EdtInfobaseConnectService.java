@@ -31,6 +31,7 @@ import com._1c.g5.v8.dt.platform.services.core.infobases.InfobaseReferenceExcept
 import com._1c.g5.v8.dt.platform.services.core.infobases.InfobaseReferences;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseAccess;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
+import com._1c.g5.v8.dt.platform.services.model.Section;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.e1c.g5.v8.dt.platform.standaloneserver.core.StandaloneServerException;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
@@ -485,13 +486,29 @@ public class EdtInfobaseConnectService {
         } catch (RuntimeException ignored) {
             // Fall back to the single-name lookup below.
         }
-        if (!candidates.isEmpty()) {
-            return candidates;
+        if (candidates.isEmpty()) {
+            try {
+                manager.findInfobaseByName(name).ifPresent(candidates::add);
+            } catch (RuntimeException ignored) {
+                // Best-effort lookup only.
+            }
         }
+        // EDT's findInfobasesByNames / findInfobaseByName sometimes miss entries — observed live
+        // on 2025.2.3 where a server infobase shared a display name with a file folder but did not
+        // surface via these targeted lookups (the NAME_COLLISION check then let the call proceed
+        // and a later EDT step surfaced an "Association does not contain ..." error). Sweep
+        // manager.getAll() as a backstop so both the collision check AND idempotent reconnect see
+        // the full v8i registry.
         try {
-            manager.findInfobaseByName(name).ifPresent(candidates::add);
+            for (Section section : manager.getAll()) {
+                if (section instanceof InfobaseReference ref
+                        && name.equals(ref.getName())
+                        && !candidates.contains(ref)) {
+                    candidates.add(ref);
+                }
+            }
         } catch (RuntimeException ignored) {
-            // Best-effort lookup only.
+            // Best-effort sweep; the targeted lookups above are still authoritative.
         }
         return candidates;
     }

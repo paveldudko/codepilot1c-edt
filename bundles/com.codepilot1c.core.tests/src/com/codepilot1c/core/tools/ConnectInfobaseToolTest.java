@@ -365,6 +365,34 @@ public class ConnectInfobaseToolTest {
                 manager.addCalls.isEmpty());
     }
 
+    /**
+     * Backstop: in live EDT, {@code IInfobaseManager.findInfobasesByNames} /
+     * {@code findInfobaseByName} sometimes miss entries (observed for a server infobase whose
+     * display name equalled a file-infobase folder). The collision check must also sweep
+     * {@code manager.getAll()} so the typed NAME_COLLISION still fires.
+     */
+    @Test
+    public void persistReferenceThrowsNameCollisionWhenOnlyVisibleViaGetAll() {
+        StubInfobaseManager manager = new StubInfobaseManager(true);
+        // Targeted lookups are empty — the candidate is only reachable via getAll().
+        manager.allSections = List.of(
+                stubReferenceWithState(UUID.randomUUID(), "shared-name", "Srvr=\"term\";Ref=\"shared-name\"")); //$NON-NLS-1$ //$NON-NLS-2$
+        StubGateway gateway = new StubGateway(manager, noopAccessManager());
+        TestableConnectService service = new TestableConnectService(gateway);
+
+        InfobaseReference reference = stubReferenceWithState(null, "shared-name", //$NON-NLS-1$
+                "File=\"/tmp/new-target\""); //$NON-NLS-1$
+
+        try {
+            service.invokePersistReference(reference);
+            fail("expected NAME_COLLISION via getAll() sweep"); //$NON-NLS-1$
+        } catch (EdtToolException e) {
+            assertEquals(EdtToolErrorCode.NAME_COLLISION, e.getCode());
+        }
+        assertTrue("manager.add must NOT be called when the collision is only visible via getAll()", //$NON-NLS-1$
+                manager.addCalls.isEmpty());
+    }
+
     @Test
     public void persistReferenceReusesUuidWhenIdentityMatchesConnectionString() {
         StubInfobaseManager manager = new StubInfobaseManager(true);
@@ -527,6 +555,7 @@ public class ConnectInfobaseToolTest {
         Optional<InfobaseReference> findByUuid = Optional.empty();
         Optional<InfobaseReference> findByName = Optional.empty();
         java.util.List<InfobaseReference> findByNames = List.of();
+        java.util.List<com._1c.g5.v8.dt.platform.services.model.Section> allSections = List.of();
 
         StubInfobaseManager(boolean persistenceSupported) {
             this.persistenceSupported = persistenceSupported;
@@ -539,7 +568,7 @@ public class ConnectInfobaseToolTest {
         public java.util.List<InfobaseReference> getRecent() { return List.of(); }
 
         @Override
-        public java.util.List<com._1c.g5.v8.dt.platform.services.model.Section> getAll() { return List.of(); }
+        public java.util.List<com._1c.g5.v8.dt.platform.services.model.Section> getAll() { return allSections; }
 
         @Override
         public org.eclipse.core.runtime.IStatus getLoadStatus() { return null; }
