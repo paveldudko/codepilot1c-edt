@@ -20,6 +20,7 @@ import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.ILaunchableRun
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager.ThickClientInfo;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IThickClientLauncher;
+import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IThinClientLauncher;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.RuntimeExecutionException;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.impl.RuntimeExecutionCommandBuilder;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.impl.RuntimeExecutionCommandBuilder.ThickClientMode;
@@ -51,6 +52,8 @@ public class EdtRuntimeService {
             "com._1c.g5.v8.dt.platform.services.core.runtimeType.EnterprisePlatform"; //$NON-NLS-1$
     private static final String COMPONENT_TYPE_THICK_CLIENT =
             "com._1c.g5.v8.dt.platform.services.core.componentTypes.ThickClient"; //$NON-NLS-1$
+    private static final String COMPONENT_TYPE_THIN_CLIENT =
+            "com._1c.g5.v8.dt.platform.services.core.componentTypes.ThinClient"; //$NON-NLS-1$
 
     private final EdtRuntimeGateway gateway;
 
@@ -339,6 +342,48 @@ public class EdtRuntimeService {
                 executorInfo.getExecutor());
     }
 
+    /**
+     * Resolves the thin client (1cv8c.exe) binary for the project's infobase. Required by
+     * qa_run's TestManager/SingleClient spawn paths: Vanessa-Automation 6.x/7.x silently hangs
+     * pre-FeaturePlayer when hosted on a thick (1cv8.exe) client — manual repro Test D from
+     * codepilot1c-feedback/2026-05-28-qa-run-thin-client-breakthrough.md isolated this — and only
+     * functions against the thin client. Returns {@code null} on resolution failure so the caller
+     * can surface a typed error; the alternative (silent hang on the wrong binary) is what this
+     * is preventing.
+     *
+     * <p>Mirrors {@link #resolveThickClientInfo} via the same {@code resolveExecutor} recipe with
+     * {@link IThinClientLauncher} / {@link #COMPONENT_TYPE_THIN_CLIENT}. Returns the binary
+     * {@link File} only — downstream {@link RuntimeExecutionCommandBuilder} accepts the same
+     * ENTERPRISE arg shape for either binary; only the executable path differs.</p>
+     */
+    public File resolveThinClientFile(InfobaseReference infobase, String versionMask) {
+        IRuntimeComponentManager runtimeComponentManager = gateway.getRuntimeComponentManager();
+        IResolvableRuntimeInstallationManager installationManager =
+                gateway.getResolvableRuntimeInstallationManager();
+        try {
+            IResolvableRuntimeInstallation resolvable;
+            if (versionMask != null && !versionMask.isBlank()) {
+                resolvable = installationManager.resolveByVersionOrMask(RUNTIME_TYPE_ENTERPRISE_PLATFORM, versionMask);
+            } else {
+                resolvable = installationManager.resolveByProjectAndInfobase(RUNTIME_TYPE_ENTERPRISE_PLATFORM,
+                        null, infobase, InfobaseAccessType.UPDATE);
+            }
+            AppArch appArch = infobase != null ? infobase.getAppArch() : AppArch.AUTO;
+            RuntimeInstallation installation = resolvable.resolve(List.of(COMPONENT_TYPE_THIN_CLIENT), appArch);
+            ComponentExecutorInfo<ILaunchableRuntimeComponent, IThinClientLauncher> executorInfo =
+                    runtimeComponentManager.resolveExecutor(ILaunchableRuntimeComponent.class,
+                            IThinClientLauncher.class, installation, COMPONENT_TYPE_THIN_CLIENT);
+            if (executorInfo == null || executorInfo.getComponent() == null
+                    || executorInfo.getComponent().getFile() == null) {
+                return null;
+            }
+            return executorInfo.getComponent().getFile();
+        } catch (Exception | NoSuchMethodError e) {
+            LOG.warn("Failed to resolve thin client (possible EDT API incompatibility): " + e.getMessage(), e); //$NON-NLS-1$
+            return null;
+        }
+    }
+
     public RuntimeExecutionCommandBuilder buildTestManagerCommand(String projectName, File epfPath,
                                                                   File vaParamsPath, File workspaceRoot,
                                                                   boolean showMainForm, boolean quietInstall,
@@ -363,8 +408,15 @@ public class EdtRuntimeService {
                                                                   String versionMask,
                                                                   AccessSettings explicitAccessSettings) {
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
-        ThickClientInfo info = resolveThickClientInfo(infobase, versionMask);
-        File clientFile = info.component().getFile();
+        // Vanessa-Automation hard-requires the thin client (1cv8c.exe) — thick host silent-hangs
+        // pre-FeaturePlayer with descendants=0 and a zero-byte va.log (manual repro Test D in
+        // codepilot1c-feedback/2026-05-28-qa-run-thin-client-breakthrough.md). Both qa_run spawn
+        // paths (TestManager and SingleClient) flow through here, so both must use thin.
+        File clientFile = resolveThinClientFile(infobase, versionMask);
+        if (clientFile == null) {
+            throw new IllegalStateException(
+                    "Thin client (1cv8c.exe) runtime component not resolved — Vanessa-Automation requires it"); //$NON-NLS-1$
+        }
 
         RuntimeExecutionCommandBuilder builder = new RuntimeExecutionCommandBuilder(clientFile,
                 ThickClientMode.ENTERPRISE);
@@ -415,8 +467,15 @@ public class EdtRuntimeService {
                                                                    String versionMask,
                                                                    AccessSettings explicitAccessSettings) {
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
-        ThickClientInfo info = resolveThickClientInfo(infobase, versionMask);
-        File clientFile = info.component().getFile();
+        // Vanessa-Automation hard-requires the thin client (1cv8c.exe) — thick host silent-hangs
+        // pre-FeaturePlayer with descendants=0 and a zero-byte va.log (manual repro Test D in
+        // codepilot1c-feedback/2026-05-28-qa-run-thin-client-breakthrough.md). Both qa_run spawn
+        // paths (TestManager and SingleClient) flow through here, so both must use thin.
+        File clientFile = resolveThinClientFile(infobase, versionMask);
+        if (clientFile == null) {
+            throw new IllegalStateException(
+                    "Thin client (1cv8c.exe) runtime component not resolved — Vanessa-Automation requires it"); //$NON-NLS-1$
+        }
 
         RuntimeExecutionCommandBuilder builder = new RuntimeExecutionCommandBuilder(clientFile,
                 ThickClientMode.ENTERPRISE);
