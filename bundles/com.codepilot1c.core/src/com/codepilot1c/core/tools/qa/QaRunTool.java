@@ -419,15 +419,31 @@ public class QaRunTool extends AbstractTool {
                 // Auto-inject the "open TestClient with creds" Background into features that
                 // don't already declare one — closes the headless qa_run UX loop documented in
                 // codepilot1c-feedback/2026-05-28-qa-run-green-catalog-feature.md.
+                //
+                // Vanessa resolves entries in СписокФичДляВыполнения against КаталогФич's index
+                // (see codepilot1c-feedback/2026-05-28-qa-run-inject-path-bug.md). Pointing the
+                // injected copies at a runDir-side path while КаталогФич still names the original
+                // tree silently drops the run. So we mirror the WHOLE feature tree into
+                // runDir/features-injected/ and shift КаталогФич to that mirror; only the
+                // selected features may have their mirror copy overwritten with the injected
+                // content. Touched and untouched features now sit under the same root.
                 List<File> effectiveFeatureFiles = featureSelection.files();
+                File effectiveFeaturesDir = featuresDir;
                 boolean autoInject = !Boolean.FALSE.equals(config.vanessa.auto_inject_test_client_creds);
-                if (autoInject && testClientCreds != null) {
-                    File injectedDir = new File(runDir, "features-injected"); //$NON-NLS-1$
-                    effectiveFeatureFiles = injectTestClientCredsIntoFeatures(opId,
-                            featureSelection.files(), featuresDir, injectedDir, testClientCreds);
+                if (autoInject && testClientCreds != null && featuresDir != null) {
+                    File mirroredFeaturesDir = new File(runDir, "features-injected"); //$NON-NLS-1$
+                    try {
+                        mirrorFeaturesTree(featuresDir, mirroredFeaturesDir);
+                        effectiveFeatureFiles = injectTestClientCredsIntoFeatures(opId,
+                                featureSelection.files(), featuresDir, mirroredFeaturesDir, testClientCreds);
+                        effectiveFeaturesDir = mirroredFeaturesDir;
+                    } catch (IOException e) {
+                        LOG.warn("[%s] auto-inject: failed to mirror feature tree (%s) — falling back to the original tree without auto-inject", //$NON-NLS-1$
+                                opId, e.getMessage());
+                    }
                 }
 
-                applyCommonParams(vaParams, config, featuresDir, stepsDir, junitDir, screenshotsDir);
+                applyCommonParams(vaParams, config, effectiveFeaturesDir, stepsDir, junitDir, screenshotsDir);
                 applyFilters(vaParams, parameters, effectiveFeatureFiles);
                 if (useTestManager) {
                     applyTestClients(vaParams, config, edtInfobaseConnection, useProjectInfobaseForClients,
@@ -1627,44 +1643,51 @@ public class QaRunTool extends AbstractTool {
      * single feature logs a warning and falls back to the original — the run continues rather
      * than blocking on a pre-processing edge case.
      */
+    /**
+     * Operates on the {@link #mirrorFeaturesTree mirrored} feature tree so the resulting paths
+     * sit under {@code КаталогФич} (= the mirror) and Vanessa can resolve them via its index.
+     * Reads each selected feature from its mirror counterpart, decides whether to inject creds,
+     * and rewrites only that mirror copy on inject. Untouched mirrors are kept verbatim by the
+     * caller's prior {@code mirrorFeaturesTree} pass — there is no path here that touches files
+     * under the original {@code featuresDir}.
+     */
     private static List<File> injectTestClientCredsIntoFeatures(String opId, List<File> sources,
-            File featuresDir, File injectedDir, TestClientCreds creds) {
+            File featuresDir, File mirroredFeaturesDir, TestClientCreds creds) {
         List<File> result = new ArrayList<>(sources.size());
         int injected = 0;
         int skipped = 0;
         int unchanged = 0;
         for (File source : sources) {
-            File effective = source;
+            Path relativePath = featuresDir != null
+                    ? featuresDir.toPath().relativize(source.toPath())
+                    : source.toPath().getFileName();
+            Path mirrorPath = mirroredFeaturesDir.toPath().resolve(relativePath);
+            File effective = mirrorPath.toFile();
             try {
-                String content = Files.readString(source.toPath(), StandardCharsets.UTF_8);
+                String content = Files.readString(mirrorPath, StandardCharsets.UTF_8);
                 if (OPEN_TESTCLIENT_AUTH_STEP_LINE.matcher(content).find()) {
                     skipped++;
                 } else {
                     String injectedContent = injectTestClientBackground(content, creds);
                     if (injectedContent == content || injectedContent.equals(content)) {
-                        // Helper bailed out (no recognized header etc.). Don't write a misleading
-                        // "injected" copy that is byte-identical to the original — leave the
-                        // feature path pointing at the original so the operator can see why the
-                        // run did nothing, and warn so a future feature with a new header form
-                        // surfaces immediately instead of failing silently.
-                        LOG.warn("[%s] auto-inject: feature %s has no recognized Функциональность/Функционал/Feature header; leaving original in СписокФичДляВыполнения", //$NON-NLS-1$
+                        // Helper saw no recognized header — leave the mirror copy verbatim and
+                        // surface why so a feature with an unsupported header form is loud, not
+                        // silent. The mirror path is still returned so Vanessa resolves it.
+                        LOG.warn("[%s] auto-inject: feature %s has no recognized Функциональность/Функционал/Feature header; leaving mirror copy verbatim", //$NON-NLS-1$
                                 opId, source.getAbsolutePath());
                         unchanged++;
                     } else {
-                        Path relativePath = featuresDir != null
-                                ? featuresDir.toPath().relativize(source.toPath())
-                                : source.toPath().getFileName();
-                        Path destPath = injectedDir.toPath().resolve(relativePath);
-                        Files.createDirectories(destPath.getParent() == null
-                                ? injectedDir.toPath() : destPath.getParent());
-                        Files.writeString(destPath, injectedContent, StandardCharsets.UTF_8);
-                        effective = destPath.toFile();
+                        Files.writeString(mirrorPath, injectedContent, StandardCharsets.UTF_8);
                         injected++;
                     }
                 }
             } catch (IOException | RuntimeException e) {
-                LOG.warn("[%s] failed to inject TestClient creds into %s: %s — using original", //$NON-NLS-1$
+                LOG.warn("[%s] failed to inject TestClient creds into %s: %s — using original (un-mirrored) path", //$NON-NLS-1$
                         opId, source.getAbsolutePath(), e.getMessage());
+                // Last-resort fallback: point Vanessa at the original file. The run won't have
+                // creds injected for this feature, but it's still better than dangling a half-
+                // written mirror copy.
+                effective = source;
             }
             result.add(effective);
         }
@@ -1672,6 +1695,38 @@ public class QaRunTool extends AbstractTool {
                 opId, Integer.valueOf(sources.size()), Integer.valueOf(injected),
                 Integer.valueOf(skipped), Integer.valueOf(unchanged));
         return result;
+    }
+
+    /**
+     * Recursively copies the whole {@code featuresDir} tree to a destination so the injected
+     * feature copies live alongside the rest of the tree and {@code КаталогФич} can be shifted
+     * to the mirror in one place. Vanessa indexes feature files relative to КаталогФич; if the
+     * injected copies live outside that root, Vanessa silently drops them
+     * (codepilot1c-feedback/2026-05-28-qa-run-inject-path-bug.md). Copying ~tens of small text
+     * files per run is cheap and removes that whole class of "path-resolution silently misses"
+     * surprises.
+     */
+    private static void mirrorFeaturesTree(File sourceDir, File destDir) throws IOException {
+        Path source = sourceDir.toPath();
+        Path destination = destDir.toPath();
+        Files.createDirectories(destination);
+        try (java.util.stream.Stream<Path> walk = Files.walk(source)) {
+            java.util.Iterator<Path> it = walk.iterator();
+            while (it.hasNext()) {
+                Path current = it.next();
+                Path relative = source.relativize(current);
+                Path target = destination.resolve(relative);
+                if (Files.isDirectory(current)) {
+                    Files.createDirectories(target);
+                } else {
+                    Path parent = target.getParent();
+                    if (parent != null) {
+                        Files.createDirectories(parent);
+                    }
+                    Files.copy(current, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
     }
 
     /**
