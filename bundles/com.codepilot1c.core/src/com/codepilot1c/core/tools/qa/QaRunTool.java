@@ -660,10 +660,16 @@ public class QaRunTool extends AbstractTool {
                 String user = accessSettings.getUserName();
                 String password = accessSettings.getPassword();
                 if (user != null && !user.isBlank() && !containsOption(result, "/N")) { //$NON-NLS-1$
-                    parts.add("/N " + quoteIfNeeded(user)); //$NON-NLS-1$
+                    // Vanessa-Automation re-parses ДопПараметры via its own tokenizer before
+                    // spawning the TestClient — it accepts /N"<value>" (no space, value quoted)
+                    // and silently drops anything formatted as "/N <space> value". The space
+                    // form caused /P to disappear entirely, the TestClient launched with an
+                    // empty password prompt, then Vanessa registered a 25-second connection
+                    // timeout. Always emit the quoted no-space form.
+                    parts.add(formatVanessaAuthFlag("/N", user)); //$NON-NLS-1$
                 }
                 if (password != null && !password.isBlank() && !containsOption(result, "/P")) { //$NON-NLS-1$
-                    parts.add("/P " + quoteIfNeeded(password)); //$NON-NLS-1$
+                    parts.add(formatVanessaAuthFlag("/P", password)); //$NON-NLS-1$
                 }
             }
         }
@@ -683,6 +689,19 @@ public class QaRunTool extends AbstractTool {
             return false;
         }
         return value.toLowerCase(Locale.ROOT).contains(token.toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * Formats an {@code /N} or {@code /P} flag for the {@code ДопПараметры} string sent to
+     * Vanessa-Automation. Vanessa re-tokenizes the string with its own parser before spawning
+     * each TestClient and only the {@code /Flag"<value>"} form (no separator, value quoted)
+     * survives intact — the space-separated {@code /Flag <space> value} form causes the value
+     * to be misread and adjacent flags to be dropped. Embedded quotes are doubled per the 1C
+     * convention.
+     */
+    private static String formatVanessaAuthFlag(String flag, String value) {
+        String safe = value == null ? "" : value.replace("\"", "\"\""); //$NON-NLS-1$ //$NON-NLS-2$
+        return flag + "\"" + safe + "\""; //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private static String quoteIfNeeded(String value) {
