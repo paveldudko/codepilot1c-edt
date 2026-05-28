@@ -70,6 +70,22 @@ public class EdtDiagnosticsTool extends AbstractTool {
                 "password": {
                   "type": "string",
                   "description": "Только для launch_app: пароль к user (не возвращается в результате)."
+                },
+                "dry_run": {
+                  "type": "boolean",
+                  "description": "Только для launch_app: собрать команду без запуска процесса (вернуть status=dry_run, без spawn). ДОЛЖЕН быть объявлен здесь — MCP-клиенты отбрасывают необъявленные параметры, и без этого dry_run молча игнорировался → реальный запуск."
+                },
+                "wait_for_exit": {
+                  "type": "boolean",
+                  "description": "Только для launch_app: дождаться выхода процесса (в паре с timeout_s)."
+                },
+                "timeout_s": {
+                  "type": "integer",
+                  "description": "Только для launch_app: таймаут ожидания в секундах при wait_for_exit."
+                },
+                "additional_parameters": {
+                  "type": "string",
+                  "description": "Только для launch_app: дополнительные параметры командной строки 1С-клиента."
                 }
               },
               "required": ["command"],

@@ -142,8 +142,10 @@ public class EdtLaunchAppTool extends AbstractTool {
             LOG.info("[%s] START edt_launch_app", opId); //$NON-NLS-1$
             File workspaceRoot = getWorkspaceRoot();
             String projectName = asString(parameters == null ? null : parameters.get("project_name")); //$NON-NLS-1$
-            boolean waitForExit = parameters != null && Boolean.TRUE.equals(parameters.get("wait_for_exit")); //$NON-NLS-1$
-            boolean dryRun = parameters != null && Boolean.TRUE.equals(parameters.get("dry_run")); //$NON-NLS-1$
+            boolean waitForExit = asBool(parameters == null ? null : parameters.get("wait_for_exit")); //$NON-NLS-1$
+            // dry_run gates a real process spawn, so accept both a JSON boolean and a "true" string
+            // — a coercion quirk here would mean launching when the caller asked only to preview.
+            boolean dryRun = asBool(parameters == null ? null : parameters.get("dry_run")); //$NON-NLS-1$
             String additionalParameters = asOptionalString(
                     parameters == null ? null : parameters.get("additional_parameters")); //$NON-NLS-1$
             String mode = asOptionalString(parameters == null ? null : parameters.get("mode")); //$NON-NLS-1$
@@ -346,6 +348,16 @@ public class EdtLaunchAppTool extends AbstractTool {
 
     private static String pretty(JsonObject object) {
         return new GsonBuilder().setPrettyPrinting().create().toJson(object);
+    }
+
+    private static boolean asBool(Object value) {
+        if (value instanceof Boolean b) {
+            return b.booleanValue();
+        }
+        if (value instanceof String s) {
+            return "true".equalsIgnoreCase(s.trim()); //$NON-NLS-1$
+        }
+        return false;
     }
 
     private static String asString(Object value) {
