@@ -22,7 +22,17 @@ public class QaJUnitReport {
     public int skipped;
     public double timeSeconds;
     public List<FailureDetail> failureDetails = new ArrayList<>();
+    public List<Suite> suites = new ArrayList<>();
     public List<String> files = new ArrayList<>();
+
+    /**
+     * Tests that neither failed, errored, nor were skipped. Clamped at zero so a malformed report
+     * (e.g. a suite that under-reports {@code tests}) can never yield a negative count.
+     */
+    public int passed() {
+        int value = tests - failures - errors - skipped;
+        return value < 0 ? 0 : value;
+    }
 
     public static QaJUnitReport parseDirectory(File junitDir, int maxFailureDetails) throws IOException {
         if (junitDir == null || !junitDir.exists() || !junitDir.isDirectory()) {
@@ -72,11 +82,20 @@ public class QaJUnitReport {
     }
 
     private static void parseTestSuite(Element suite, QaJUnitReport report, int maxFailureDetails, String fileName) {
-        report.tests += getIntAttr(suite, "tests");
-        report.failures += getIntAttr(suite, "failures");
-        report.errors += getIntAttr(suite, "errors");
-        report.skipped += getIntAttr(suite, "skipped");
-        report.timeSeconds += getDoubleAttr(suite, "time");
+        Suite suiteSummary = new Suite();
+        suiteSummary.name = suite.getAttribute("name");
+        suiteSummary.tests = getIntAttr(suite, "tests");
+        suiteSummary.failures = getIntAttr(suite, "failures");
+        suiteSummary.errors = getIntAttr(suite, "errors");
+        suiteSummary.skipped = getIntAttr(suite, "skipped");
+        suiteSummary.timeSeconds = getDoubleAttr(suite, "time");
+        report.suites.add(suiteSummary);
+
+        report.tests += suiteSummary.tests;
+        report.failures += suiteSummary.failures;
+        report.errors += suiteSummary.errors;
+        report.skipped += suiteSummary.skipped;
+        report.timeSeconds += suiteSummary.timeSeconds;
 
         if (report.failureDetails.size() >= maxFailureDetails) {
             return;
@@ -163,5 +182,15 @@ public class QaJUnitReport {
         public String type;
         public String details;
         public String file;
+    }
+
+    /** Per-suite ({@code <testsuite>}) counts, in document order across all parsed report files. */
+    public static class Suite {
+        public String name;
+        public int tests;
+        public int failures;
+        public int errors;
+        public int skipped;
+        public double timeSeconds;
     }
 }

@@ -501,6 +501,56 @@ public class EdtRuntimeService {
         return builder;
     }
 
+    public RuntimeExecutionCommandBuilder buildUnitTestCommand(String projectName, File configPath, File logFile) {
+        return buildUnitTestCommand(projectName, configPath, logFile, null, null);
+    }
+
+    /**
+     * Builds a thin-client ({@code 1cv8c.exe}) ENTERPRISE command that runs YAxUnit in-process via
+     * the {@code RunUnitTests=<config>} startup parameter. Unlike the Vanessa paths there is **no**
+     * TestManager mode and **no** external {@code .epf} — the YAxUnit framework is loaded from the
+     * extension installed in the infobase, and its session-start handler reads the JSON run config
+     * (filter / reportPath / exitCode / closeAfterTests) from the path passed here.
+     *
+     * @param explicitAccessSettings session credentials to use instead of the infobase defaults
+     *                               (e.g. when the caller passes {@code test_client_login}); may be
+     *                               {@code null} to fall back to the EDT-resolved access settings.
+     */
+    public RuntimeExecutionCommandBuilder buildUnitTestCommand(String projectName, File configPath, File logFile,
+                                                               String versionMask,
+                                                               AccessSettings explicitAccessSettings) {
+        if (configPath == null) {
+            throw new IllegalArgumentException("YAxUnit config path is required"); //$NON-NLS-1$
+        }
+        InfobaseReference infobase = resolveDefaultInfobase(projectName);
+        // Thin client (1cv8c.exe) is this plugin's validated launch surface on EDT 2025.2
+        // (resolveExecutor path). YAxUnit runs fine in-process on it; thick is unnecessary.
+        File clientFile = resolveThinClientFile(infobase, versionMask);
+        if (clientFile == null) {
+            throw new IllegalStateException(
+                    "Thin client (1cv8c.exe) runtime component not resolved — YAxUnit requires a 1C client"); //$NON-NLS-1$
+        }
+
+        RuntimeExecutionCommandBuilder builder = new RuntimeExecutionCommandBuilder(clientFile,
+                ThickClientMode.ENTERPRISE);
+        if (infobase.getConnectionString() == null) {
+            throw new IllegalStateException("Infobase connection string not available"); //$NON-NLS-1$
+        }
+        builder.forInfobase(infobase.getConnectionString(), false);
+        if (explicitAccessSettings != null) {
+            applyAccessSettings(builder, explicitAccessSettings);
+        } else {
+            applyAccessSettings(builder, infobase);
+        }
+        builder.startupOption("RunUnitTests=" + configPath.getAbsolutePath()); //$NON-NLS-1$
+        builder.disableStartupDialogs();
+        builder.disableStartupMessages();
+        if (logFile != null) {
+            builder.logTo(logFile, true);
+        }
+        return builder;
+    }
+
     public RuntimeExecutionCommandBuilder buildUpdateCommand(String projectName, File logFile) {
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
         ThickClientInfo info = resolveThickClientInfo(infobase);

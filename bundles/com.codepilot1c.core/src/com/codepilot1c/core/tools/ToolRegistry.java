@@ -148,6 +148,7 @@ public class ToolRegistry {
         // are now dispatched through EdtDiagnosticsTool
         register(new com.codepilot1c.core.tools.workspace.UpdateInfobaseStatusTool());
         register(new QaRunTool());
+        register(new YaxunitRunTool());
         register(new QaPrepareFormContextTool());
         register(new QaPlanScenarioTool());
         register(new QaValidateFeatureTool());
