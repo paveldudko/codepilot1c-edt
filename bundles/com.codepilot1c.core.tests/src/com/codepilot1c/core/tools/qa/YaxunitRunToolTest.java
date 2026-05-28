@@ -3,6 +3,7 @@ package com.codepilot1c.core.tools.qa;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
@@ -74,6 +75,26 @@ public class YaxunitRunToolTest {
         assertEquals(List.of("a", "b"), YaxunitRunTool.asStringList("a, b")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         assertTrue(YaxunitRunTool.asStringList(null).isEmpty());
         assertTrue(YaxunitRunTool.asStringList("").isEmpty()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void readExitCodeStripsUtf8BomAndTrailingNewline() throws Exception {
+        // YAxUnit writes exitcode.txt as EF BB BF <digit> CRLF — the smoke run surfaced an empty
+        // yaxunit_exit_code because the BOM defeated parsing. Pin the strip here.
+        File dir = Files.createTempDirectory("yaxunit-exit").toFile(); //$NON-NLS-1$
+        File ec = new File(dir, "exitcode.txt"); //$NON-NLS-1$
+
+        Files.write(ec.toPath(), new byte[] {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF, '0', 0x0D, 0x0A});
+        assertEquals(Integer.valueOf(0), YaxunitRunTool.readExitCode(ec));
+
+        Files.write(ec.toPath(), new byte[] {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF, '1'});
+        assertEquals(Integer.valueOf(1), YaxunitRunTool.readExitCode(ec));
+
+        // Plain content without BOM still parses.
+        Files.write(ec.toPath(), "0".getBytes(StandardCharsets.UTF_8)); //$NON-NLS-1$
+        assertEquals(Integer.valueOf(0), YaxunitRunTool.readExitCode(ec));
+
+        assertNull(YaxunitRunTool.readExitCode(new File(dir, "missing.txt"))); //$NON-NLS-1$
     }
 
     @Test

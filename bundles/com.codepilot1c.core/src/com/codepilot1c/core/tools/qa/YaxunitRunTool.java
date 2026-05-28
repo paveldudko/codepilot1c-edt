@@ -87,7 +87,7 @@ public class YaxunitRunTool extends AbstractTool {
     private static final String SCHEMA = """
             {
               "type": "object",
-              "description": "Запускает YAxUnit unit-тесты проекта EDT (тонкий клиент, RunUnitTests, без TestManager). Парсит jUnit-отчёт в структурированный результат.",
+              "description": "Запускает YAxUnit unit-тесты проекта EDT (тонкий клиент, RunUnitTests, без TestManager). Парсит jUnit-отчёт в структурированный результат. При успешном прогоне onec.log/launch.log могут быть пустыми (closeAfterTests закрывает клиент до flush) — это нормально; полный лог движка в yaxunit.log.",
               "properties": {
                 "project_name": {
                   "type": "string",
@@ -504,12 +504,16 @@ public class YaxunitRunTool extends AbstractTool {
 
     // ---- small helpers ----------------------------------------------------------------------
 
-    private static Integer readExitCode(File exitCodeFile) {
+    static Integer readExitCode(File exitCodeFile) {
         if (exitCodeFile == null || !exitCodeFile.isFile()) {
             return null;
         }
         try {
-            String raw = Files.readString(exitCodeFile.toPath(), StandardCharsets.UTF_8).strip();
+            // YAxUnit writes the file with a UTF-8 BOM (EF BB BF) ahead of the 0/1. Files.readString
+            // keeps it as a leading U+FEFF, which strip() does NOT treat as whitespace — so without
+            // removing it, parse fails and yaxunit_exit_code surfaces empty. Drop any BOM first.
+            String raw = Files.readString(exitCodeFile.toPath(), StandardCharsets.UTF_8)
+                    .replace("﻿", "").strip(); //$NON-NLS-1$ //$NON-NLS-2$
             if (raw.isEmpty()) {
                 return null;
             }
