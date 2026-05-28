@@ -684,7 +684,11 @@ public class EdtRuntimeService {
         StringBuilder sb = new StringBuilder();
         sb.append("StartFeaturePlayer"); //$NON-NLS-1$
         if (vaParamsPath != null) {
-            sb.append(";VAParams=").append(vaParamsPath.getAbsolutePath()); //$NON-NLS-1$
+            // Vanessa-Automation 6.x/7.x parses the StartFeaturePlayer payload looking for the
+            // key VBParams (not VAParams). Sending the wrong key makes the EPF write "Не найден
+            // путь к файлу JSON. Параметр: VBParams." to va.log and bail BEFORE spawning any
+            // TestClient — visible as descendants=0 / va.log=100b in qa_run heartbeats.
+            sb.append(";VBParams=").append(vaParamsPath.getAbsolutePath()); //$NON-NLS-1$
         }
         if (workspaceRoot != null) {
             sb.append(";WorkspaceRoot=").append(workspaceRoot.getAbsolutePath()); //$NON-NLS-1$

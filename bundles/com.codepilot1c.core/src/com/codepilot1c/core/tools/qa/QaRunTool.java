@@ -753,7 +753,9 @@ public class QaRunTool extends AbstractTool {
 
         List<String> cParams = new ArrayList<>();
         cParams.add("StartFeaturePlayer"); //$NON-NLS-1$
-        cParams.add("VAParams=" + formatValue(paramsFile.getAbsolutePath())); //$NON-NLS-1$
+        // Match the key Vanessa-Automation actually parses (VBParams, not VAParams) — see the
+        // matching site in EdtRuntimeService.buildStartupOption for the full rationale.
+        cParams.add("VBParams=" + formatValue(paramsFile.getAbsolutePath())); //$NON-NLS-1$
         cParams.add("WorkspaceRoot=" + formatValue(workspaceRoot.getAbsolutePath())); //$NON-NLS-1$
 
         if (quietInstall) {
