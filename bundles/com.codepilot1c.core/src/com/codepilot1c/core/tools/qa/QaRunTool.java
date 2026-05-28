@@ -476,7 +476,7 @@ public class QaRunTool extends AbstractTool {
 
                 int timeout = extractTimeout(parameters, config);
                 long start = System.currentTimeMillis();
-                ProcessResult processResult = runProcess(processBuilder, logFile, timeout, workspaceRoot);
+                ProcessResult processResult = runProcess(processBuilder, logFile, timeout, workspaceRoot, opId);
                 long durationMs = System.currentTimeMillis() - start;
 
                 QaJUnitReport report = null;
@@ -1074,8 +1074,8 @@ public class QaRunTool extends AbstractTool {
         }
     }
 
-    private static ProcessResult runProcess(ProcessBuilder builder, File logFile, int timeoutSeconds, File workingDir)
-            throws IOException, InterruptedException {
+    private static ProcessResult runProcess(ProcessBuilder builder, File logFile, int timeoutSeconds,
+            File workingDir, String opId) throws IOException, InterruptedException {
         if (builder == null) {
             throw new IOException("ProcessBuilder is null"); //$NON-NLS-1$
         }
@@ -1084,15 +1084,55 @@ public class QaRunTool extends AbstractTool {
         }
         builder.redirectErrorStream(true);
         Process process = builder.start();
+        long pid = process.pid();
+        // Spawn marker: gives the caller a pid to correlate with the OS process tree and the
+        // configured timeout — without this, vibe.log goes silent between START and the eventual
+        // exit/timeout, making a hung 1cv8 indistinguishable from "still running".
+        LOG.info("[%s] qa_run spawned (pid=%d, timeout=%ds, logfile=%s)", opId, //$NON-NLS-1$
+                Long.valueOf(pid), Integer.valueOf(timeoutSeconds),
+                logFile == null ? "<none>" : logFile.getAbsolutePath()); //$NON-NLS-1$
 
         StreamTee tee = new StreamTee(process, logFile);
         Thread thread = new Thread(tee, "qa-run-tee"); //$NON-NLS-1$
         thread.start();
 
-        boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+        // Heartbeat loop: instead of blocking on waitFor(timeout) we poll in fixed chunks and emit
+        // a status snapshot so operators can tell whether 1cv8 is making forward progress (log
+        // growing, child TestClient spawned) or stuck. Vanessa often takes minutes to load the EPF
+        // before writing anything to its own logs; this is the only signal during that window.
+        final long heartbeatMillis = 30_000L;
+        long startMillis = System.currentTimeMillis();
+        long deadlineMillis = startMillis + (long) timeoutSeconds * 1000L;
+        boolean finished = false;
+        while (true) {
+            long now = System.currentTimeMillis();
+            long remainingMillis = deadlineMillis - now;
+            if (remainingMillis <= 0) {
+                break;
+            }
+            long waitMillis = Math.min(heartbeatMillis, remainingMillis);
+            finished = process.waitFor(waitMillis, TimeUnit.MILLISECONDS);
+            if (finished) {
+                break;
+            }
+            long elapsedMillis = System.currentTimeMillis() - startMillis;
+            long logBytes = safeFileSize(logFile);
+            long descendantCount;
+            try {
+                descendantCount = process.descendants().count();
+            } catch (RuntimeException ignored) {
+                descendantCount = -1L;
+            }
+            LOG.info("[%s] qa_run heartbeat: elapsed=%ds/%ds, pid=%d alive, descendants=%d, logfile=%d bytes", //$NON-NLS-1$
+                    opId, Long.valueOf(elapsedMillis / 1000L), Integer.valueOf(timeoutSeconds),
+                    Long.valueOf(pid), Long.valueOf(descendantCount), Long.valueOf(logBytes));
+        }
+
         TimeoutDiagnostics timeoutDiagnostics = null;
         if (!finished) {
             long logSizeBeforeTerminate = safeFileSize(logFile);
+            LOG.warn("[%s] qa_run TIMEOUT after %ds — terminating process tree (pid=%d)", opId, //$NON-NLS-1$
+                    Integer.valueOf(timeoutSeconds), Long.valueOf(pid));
             TerminationSnapshot termination = terminateProcessTree(process);
             long logSizeAfterTerminate = safeFileSize(logFile);
             timeoutDiagnostics = new TimeoutDiagnostics(
@@ -1105,6 +1145,9 @@ public class QaRunTool extends AbstractTool {
         }
         thread.join(5000);
         int exitCode = finished ? process.exitValue() : -1;
+        long elapsedMillis = System.currentTimeMillis() - startMillis;
+        LOG.info("[%s] qa_run process finished: exit=%d, finished=%s, elapsed=%dms", opId, //$NON-NLS-1$
+                Integer.valueOf(exitCode), Boolean.valueOf(finished), Long.valueOf(elapsedMillis));
         List<String> tail = tee.getTailLines();
 
         return new ProcessResult(exitCode, finished, tail, timeoutDiagnostics);
