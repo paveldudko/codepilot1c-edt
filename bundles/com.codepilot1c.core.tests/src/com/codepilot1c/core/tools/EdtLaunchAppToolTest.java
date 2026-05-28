@@ -46,6 +46,31 @@ public class EdtLaunchAppToolTest {
     }
 
     @Test
+    public void modeThinTakesBuildModeLaunchPath() throws Exception {
+        File workspaceRoot = Files.createTempDirectory("edt-launch-tool-mode").toFile(); //$NON-NLS-1$
+        EdtLaunchAppTool tool = new TestEdtLaunchAppTool(
+                new StubProjectResolver(workspaceRoot),
+                new StubLaunchContextBuilder(workspaceRoot),
+                new StubRuntimeService(),
+                ProcessBuilder::start,
+                EdtLaunchProcessRegistry.getInstance(),
+                workspaceRoot);
+
+        ToolResult result = tool.execute(Map.of(
+                "project_name", "Demo", //$NON-NLS-1$ //$NON-NLS-2$
+                "mode", "thin", //$NON-NLS-1$ //$NON-NLS-2$
+                "dry_run", Boolean.TRUE //$NON-NLS-1$
+        )).join();
+
+        assertTrue(result.isSuccess());
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        assertEquals("dry_run", json.get("status").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("thin", json.get("mode").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        // The mode path must call buildModeLaunchProcess, not buildEnterpriseLaunchProcess.
+        assertTrue(json.getAsJsonArray("command").get(0).getAsString().contains("mode-launch")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
     public void waitsForShortLivedProcess() throws Exception {
         File workspaceRoot = Files.createTempDirectory("edt-launch-tool-wait").toFile(); //$NON-NLS-1$
         EdtLaunchAppTool tool = new TestEdtLaunchAppTool(
@@ -128,6 +153,13 @@ public class EdtLaunchAppToolTest {
         public ProcessBuilder buildEnterpriseLaunchProcess(EdtResolvedLaunchContext context,
                 String additionalParameters, File logFile) {
             return new ProcessBuilder(javaBin(), "-version"); //$NON-NLS-1$
+        }
+
+        @Override
+        public ProcessBuilder buildModeLaunchProcess(String projectName, String mode,
+                String additionalParameters, AccessSettings explicitAccessSettings, File logFile) {
+            // Marker so the test can assert the mode path was taken (dry_run never starts it).
+            return new ProcessBuilder("mode-launch", javaBin(), "-version"); //$NON-NLS-1$ //$NON-NLS-2$
         }
     }
 

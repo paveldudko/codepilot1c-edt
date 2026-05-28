@@ -59,6 +59,19 @@ public class EdtLaunchAppTool extends AbstractTool {
                   "type": "string",
                   "description": "EDT project name"
                 },
+                "mode": {
+                  "type": "string",
+                  "enum": ["thin", "thick", "designer"],
+                  "description": "Клиент для запуска: thin (1cv8c, ENTERPRISE), thick (1cv8, ENTERPRISE; по умолчанию), designer (1cv8, Конфигуратор). thin переиспользует проверенный live путь резолва тонкого клиента."
+                },
+                "user": {
+                  "type": "string",
+                  "description": "Логин сессии ИБ (override настроек EDT). Требует password. Без него — настройки доступа из EDT/.launch."
+                },
+                "password": {
+                  "type": "string",
+                  "description": "Пароль к user (никогда не возвращается в результате)."
+                },
                 "wait_for_exit": {
                   "type": "boolean",
                   "description": "Wait for the launched process to exit"
@@ -133,20 +146,39 @@ public class EdtLaunchAppTool extends AbstractTool {
             boolean dryRun = parameters != null && Boolean.TRUE.equals(parameters.get("dry_run")); //$NON-NLS-1$
             String additionalParameters = asOptionalString(
                     parameters == null ? null : parameters.get("additional_parameters")); //$NON-NLS-1$
+            String mode = asOptionalString(parameters == null ? null : parameters.get("mode")); //$NON-NLS-1$
+            String user = asOptionalString(parameters == null ? null : parameters.get("user")); //$NON-NLS-1$
+            String password = asOptionalString(parameters == null ? null : parameters.get("password")); //$NON-NLS-1$
+            EdtRuntimeService.AccessSettings creds = (user != null && password != null)
+                    ? EdtRuntimeService.AccessSettings.infobaseAuthentication(user, password, null)
+                    : null;
+            // Default path (thick + ENTERPRISE, no explicit creds) is preserved exactly — it keeps
+            // the .launch access-settings merge. Any mode override or explicit creds takes the
+            // additive buildModeLaunchProcess path.
+            boolean modePath = creds != null || (mode != null && !mode.equalsIgnoreCase("thick")); //$NON-NLS-1$
             int timeoutSeconds = extractTimeoutSeconds(parameters, waitForExit);
             File runDir = buildRunDirectory(workspaceRoot, opId);
             File logFile = new File(runDir, "launch.log"); //$NON-NLS-1$
             try {
-                EdtResolvedLaunchInputs inputs = projectResolver.resolveLaunchInputs(projectName, workspaceRoot);
-                EdtResolvedLaunchContext context = contextBuilder.build(inputs);
-                ProcessBuilder processBuilder = runtimeService.buildEnterpriseLaunchProcess(context,
-                        additionalParameters, logFile);
-                processBuilder.directory(workspaceRoot);
-                processBuilder.redirectErrorStream(true);
-                processBuilder.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile));
-
-                JsonObject result = basePayload(opId, dryRun ? "dry_run" : "ready", projectName, dryRun, //$NON-NLS-1$ //$NON-NLS-2$
-                        workspaceRoot, context, processBuilder.command(), logFile);
+                ProcessBuilder processBuilder;
+                JsonObject result;
+                if (modePath) {
+                    String effectiveMode = mode == null ? "thick" : mode; //$NON-NLS-1$
+                    processBuilder = runtimeService.buildModeLaunchProcess(projectName, effectiveMode,
+                            additionalParameters, creds, logFile);
+                    configureProcess(processBuilder, workspaceRoot, logFile);
+                    result = modePayload(opId, dryRun ? "dry_run" : "ready", projectName, dryRun, //$NON-NLS-1$ //$NON-NLS-2$
+                            workspaceRoot, effectiveMode, processBuilder.command(), logFile);
+                } else {
+                    EdtResolvedLaunchInputs inputs = projectResolver.resolveLaunchInputs(projectName, workspaceRoot);
+                    EdtResolvedLaunchContext context = contextBuilder.build(inputs);
+                    processBuilder = runtimeService.buildEnterpriseLaunchProcess(context,
+                            additionalParameters, logFile);
+                    configureProcess(processBuilder, workspaceRoot, logFile);
+                    result = basePayload(opId, dryRun ? "dry_run" : "ready", projectName, dryRun, //$NON-NLS-1$ //$NON-NLS-2$
+                            workspaceRoot, context, processBuilder.command(), logFile);
+                    result.addProperty("mode", "thick"); //$NON-NLS-1$ //$NON-NLS-2$
+                }
                 if (dryRun) {
                     return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
                 }
@@ -215,6 +247,30 @@ public class EdtLaunchAppTool extends AbstractTool {
             result.addProperty("infobase_connection",
                     context.infobase().getConnectionString().asConnectionString()); //$NON-NLS-1$
         }
+        JsonArray commandJson = new JsonArray();
+        for (String item : command) {
+            commandJson.add(item);
+        }
+        result.add("command", commandJson); //$NON-NLS-1$
+        return result;
+    }
+
+    private static void configureProcess(ProcessBuilder processBuilder, File workspaceRoot, File logFile) {
+        processBuilder.directory(workspaceRoot);
+        processBuilder.redirectErrorStream(true);
+        processBuilder.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile));
+    }
+
+    private static JsonObject modePayload(String opId, String status, String projectName, boolean dryRun,
+            File workspaceRoot, String mode, List<String> command, File logFile) {
+        JsonObject result = new JsonObject();
+        result.addProperty("op_id", opId); //$NON-NLS-1$
+        result.addProperty("status", status); //$NON-NLS-1$
+        result.addProperty("project_name", projectName); //$NON-NLS-1$
+        result.addProperty("mode", mode); //$NON-NLS-1$
+        result.addProperty("dry_run", dryRun); //$NON-NLS-1$
+        result.addProperty("workspace_root", workspaceRoot == null ? "" : workspaceRoot.getAbsolutePath()); //$NON-NLS-1$ //$NON-NLS-2$
+        result.addProperty("log_path", logFile == null ? "" : logFile.getAbsolutePath()); //$NON-NLS-1$ //$NON-NLS-2$
         JsonArray commandJson = new JsonArray();
         for (String item : command) {
             commandJson.add(item);

@@ -600,6 +600,60 @@ public class EdtRuntimeService {
         return builder.toProcessBuilder();
     }
 
+    /**
+     * Builds a generic launch {@link ProcessBuilder} for an explicit client mode, resolving the
+     * infobase and the right client binary from scratch. Backs {@code edt_launch_app}'s mode/creds
+     * path; the default (thick + ENTERPRISE, no explicit credentials) still flows through
+     * {@link #buildEnterpriseLaunchProcess} so existing launch behaviour is byte-for-byte unchanged.
+     *
+     * @param mode {@code "thin"} (1cv8c, ENTERPRISE), {@code "thick"} (1cv8, ENTERPRISE) or
+     *             {@code "designer"} (1cv8, DESIGNER); {@code null}/blank means thick.
+     * @param explicitAccessSettings session credentials to use instead of the infobase defaults;
+     *             {@code null} falls back to the EDT-resolved access settings.
+     */
+    public ProcessBuilder buildModeLaunchProcess(String projectName, String mode, String additionalParameters,
+            AccessSettings explicitAccessSettings, File logFile) {
+        InfobaseReference infobase = resolveDefaultInfobase(projectName);
+        String requested = mode == null ? "thick" : mode.trim(); //$NON-NLS-1$
+        File clientFile;
+        ThickClientMode clientMode;
+        if (requested.equalsIgnoreCase("thin")) { //$NON-NLS-1$
+            clientFile = resolveThinClientFile(infobase, null);
+            clientMode = ThickClientMode.ENTERPRISE;
+        } else if (requested.equalsIgnoreCase("designer")) { //$NON-NLS-1$
+            clientFile = resolveThickClientInfo(infobase).component().getFile();
+            clientMode = ThickClientMode.DESIGNER;
+        } else if (requested.isEmpty() || requested.equalsIgnoreCase("thick")) { //$NON-NLS-1$
+            clientFile = resolveThickClientInfo(infobase).component().getFile();
+            clientMode = ThickClientMode.ENTERPRISE;
+        } else {
+            throw new IllegalArgumentException("Unknown launch mode: " + mode + " (use thin|thick|designer)"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (clientFile == null) {
+            throw new IllegalStateException("Client runtime component not resolved for mode " + requested); //$NON-NLS-1$
+        }
+
+        RuntimeExecutionCommandBuilder builder = new RuntimeExecutionCommandBuilder(clientFile, clientMode);
+        if (infobase.getConnectionString() == null) {
+            throw new IllegalStateException("Infobase connection string not available"); //$NON-NLS-1$
+        }
+        builder.forInfobase(infobase.getConnectionString(), false);
+        AccessSettings base = explicitAccessSettings != null ? explicitAccessSettings
+                : resolveAccessSettings(infobase);
+        AccessSettings effective = mergeAdditionalParameters(base, additionalParameters);
+        if (effective != null) {
+            applyAccessSettings(builder, effective);
+        } else {
+            applyAccessSettings(builder, infobase);
+        }
+        builder.disableStartupDialogs();
+        builder.disableStartupMessages();
+        if (logFile != null) {
+            builder.logTo(logFile, true);
+        }
+        return builder.toProcessBuilder();
+    }
+
     public boolean updateInfobase(String projectName) throws Exception {
         return updateInfobase(projectName, true, new NullProgressMonitor());
     }

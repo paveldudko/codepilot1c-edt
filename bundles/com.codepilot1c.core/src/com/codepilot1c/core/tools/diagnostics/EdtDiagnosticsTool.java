@@ -57,6 +57,19 @@ public class EdtDiagnosticsTool extends AbstractTool {
                 "tool_result": {
                   "type": "object",
                   "description": "Structured tool result/error payload. REQUIRED for command=analyze_error."
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": ["thin", "thick", "designer"],
+                  "description": "Только для launch_app: клиент для запуска — thin (1cv8c), thick (1cv8, по умолчанию), designer (Конфигуратор)."
+                },
+                "user": {
+                  "type": "string",
+                  "description": "Только для launch_app: логин сессии ИБ (override настроек EDT; требует password)."
+                },
+                "password": {
+                  "type": "string",
+                  "description": "Только для launch_app: пароль к user (не возвращается в результате)."
                 }
               },
               "required": ["command"],
