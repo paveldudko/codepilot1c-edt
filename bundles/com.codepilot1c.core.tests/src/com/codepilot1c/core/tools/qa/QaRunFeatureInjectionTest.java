@@ -111,6 +111,46 @@ public class QaRunFeatureInjectionTest {
     }
 
     @Test
+    public void putsContextAtColumnZeroAndMatchesStepIndentWithTabs() {
+        // Regression for codepilot1c-feedback/2026-05-28-qa-run-inject-indent-bug.md:
+        // emitting "  Контекст:" (any leading whitespace on a top-level keyword line) makes
+        // Gherkin treat the line as feature description, not as a Background block. The Дано
+        // step must match the surrounding scenario's indentation (tab here) so it parses as a
+        // step rather than as description.
+        String original = "Функциональность: Test\n" //$NON-NLS-1$
+                + "\tDescription line\n" //$NON-NLS-1$
+                + "\n" //$NON-NLS-1$
+                + "Сценарий: One\n" //$NON-NLS-1$
+                + "\tДано шаг\n"; //$NON-NLS-1$
+
+        String injected = QaRunTool.injectTestClientBackground(original, CREDS);
+
+        assertTrue("Контекст: must sit at column 0 (no leading whitespace)", //$NON-NLS-1$
+                injected.lines().anyMatch(l -> l.equals("Контекст:"))); //$NON-NLS-1$
+        assertTrue("Контекст: line must NOT have any leading indentation", //$NON-NLS-1$
+                injected.lines().noneMatch(l -> !l.equals("Контекст:") && l.endsWith("Контекст:"))); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("Дано must use the same tab indent as surrounding scenario steps", //$NON-NLS-1$
+                injected.lines().anyMatch(l -> l.startsWith("\tДано Я открыл сеанс TestClient"))); //$NON-NLS-1$
+    }
+
+    @Test
+    public void putsContextAtColumnZeroAndMatchesStepIndentWithFourSpaces() {
+        // Same contract, four-space-indented variant — confirms detection adapts (not just
+        // "tab-or-nothing").
+        String original = "Feature: Test\n" //$NON-NLS-1$
+                + "\n" //$NON-NLS-1$
+                + "Scenario: One\n" //$NON-NLS-1$
+                + "    Given x\n"; //$NON-NLS-1$
+
+        String injected = QaRunTool.injectTestClientBackground(original, CREDS);
+
+        assertTrue("Контекст: must sit at column 0", //$NON-NLS-1$
+                injected.lines().anyMatch(l -> l.equals("Контекст:"))); //$NON-NLS-1$
+        assertTrue("Дано must use the same 4-space indent as surrounding scenario steps", //$NON-NLS-1$
+                injected.lines().anyMatch(l -> l.startsWith("    Дано Я открыл сеанс TestClient"))); //$NON-NLS-1$
+    }
+
+    @Test
     public void escapesEmbeddedQuotesInCredentialsViaOneCDoubling() {
         TestClientCreds tricky = new TestClientCreds("User \"with\" quotes", "Pw\"d"); //$NON-NLS-1$ //$NON-NLS-2$
         String original = "Функциональность: q\n\nСценарий: T\n  Дано X\n"; //$NON-NLS-1$

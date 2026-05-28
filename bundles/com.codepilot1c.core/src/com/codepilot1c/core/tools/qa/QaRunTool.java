@@ -1710,8 +1710,16 @@ public class QaRunTool extends AbstractTool {
             // the wrapper can detect "no change" via identity equality and skip the write.
             return content;
         }
-        String givenLine = String.format(
-                "    Дано Я открыл сеанс TestClient от имени \"%s\" с паролем \"%s\" или подключаю уже существующий", //$NON-NLS-1$
+        // Match the surrounding file's step indentation so Gherkin parses the injected Дано as
+        // a step, not as feature-description prose. {@code Контекст:} itself is always col-0:
+        // any leading whitespace on a top-level keyword line makes Gherkin treat it as part of
+        // the feature description above. Anchor the step indent off the first step inside the
+        // first {@code Сценарий:} (or off the existing Background block when present) — gives
+        // tabs in tab-indented features, four spaces in four-space-indented ones, etc.
+        String stepIndent = detectStepIndent(lines,
+                backgroundIdx >= 0 ? backgroundIdx : firstScenarioIdx);
+        String givenLine = stepIndent + String.format(
+                "Дано Я открыл сеанс TestClient от имени \"%s\" с паролем \"%s\" или подключаю уже существующий", //$NON-NLS-1$
                 escapeForGherkinQuotedString(creds.login()),
                 escapeForGherkinQuotedString(creds.password()));
         List<String> out = new ArrayList<>(lines.length + 4);
@@ -1732,7 +1740,7 @@ public class QaRunTool extends AbstractTool {
             boolean inserted = false;
             for (int i = 0; i < lines.length; i++) {
                 if (!inserted && i == insertIdx) {
-                    out.add("  Контекст:"); //$NON-NLS-1$
+                    out.add("Контекст:"); //$NON-NLS-1$
                     out.add(givenLine);
                     out.add(""); //$NON-NLS-1$
                     inserted = true;
@@ -1741,11 +1749,43 @@ public class QaRunTool extends AbstractTool {
             }
             if (!inserted) {
                 // insertIdx was past end-of-lines (e.g., feature with header only); append.
-                out.add("  Контекст:"); //$NON-NLS-1$
+                out.add("Контекст:"); //$NON-NLS-1$
                 out.add(givenLine);
             }
         }
         return String.join(System.lineSeparator(), out);
+    }
+
+    /**
+     * Sniffs the leading whitespace (tab vs spaces, count) used for steps in the surrounding
+     * file by scanning a few lines downstream from a {@code Сценарий:}/{@code Контекст:} header.
+     * Returns the verbatim prefix of the first content line that has leading whitespace, so the
+     * injected Дано visually matches its neighbours and — more importantly — does not get
+     * mis-parsed as part of the feature description. Falls back to a single tab when no anchor
+     * is available (the vast majority of Vanessa-Automation features use tab indent).
+     */
+    private static String detectStepIndent(String[] lines, int headerLineIdx) {
+        if (headerLineIdx < 0) {
+            return "\t"; //$NON-NLS-1$
+        }
+        for (int i = headerLineIdx + 1; i < lines.length; i++) {
+            String line = lines[i];
+            if (line.isBlank()) {
+                continue;
+            }
+            int prefixEnd = 0;
+            while (prefixEnd < line.length()
+                    && (line.charAt(prefixEnd) == ' ' || line.charAt(prefixEnd) == '\t')) {
+                prefixEnd++;
+            }
+            if (prefixEnd == 0 || prefixEnd >= line.length()) {
+                // Line begins at column 0 — we've hit the next top-level keyword (or it's all
+                // whitespace, already filtered). No usable sample below this header.
+                return "\t"; //$NON-NLS-1$
+            }
+            return line.substring(0, prefixEnd);
+        }
+        return "\t"; //$NON-NLS-1$
     }
 
     /**
