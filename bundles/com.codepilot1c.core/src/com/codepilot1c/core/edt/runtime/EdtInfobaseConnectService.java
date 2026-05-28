@@ -20,6 +20,7 @@ import org.eclipse.wst.server.core.IRuntime;
 import org.eclipse.wst.server.core.IServer;
 
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessManager;
+import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociation;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseManager;
@@ -148,6 +149,7 @@ public class EdtInfobaseConnectService {
         private final Integer serverPort;
         private final boolean primary;
         private final String replacedPrevious;
+        private final boolean idempotent;
 
         public ConnectResult(ConnectionKind kind, String resolvedPath, String infobaseName, String login,
                 Integer serverPort, boolean primary) {
@@ -156,6 +158,11 @@ public class EdtInfobaseConnectService {
 
         public ConnectResult(ConnectionKind kind, String resolvedPath, String infobaseName, String login,
                 Integer serverPort, boolean primary, String replacedPrevious) {
+            this(kind, resolvedPath, infobaseName, login, serverPort, primary, replacedPrevious, false);
+        }
+
+        public ConnectResult(ConnectionKind kind, String resolvedPath, String infobaseName, String login,
+                Integer serverPort, boolean primary, String replacedPrevious, boolean idempotent) {
             this.kind = kind;
             this.resolvedPath = resolvedPath;
             this.infobaseName = infobaseName;
@@ -163,6 +170,7 @@ public class EdtInfobaseConnectService {
             this.serverPort = serverPort;
             this.primary = primary;
             this.replacedPrevious = replacedPrevious;
+            this.idempotent = idempotent;
         }
 
         public ConnectionKind kind() { return kind; }
@@ -172,6 +180,8 @@ public class EdtInfobaseConnectService {
         public Integer serverPort() { return serverPort; }
         public boolean primary() { return primary; }
         public String replacedPrevious() { return replacedPrevious; }
+        /** True when the requested binding was already the project's primary (no change applied). */
+        public boolean idempotent() { return idempotent; }
     }
 
     private final EdtRuntimeGateway gateway;
@@ -232,8 +242,6 @@ public class EdtInfobaseConnectService {
         String server = request.serverAddress().trim();
         String ref = request.serverRef().trim();
 
-        String replacedPrevious = checkExistingPrimary(project, request);
-
         InfobaseReference reference = InfobaseReferences.newServerInfobaseReference(server, ref);
         String infobaseName = request.infobaseName();
         if (infobaseName == null || infobaseName.isBlank()) {
@@ -243,6 +251,21 @@ public class EdtInfobaseConnectService {
             infobaseName = ref;
         }
         reference.setName(infobaseName);
+
+        String connectionString = infobaseIdentity(reference);
+        if (connectionString == null || connectionString.isBlank()) {
+            connectionString = "Srvr=\"" + server + "\";Ref=\"" + ref + "\";"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        }
+
+        PrimaryOutcome primaryOutcome = evaluatePrimary(project, request, reference);
+        if (primaryOutcome.idempotent()) {
+            LOG.info("connect_infobase(server) project=%s srvr=%s ref=%s already primary — idempotent no-op", //$NON-NLS-1$
+                    request.projectName(), server, ref);
+            return new ConnectResult(ConnectionKind.SERVER, connectionString, infobaseName,
+                    sanitizeLogin(request.login()), null, true, null, true);
+        }
+        String replacedPrevious = primaryOutcome.replacedPrevious();
+
         // Adopt an existing same-connection association entry (name+UUID) so setDefaultInfobase
         // targets it; throws PATH_ALREADY_ASSOCIATED_AS on an explicit conflicting infobase_name.
         adoptExistingAssociationName(project, reference, request.infobaseName());
@@ -252,11 +275,6 @@ public class EdtInfobaseConnectService {
         persistReference(reference);
         storeAccessSettings(reference, request.login(), request.password());
         boolean primary = associate(project, reference, request.setPrimary());
-
-        String connectionString = infobaseIdentity(reference);
-        if (connectionString == null || connectionString.isBlank()) {
-            connectionString = "Srvr=\"" + server + "\";Ref=\"" + ref + "\";"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        }
 
         LOG.info("connect_infobase(server) project=%s srvr=%s ref=%s primary=%s", //$NON-NLS-1$
                 request.projectName(), server, ref, Boolean.valueOf(primary));
@@ -280,8 +298,6 @@ public class EdtInfobaseConnectService {
         Path resolvedPath = ensureFileInfobasePath(request.databasePath());
         String filePathArg = resolvedPath.toAbsolutePath().toString();
 
-        String replacedPrevious = checkExistingPrimary(project, request);
-
         InfobaseReference reference = InfobaseReferences.newFileInfobaseReference(filePathArg);
         String infobaseName = request.infobaseName();
         if (infobaseName == null || infobaseName.isBlank()) {
@@ -296,6 +312,15 @@ public class EdtInfobaseConnectService {
                     : resolvedPath.getFileName().toString();
         }
         reference.setName(infobaseName);
+
+        PrimaryOutcome primaryOutcome = evaluatePrimary(project, request, reference);
+        if (primaryOutcome.idempotent()) {
+            LOG.info("connect_infobase(file) project=%s path=%s already primary — idempotent no-op", //$NON-NLS-1$
+                    request.projectName(), filePathArg);
+            return new ConnectResult(ConnectionKind.FILE, filePathArg, infobaseName,
+                    sanitizeLogin(request.login()), null, true, null, true);
+        }
+        String replacedPrevious = primaryOutcome.replacedPrevious();
         // If the project's association already binds this exact path under another name (e.g. the
         // user GUI-bound it earlier, or v8i kept an older entry), adopt that name+UUID onto our
         // reference so the downstream associate()/setDefaultInfobase target the existing entry
@@ -324,8 +349,6 @@ public class EdtInfobaseConnectService {
         int port = request.serverPort() != null && request.serverPort().intValue() > 0
                 ? request.serverPort().intValue() : DEFAULT_CLUSTER_PORT;
 
-        String replacedPrevious = checkExistingPrimary(project, request);
-
         InfobaseReference reference = InfobaseReferences.newFileInfobaseReference(filePathArg);
         String infobaseName = request.infobaseName();
         if (infobaseName == null || infobaseName.isBlank()) {
@@ -340,6 +363,15 @@ public class EdtInfobaseConnectService {
                     : resolvedPath.getFileName().toString();
         }
         reference.setName(infobaseName);
+
+        PrimaryOutcome primaryOutcome = evaluatePrimary(project, request, reference);
+        if (primaryOutcome.idempotent()) {
+            LOG.info("connect_infobase(standalone) project=%s path=%s already primary — idempotent no-op", //$NON-NLS-1$
+                    request.projectName(), filePathArg);
+            return new ConnectResult(ConnectionKind.STANDALONE, filePathArg, infobaseName,
+                    sanitizeLogin(request.login()), Integer.valueOf(port), true, null, true);
+        }
+        String replacedPrevious = primaryOutcome.replacedPrevious();
 
         // EDT's StandaloneServerInfobase constructor requires a non-null UUID;
         // newFileInfobaseReference() does not populate one, so assign before the EDT call.
@@ -428,9 +460,30 @@ public class EdtInfobaseConnectService {
      * </ul>
      * Returns {@code null} when there is no existing primary or {@code set_primary=false}.
      */
-    protected String checkExistingPrimary(IProject project, ConnectRequest request) {
+    /** Outcome of the primary-infobase pre-check. */
+    public record PrimaryOutcome(boolean idempotent, String replacedPrevious) {
+    }
+
+    /**
+     * Decides what to do about the project's existing primary infobase when {@code set_primary=true}.
+     * Behaviour is identical to the historical {@code checkExistingPrimary} EXCEPT for the new
+     * idempotent case:
+     * <ul>
+     *   <li>{@code set_primary=false} or no existing primary → {@code PROCEED} (idempotent=false,
+     *       replacedPrevious=null).</li>
+     *   <li>The existing primary is <em>exactly</em> the infobase being connected (same connection
+     *       identity AND same login) and the caller did not request a rename → {@code IDEMPOTENT}
+     *       no-op: nothing is mutated and the call succeeds without needing {@code force} (closes the
+     *       "every reconnect needs force=true" papercut from the 2026-05-29 server smoke).</li>
+     *   <li>A <em>different</em> infobase is primary (or the same one but with a changed login) and
+     *       {@code force=false} → throw {@link EdtToolErrorCode#PRIMARY_EXISTS}; with {@code force=true}
+     *       → returns the replaced name. A login change still requires {@code force} so credentials are
+     *       never replaced by an unwitting reconnect.</li>
+     * </ul>
+     */
+    protected PrimaryOutcome evaluatePrimary(IProject project, ConnectRequest request, InfobaseReference reference) {
         if (!request.setPrimary()) {
-            return null;
+            return new PrimaryOutcome(false, null);
         }
         IInfobaseAssociationManager associationManager;
         try {
@@ -438,20 +491,24 @@ public class EdtInfobaseConnectService {
         } catch (IllegalStateException e) {
             // Association manager not available — nothing to check; a later associate() call will fail
             // with its own error. Do not block the primary-exists check here.
-            return null;
+            return new PrimaryOutcome(false, null);
         }
         IInfobaseAssociation association;
         try {
             association = associationManager.getAssociation(project).orElse(null);
         } catch (RuntimeException e) {
-            return null;
+            return new PrimaryOutcome(false, null);
         }
         if (association == null) {
-            return null;
+            return new PrimaryOutcome(false, null);
         }
         InfobaseReference existing = association.getDefaultInfobase();
         if (existing == null) {
-            return null;
+            return new PrimaryOutcome(false, null);
+        }
+        boolean noExplicitRename = request.infobaseName() == null || request.infobaseName().isBlank();
+        if (noExplicitRename && sameInfobaseIdentity(existing, reference) && sameLogin(existing, request)) {
+            return new PrimaryOutcome(true, null);
         }
         String existingName = existing.getName();
         if (existingName == null || existingName.isBlank()) {
@@ -462,7 +519,36 @@ public class EdtInfobaseConnectService {
                     "primary_exists: current_primary=" + existingName //$NON-NLS-1$
                             + ", pass force=true to replace"); //$NON-NLS-1$
         }
-        return existingName;
+        return new PrimaryOutcome(false, existingName);
+    }
+
+    /**
+     * True when the login the caller requested matches the existing primary's stored access settings
+     * (both OS-auth, or both infobase-auth with the same user name). Returns {@code false} on any
+     * resolution failure so an indeterminate state never silently no-ops a credential change.
+     */
+    private boolean sameLogin(InfobaseReference existing, ConnectRequest request) {
+        String requestedLogin = request.login();
+        boolean requestedOs = requestedLogin == null || requestedLogin.isBlank();
+        boolean existingOs = true;
+        String existingLogin = null;
+        try {
+            IInfobaseAccessManager accessManager = gateway.getInfobaseAccessManager();
+            IInfobaseAccessSettings settings = accessManager.resolveSettings(existing);
+            if (settings != null && settings != IInfobaseAccessSettings.NOT_DEFINED) {
+                existingOs = settings.access() == InfobaseAccess.OS;
+                existingLogin = settings.userName();
+            }
+        } catch (Exception | NoSuchMethodError e) {
+            return false;
+        }
+        if (requestedOs && existingOs) {
+            return true;
+        }
+        if (!requestedOs && !existingOs) {
+            return requestedLogin.equals(existingLogin);
+        }
+        return false;
     }
 
     // -- EDT write-side operations --------------------------------------------------------------

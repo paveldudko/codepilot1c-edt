@@ -573,6 +573,58 @@ public class ConnectInfobaseToolTest {
         }
     }
 
+    /**
+     * Idempotency (2026-05-29 server smoke §3): when the exact same infobase is already the project's
+     * primary and the login matches, evaluatePrimary must return an idempotent no-op (no force needed)
+     * instead of throwing PRIMARY_EXISTS.
+     */
+    @Test
+    public void evaluatePrimaryIdempotentForSameIdentitySameLogin() {
+        StubInfobaseManager manager = new StubInfobaseManager(true);
+        String conn = "Srvr=\"term-dev-3\";Ref=\"BF-5946\""; //$NON-NLS-1$
+        InfobaseReference existing = stubReferenceWithState(UUID.randomUUID(), "BF-5946", conn); //$NON-NLS-1$
+        StubGateway gateway = new StubGateway(manager, noopAccessManager())
+                .withAssociationManager(associationManagerStub(associationStub(List.of(existing), existing)));
+        TestableConnectService service = new TestableConnectService(gateway);
+
+        InfobaseReference reference = stubReferenceWithState(null, "BF-5946", conn); //$NON-NLS-1$
+        // OS-auth request (no login); noop access manager => existing also OS => same login.
+        ConnectRequest req = new ConnectRequest("Demo", null, ConnectionKind.SERVER, null, null, //$NON-NLS-1$
+                true, null, null, false, null, "term-dev-3", "BF-5946"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        EdtInfobaseConnectService.PrimaryOutcome outcome =
+                service.invokeEvaluatePrimary(proxyProject(), req, reference);
+
+        assertTrue("same identity + same login must be an idempotent no-op", outcome.idempotent()); //$NON-NLS-1$
+        assertNull(outcome.replacedPrevious());
+    }
+
+    /**
+     * A DIFFERENT infobase already primary must still require force (PRIMARY_EXISTS), unchanged from
+     * the historical behaviour — the idempotent path must not weaken the rebind guard.
+     */
+    @Test
+    public void evaluatePrimaryThrowsForDifferentPrimaryWithoutForce() {
+        StubInfobaseManager manager = new StubInfobaseManager(true);
+        InfobaseReference existing = stubReferenceWithState(UUID.randomUUID(), "OldBase", //$NON-NLS-1$
+                "Srvr=\"term-dev-3\";Ref=\"OTHER\""); //$NON-NLS-1$
+        StubGateway gateway = new StubGateway(manager, noopAccessManager())
+                .withAssociationManager(associationManagerStub(associationStub(List.of(existing), existing)));
+        TestableConnectService service = new TestableConnectService(gateway);
+
+        InfobaseReference reference = stubReferenceWithState(null, "BF-5946", //$NON-NLS-1$
+                "Srvr=\"term-dev-3\";Ref=\"BF-5946\""); //$NON-NLS-1$
+        ConnectRequest req = new ConnectRequest("Demo", null, ConnectionKind.SERVER, null, null, //$NON-NLS-1$
+                true, null, null, false, null, "term-dev-3", "BF-5946"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        try {
+            service.invokeEvaluatePrimary(proxyProject(), req, reference);
+            fail("expected PRIMARY_EXISTS for a different primary without force"); //$NON-NLS-1$
+        } catch (EdtToolException e) {
+            assertEquals(EdtToolErrorCode.PRIMARY_EXISTS, e.getCode());
+        }
+    }
+
     /** Reference stub that actually persists {@code getUuid}/{@code setUuid}/{@code getName}/{@code setName}. */
     private static InfobaseReference stubReferenceWithState(UUID initialUuid, String initialName) {
         return stubReferenceWithState(initialUuid, initialName, null);
@@ -731,6 +783,12 @@ public class ConnectInfobaseToolTest {
         void invokeAdoptExistingAssociationName(org.eclipse.core.resources.IProject project,
                 InfobaseReference reference, String explicitInfobaseName) {
             adoptExistingAssociationName(project, reference, explicitInfobaseName);
+        }
+
+        EdtInfobaseConnectService.PrimaryOutcome invokeEvaluatePrimary(
+                org.eclipse.core.resources.IProject project, ConnectRequest request,
+                InfobaseReference reference) {
+            return evaluatePrimary(project, request, reference);
         }
     }
 

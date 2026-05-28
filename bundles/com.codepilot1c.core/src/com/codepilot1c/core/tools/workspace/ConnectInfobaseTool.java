@@ -204,6 +204,9 @@ public class ConnectInfobaseTool extends AbstractTool {
         json.addProperty("success", true); //$NON-NLS-1$
         json.addProperty("project", projectName); //$NON-NLS-1$
         json.addProperty("primary", result.primary()); //$NON-NLS-1$
+        if (result.idempotent()) {
+            json.addProperty("idempotent", true); //$NON-NLS-1$
+        }
         if (result.replacedPrevious() != null && !result.replacedPrevious().isBlank()) {
             json.addProperty("replaced_previous", result.replacedPrevious()); //$NON-NLS-1$
         }
