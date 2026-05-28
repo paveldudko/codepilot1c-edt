@@ -222,6 +222,16 @@ public class EdtInfobaseConnectService {
                     : resolvedPath.getFileName().toString();
         }
         reference.setName(infobaseName);
+        // If the project's association already binds this exact path under another name (e.g. the
+        // user GUI-bound it earlier, or v8i kept an older entry), adopt that name+UUID onto our
+        // reference so the downstream associate()/setDefaultInfobase target the existing entry
+        // — otherwise EDT fails with "Association does not contain ...". If the caller passed an
+        // explicit infobase_name that *conflicts* with the existing one, throws PATH_ALREADY_ASSOCIATED_AS.
+        adoptExistingAssociationName(project, reference, request.infobaseName());
+        // Refresh the local name in case it was adopted from the existing association entry.
+        if (reference.getName() != null && !reference.getName().isBlank()) {
+            infobaseName = reference.getName();
+        }
         persistReference(reference);
         storeAccessSettings(reference, request.login(), request.password());
         boolean primary = associate(project, reference, request.setPrimary());
@@ -573,6 +583,81 @@ public class EdtInfobaseConnectService {
                     ? e.getMessage() : e.getClass().getSimpleName();
             throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
                     "Failed to store infobase access settings: " + detail, e); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * If the project's infobase association already has an entry bound to this exact connection
+     * (i.e., a same-path InfobaseReference under any name), adopt that entry's name and UUID onto
+     * the caller's reference. EDT's {@link IInfobaseAssociationManager#setDefaultInfobase} looks up
+     * the reference inside the association by name; without this step, a reconnect whose display
+     * name diverges from the registered one fails with "Association does not contain ...".
+     *
+     * <p>If the caller passed an explicit {@code infobase_name} that differs from the registered
+     * one, this method throws {@link EdtToolErrorCode#PATH_ALREADY_ASSOCIATED_AS} with the existing
+     * name in the message so the agent can retry with the right value (or omit the parameter and
+     * let the call adopt silently).</p>
+     */
+    protected void adoptExistingAssociationName(IProject project, InfobaseReference reference,
+            String explicitInfobaseName) {
+        if (project == null || reference == null) {
+            return;
+        }
+        IInfobaseAssociationManager associationManager;
+        try {
+            associationManager = gateway.getInfobaseAssociationManager();
+        } catch (IllegalStateException e) {
+            return; // association manager unavailable — downstream associate() will surface its own error.
+        }
+        if (associationManager == null) {
+            return;
+        }
+        Optional<IInfobaseAssociation> assoc;
+        try {
+            assoc = associationManager.getAssociation(project);
+        } catch (RuntimeException e) {
+            return;
+        }
+        if (assoc.isEmpty()) {
+            return;
+        }
+        String ourConnection = infobaseIdentity(reference);
+        if (ourConnection == null) {
+            return;
+        }
+        java.util.Collection<InfobaseReference> bound;
+        try {
+            bound = assoc.get().getInfobases();
+        } catch (RuntimeException e) {
+            return;
+        }
+        if (bound == null) {
+            return;
+        }
+        for (InfobaseReference candidate : bound) {
+            if (candidate == null) {
+                continue;
+            }
+            String candidateConnection = infobaseIdentity(candidate);
+            if (!ourConnection.equals(candidateConnection)) {
+                continue;
+            }
+            String candidateName = candidate.getName();
+            if (explicitInfobaseName != null && !explicitInfobaseName.isBlank()
+                    && candidateName != null && !candidateName.isBlank()
+                    && !explicitInfobaseName.equals(candidateName)) {
+                throw new EdtToolException(EdtToolErrorCode.PATH_ALREADY_ASSOCIATED_AS,
+                        "path_already_associated_as: this path is already bound to the project under " //$NON-NLS-1$
+                                + "name '" + candidateName + "'; retry with infobase_name=\"" //$NON-NLS-1$ //$NON-NLS-2$
+                                + candidateName + "\" (or omit infobase_name to reuse it)"); //$NON-NLS-1$
+            }
+            if (candidateName != null && !candidateName.isBlank()) {
+                reference.setName(candidateName);
+            }
+            if (candidate.getUuid() != null && reference.getUuid() == null) {
+                reference.setUuid(candidate.getUuid());
+            }
+            return;
         }
     }
 

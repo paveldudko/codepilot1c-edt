@@ -243,9 +243,42 @@ public class ConnectInfobaseTool extends AbstractTool {
                 json.addProperty("hint", //$NON-NLS-1$
                         "an infobase with this name already exists; pass a distinct infobase_name"); //$NON-NLS-1$
             }
+            case PATH_ALREADY_ASSOCIATED_AS -> {
+                json.addProperty("error", "path_already_associated_as"); //$NON-NLS-1$ //$NON-NLS-2$
+                String suggested = extractSuggestedName(safeMessage);
+                if (suggested != null) {
+                    json.addProperty("existing_name", suggested); //$NON-NLS-1$
+                    json.addProperty("hint", //$NON-NLS-1$
+                            "this path is already bound under '" + suggested //$NON-NLS-1$
+                                    + "'; retry with infobase_name=\"" + suggested //$NON-NLS-1$
+                                    + "\" (or omit infobase_name to reuse it silently)"); //$NON-NLS-1$
+                } else {
+                    json.addProperty("hint", //$NON-NLS-1$
+                            "this path is already bound under another name; omit infobase_name or retry with the existing one"); //$NON-NLS-1$
+                }
+            }
             default -> { /* no extra shape */ }
         }
         return json;
+    }
+
+    /** Best-effort parse of the suggested infobase-name embedded in a PATH_ALREADY_ASSOCIATED_AS message. */
+    private static String extractSuggestedName(String message) {
+        if (message == null) {
+            return null;
+        }
+        String marker = "under name '"; //$NON-NLS-1$
+        int idx = message.indexOf(marker);
+        if (idx < 0) {
+            return null;
+        }
+        int start = idx + marker.length();
+        int end = message.indexOf('\'', start);
+        if (end < 0) {
+            return null;
+        }
+        String value = message.substring(start, end).trim();
+        return value.isEmpty() ? null : value;
     }
 
     /** Best-effort parse of the primary-exists marker embedded in the service message. */

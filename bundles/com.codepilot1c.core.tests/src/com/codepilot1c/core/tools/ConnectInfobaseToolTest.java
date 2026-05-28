@@ -441,6 +441,59 @@ public class ConnectInfobaseToolTest {
         }
     }
 
+    /**
+     * Idempotent reconnect: when the project association already binds this exact path under a
+     * name that differs from the one the caller derived, the service must adopt the existing
+     * name+UUID onto the reference so the downstream setDefaultInfobase finds it inside the
+     * association (otherwise EDT throws "Association does not contain ...").
+     */
+    @Test
+    public void adoptExistingAssociationNameReusesExistingNameAndUuid() {
+        StubInfobaseManager manager = new StubInfobaseManager(true);
+        UUID boundUuid = UUID.randomUUID();
+        String sharedConnection = "File=\"c:/db/Branches/BF_5946/BF-12496\""; //$NON-NLS-1$
+        InfobaseReference bound = stubReferenceWithState(boundUuid, "File_am_BF-12496", sharedConnection); //$NON-NLS-1$
+        StubGateway gateway = new StubGateway(manager, noopAccessManager())
+                .withAssociationManager(associationManagerStub(associationStub(List.of(bound), bound)));
+        TestableConnectService service = new TestableConnectService(gateway);
+
+        // Reference being connected: same connection-string (path), but the caller-derived name
+        // is the folder basename "BF-12496" — different from the bound entry's "File_am_BF-12496".
+        InfobaseReference reference = stubReferenceWithState(null, "BF-12496", sharedConnection); //$NON-NLS-1$
+
+        service.invokeAdoptExistingAssociationName(proxyProject(), reference, null);
+
+        assertEquals("must adopt the existing association entry's name", //$NON-NLS-1$
+                "File_am_BF-12496", reference.getName()); //$NON-NLS-1$
+        assertEquals("must adopt the existing association entry's UUID", boundUuid, reference.getUuid()); //$NON-NLS-1$
+    }
+
+    /**
+     * When the caller passed an explicit {@code infobase_name} that conflicts with the name the
+     * project association already uses for this path, the service must surface a typed
+     * PATH_ALREADY_ASSOCIATED_AS error with the existing name so the agent can retry correctly.
+     */
+    @Test
+    public void adoptExistingAssociationNameThrowsWhenExplicitNameConflictsWithBoundName() {
+        StubInfobaseManager manager = new StubInfobaseManager(true);
+        String sharedConnection = "File=\"c:/db/Branches/BF_5946/BF-12496\""; //$NON-NLS-1$
+        InfobaseReference bound = stubReferenceWithState(UUID.randomUUID(), "File_am_BF-12496", sharedConnection); //$NON-NLS-1$
+        StubGateway gateway = new StubGateway(manager, noopAccessManager())
+                .withAssociationManager(associationManagerStub(associationStub(List.of(bound), bound)));
+        TestableConnectService service = new TestableConnectService(gateway);
+
+        InfobaseReference reference = stubReferenceWithState(null, "wanted-name", sharedConnection); //$NON-NLS-1$
+
+        try {
+            service.invokeAdoptExistingAssociationName(proxyProject(), reference, "wanted-name"); //$NON-NLS-1$
+            fail("expected PATH_ALREADY_ASSOCIATED_AS"); //$NON-NLS-1$
+        } catch (EdtToolException e) {
+            assertEquals(EdtToolErrorCode.PATH_ALREADY_ASSOCIATED_AS, e.getCode());
+            assertTrue("message must include the existing name so the caller can retry, was: " //$NON-NLS-1$
+                    + e.getMessage(), e.getMessage().contains("File_am_BF-12496")); //$NON-NLS-1$
+        }
+    }
+
     /** Reference stub that actually persists {@code getUuid}/{@code setUuid}/{@code getName}/{@code setName}. */
     private static InfobaseReference stubReferenceWithState(UUID initialUuid, String initialName) {
         return stubReferenceWithState(initialUuid, initialName, null);
@@ -512,14 +565,57 @@ public class ConnectInfobaseToolTest {
                 (proxy, method, args) -> defaultReturnFor(method.getReturnType()));
     }
 
+    private static com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociation associationStub(
+            List<InfobaseReference> bound, InfobaseReference defaultIb) {
+        Class<?> iface = com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociation.class;
+        return (com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociation) Proxy.newProxyInstance(
+                iface.getClassLoader(),
+                new Class<?>[] { iface },
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getInfobases" -> bound; //$NON-NLS-1$
+                    case "getDefaultInfobase" -> defaultIb; //$NON-NLS-1$
+                    default -> defaultReturnFor(method.getReturnType());
+                });
+    }
+
+    private static com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager
+            associationManagerStub(
+                    com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociation assoc) {
+        Class<?> iface = com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager.class;
+        return (com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager) Proxy.newProxyInstance(
+                iface.getClassLoader(),
+                new Class<?>[] { iface },
+                (proxy, method, args) -> {
+                    if ("getAssociation".equals(method.getName())) { //$NON-NLS-1$
+                        return Optional.ofNullable(assoc);
+                    }
+                    return defaultReturnFor(method.getReturnType());
+                });
+    }
+
+    private static org.eclipse.core.resources.IProject proxyProject() {
+        Class<?> iface = org.eclipse.core.resources.IProject.class;
+        return (org.eclipse.core.resources.IProject) Proxy.newProxyInstance(
+                iface.getClassLoader(),
+                new Class<?>[] { iface },
+                (proxy, method, args) -> defaultReturnFor(method.getReturnType()));
+    }
+
     /** Stub gateway that returns the pre-configured manager / access-manager. */
     private static final class StubGateway extends EdtRuntimeGateway {
         private final IInfobaseManager manager;
         private final IInfobaseAccessManager accessManager;
+        private com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager associationManager;
 
         StubGateway(IInfobaseManager manager, IInfobaseAccessManager accessManager) {
             this.manager = manager;
             this.accessManager = accessManager;
+        }
+
+        StubGateway withAssociationManager(
+                com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager am) {
+            this.associationManager = am;
+            return this;
         }
 
         @Override
@@ -530,6 +626,12 @@ public class ConnectInfobaseToolTest {
         @Override
         public IInfobaseAccessManager getInfobaseAccessManager() {
             return accessManager;
+        }
+
+        @Override
+        public com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager
+                getInfobaseAssociationManager() {
+            return associationManager;
         }
     }
 
@@ -545,6 +647,11 @@ public class ConnectInfobaseToolTest {
 
         void invokeStoreAccessSettings(InfobaseReference reference, String login, String password) {
             storeAccessSettings(reference, login, password);
+        }
+
+        void invokeAdoptExistingAssociationName(org.eclipse.core.resources.IProject project,
+                InfobaseReference reference, String explicitInfobaseName) {
+            adoptExistingAssociationName(project, reference, explicitInfobaseName);
         }
     }
 
