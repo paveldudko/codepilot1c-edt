@@ -23,9 +23,12 @@ public class EdtDiagnosticsToolSchemaTest {
         JsonObject props = schema.getAsJsonObject("properties"); //$NON-NLS-1$
 
         for (String field : new String[] {
+                // launch_app pass-through
                 "dry_run", "wait_for_exit", "timeout_s", "additional_parameters", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
-                "mode", "user", "password"}) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            assertTrue("edt_diagnostics schema must declare launch_app param '" + field //$NON-NLS-1$
+                "mode", "user", "password", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                // update_infobase pass-through
+                "keep_connected", "async"}) { //$NON-NLS-1$ //$NON-NLS-2$
+            assertTrue("edt_diagnostics schema must declare delegate param '" + field //$NON-NLS-1$
                     + "' (undeclared params are stripped by MCP clients before dispatch)", //$NON-NLS-1$
                     props.has(field));
         }

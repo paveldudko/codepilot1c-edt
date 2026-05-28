@@ -40,7 +40,20 @@ public class QaGenerateTool extends AbstractTool {
                   "type": "string",
                   "description": "QA generation command: init_config, migrate_config, or compile_feature",
                   "enum": ["init_config", "migrate_config", "compile_feature"]
-                }
+                },
+                "config_path": {"type": "string", "description": "Путь к qa-config.json (все команды)."},
+                "project_name": {"type": "string", "description": "Имя EDT-проекта (init_config/migrate_config/compile_feature)."},
+                "epf_path": {"type": "string", "description": "init_config: путь к Vanessa .epf."},
+                "params_template": {"type": "string", "description": "init_config: шаблон VAParams."},
+                "force": {"type": "boolean", "description": "init_config: перезаписать существующий config."},
+                "dry_run": {"type": "boolean", "description": "migrate_config: предпросмотр без записи."},
+                "create_backup": {"type": "boolean", "description": "migrate_config: бэкап перед миграцией (по умолчанию true)."},
+                "plan": {"type": "object", "description": "compile_feature: план сценария (QaScenarioPlan: scenarioTitle, recipeId, steps, tags, …)."},
+                "auto_create_config": {"type": "boolean", "description": "compile_feature: авто-создание config (по умолчанию true)."},
+                "overwrite": {"type": "boolean", "description": "compile_feature: перезаписать feature-файл."},
+                "feature_title": {"type": "string", "description": "compile_feature: заголовок фичи."},
+                "feature_file": {"type": "string", "description": "compile_feature: имя/путь feature-файла."},
+                "language": {"type": "string", "description": "compile_feature: язык (ru/en)."}
               },
               "required": ["command"],
               "additionalProperties": true

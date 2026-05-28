@@ -39,7 +39,18 @@ public class QaInspectTool extends AbstractTool {
                   "type": "string",
                   "description": "Read-only QA command: explain_config, status, or steps_search",
                   "enum": ["explain_config", "status", "steps_search"]
-                }
+                },
+                "config_path": {"type": "string", "description": "Путь к qa-config.json (все команды)."},
+                "include_contract": {"type": "boolean", "description": "explain_config: включить контракт (по умолчанию true)."},
+                "validate_ports": {"type": "boolean", "description": "status: проверять доступность портов."},
+                "use_edt_runtime": {"type": "boolean", "description": "status: использовать EDT runtime."},
+                "use_test_manager": {"type": "boolean", "description": "status: режим TestManager."},
+                "project_name": {"type": "string", "description": "status: имя EDT-проекта."},
+                "auto_create_config": {"type": "boolean", "description": "status: авто-создание config (по умолчанию true)."},
+                "query": {"type": "string", "description": "steps_search: поисковый запрос по шагам."},
+                "limit": {"type": "integer", "description": "steps_search: лимит результатов (по умолчанию 20)."},
+                "only_placeholders": {"type": "boolean", "description": "steps_search: только шаги с плейсхолдерами."},
+                "include_regex": {"type": "boolean", "description": "steps_search: включать regex-шаги."}
               },
               "required": ["command"],
               "additionalProperties": true

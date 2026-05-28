@@ -86,6 +86,14 @@ public class EdtDiagnosticsTool extends AbstractTool {
                 "additional_parameters": {
                   "type": "string",
                   "description": "Только для launch_app: дополнительные параметры командной строки 1С-клиента."
+                },
+                "keep_connected": {
+                  "type": "boolean",
+                  "description": "Только для update_infobase: не отключаться после обновления (по умолчанию true)."
+                },
+                "async": {
+                  "type": "boolean",
+                  "description": "Только для update_infobase: запустить обновление асинхронно."
                 }
               },
               "required": ["command"],
