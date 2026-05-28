@@ -103,7 +103,7 @@ public class QaRunTool extends AbstractTool {
                 },
                 "timeout_s": {
                   "type": "integer",
-                  "description": "Таймаут выполнения в секундах. Минимум — 300; меньшие значения молча поднимаются до 300 (плагин ставит WARN в vibe.log с указанием источника). Vanessa-Automation в TestManager-режиме обычно стартует за 20–40 секунд — добавь буфер на тесты."
+                  "description": "Таймаут выполнения в секундах. Минимум — 300; меньшие значения ОТКЛОНЯЮТСЯ с ошибкой QA_RUN_ERROR (раньше молча поднимались до 300). Vanessa-Automation в TestManager-режиме обычно стартует за 20–40 секунд — добавь буфер на тесты."
                 },
                 "skip_status_check": {
                   "type": "boolean",
@@ -517,14 +517,24 @@ public class QaRunTool extends AbstractTool {
 
                 TimeoutResolution timeoutRes = extractTimeoutResolution(parameters, config);
                 if (timeoutRes.clamped()) {
-                    LOG.warn("[%s] timeout_s=%d (source=%s) below MIN_TIMEOUT_SECONDS=%d, clamped to %d", //$NON-NLS-1$
+                    // Fail fast instead of silently raising the value: a sub-minimum timeout is
+                    // almost always a caller mistake, and clamping it up hid that the request never
+                    // took effect. Surface it as an actionable error so the caller re-issues with a
+                    // realistic budget rather than discovering the substitution after a long run.
+                    LOG.warn("[%s] timeout_s=%d (source=%s) below MIN_TIMEOUT_SECONDS=%d — rejecting", //$NON-NLS-1$
                             opId, Integer.valueOf(timeoutRes.requested()), timeoutRes.source(),
-                            Integer.valueOf(MIN_TIMEOUT_SECONDS), Integer.valueOf(timeoutRes.seconds()));
+                            Integer.valueOf(MIN_TIMEOUT_SECONDS));
+                    return ToolResult.failure(String.format(
+                            "QA_RUN_ERROR: timeout_s=%d (source=%s) is below the minimum of %d seconds. " //$NON-NLS-1$
+                            + "Vanessa-Automation needs ~20-40s just to start plus test time; " //$NON-NLS-1$
+                            + "pass timeout_s >= %d.", //$NON-NLS-1$
+                            Integer.valueOf(timeoutRes.requested()), timeoutRes.source(),
+                            Integer.valueOf(MIN_TIMEOUT_SECONDS), Integer.valueOf(MIN_TIMEOUT_SECONDS)));
                 }
                 int timeout = timeoutRes.seconds();
                 long start = System.currentTimeMillis();
                 ProcessResult processResult = runProcess(processBuilder, logFile, timeout, workspaceRoot, opId,
-                        timeoutRes.source());
+                        timeoutRes.source(), useTestManager);
                 long durationMs = System.currentTimeMillis() - start;
 
                 QaJUnitReport report = null;
@@ -1153,7 +1163,8 @@ public class QaRunTool extends AbstractTool {
     }
 
     private static ProcessResult runProcess(ProcessBuilder builder, File logFile, int timeoutSeconds,
-            File workingDir, String opId, String timeoutSource) throws IOException, InterruptedException {
+            File workingDir, String opId, String timeoutSource, boolean testManagerMode)
+            throws IOException, InterruptedException {
         if (builder == null) {
             throw new IOException("ProcessBuilder is null"); //$NON-NLS-1$
         }
@@ -1202,9 +1213,14 @@ public class QaRunTool extends AbstractTool {
             } catch (RuntimeException ignored) {
                 descendantCount = -1L;
             }
-            LOG.info("[%s] qa_run heartbeat: elapsed=%ds/%ds, pid=%d alive, descendants=%d, logfile=%d bytes", //$NON-NLS-1$
+            // In TestManager mode Vanessa-Automation does not write /Out, so va.log stays at 0
+            // bytes for the whole run — that is expected, not a stuck process. Label it so the
+            // heartbeat's logfile=0 doesn't read as "nothing is happening".
+            String logNote = (testManagerMode && logBytes == 0L)
+                    ? " (TestManager mode: va.log stays empty, junit is authoritative)" : ""; //$NON-NLS-1$ //$NON-NLS-2$
+            LOG.info("[%s] qa_run heartbeat: elapsed=%ds/%ds, pid=%d alive, descendants=%d, logfile=%d bytes%s", //$NON-NLS-1$
                     opId, Long.valueOf(elapsedMillis / 1000L), Integer.valueOf(timeoutSeconds),
-                    Long.valueOf(pid), Long.valueOf(descendantCount), Long.valueOf(logBytes));
+                    Long.valueOf(pid), Long.valueOf(descendantCount), Long.valueOf(logBytes), logNote);
         }
 
         TimeoutDiagnostics timeoutDiagnostics = null;
