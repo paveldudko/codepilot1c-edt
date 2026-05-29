@@ -7,6 +7,9 @@ import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import com._1c.g5.v8.dt.core.platform.IExtensionProject;
+import com._1c.g5.v8.dt.core.platform.IV8Project;
+import com._1c.g5.v8.dt.core.platform.IV8ProjectManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociation;
@@ -158,6 +161,16 @@ public class EdtRuntimeService {
             return infobase;
         }
 
+        // Fallback: extension projects don't carry their own infobase association — they publish
+        // into the infobase of their owning (base configuration) project. Resolve the parent's
+        // infobase and use it. The update itself still runs against THIS (extension) project, so
+        // EDT syncs the extension's content into the shared infobase. See feedback
+        // 2026-05-29-update-infobase-extension-project-association-not-found.
+        InfobaseReference extensionParentInfobase = resolveExtensionParentInfobase(project);
+        if (extensionParentInfobase != null) {
+            return extensionParentInfobase;
+        }
+
         // Fallback: standalone-server binding (com.e1c.g5.v8.dt.platform.standaloneserver.wst.core).
         InfobaseReference standaloneInfobase = resolveStandaloneInfobase(project);
         if (standaloneInfobase != null) {
@@ -264,6 +277,61 @@ public class EdtRuntimeService {
             }
             LOG.warn("Failed to adapt standalone-server infobase to InfobaseReference: " //$NON-NLS-1$
                     + e.getMessage(), e);
+        }
+        return null;
+    }
+
+    /**
+     * Resolves the infobase for an <em>extension</em> project by following its parent (base
+     * configuration) project's association. Extension projects are published into the base
+     * configuration's infobase and do not carry their own {@link IInfobaseAssociation}, so
+     * {@code getAssociation(extensionProject)} returns empty even though a binding exists; the
+     * binding lives on the owning project. Returns {@code null} when the project is not an
+     * extension, has no parent, the parent has no association, or any lookup fails — all
+     * best-effort, never blocking.
+     *
+     * <p>NB: the caller uses the returned reference only as the <em>target infobase</em>; the
+     * actual {@code updateInfobase} sync still runs against the extension project, so EDT publishes
+     * the extension's content (new modules) into the shared infobase.</p>
+     */
+    private InfobaseReference resolveExtensionParentInfobase(IProject project) {
+        IV8ProjectManager v8ProjectManager = gateway.peekV8ProjectManager();
+        if (v8ProjectManager == null) {
+            return null;
+        }
+        IProject parent;
+        try {
+            IV8Project v8Project = v8ProjectManager.getProject(project);
+            if (!(v8Project instanceof IExtensionProject extensionProject)) {
+                return null;
+            }
+            parent = extensionProject.getParentProject();
+        } catch (RuntimeException e) {
+            LOG.warn("Failed to resolve extension parent for project " + project.getName() //$NON-NLS-1$
+                    + ": " + e.getMessage(), e); //$NON-NLS-1$
+            return null;
+        }
+        if (parent == null || parent.equals(project)) {
+            return null;
+        }
+        try {
+            IInfobaseAssociationManager manager = gateway.getInfobaseAssociationManager();
+            java.util.Optional<IInfobaseAssociation> associationOpt = manager.getAssociation(parent);
+            if (associationOpt.isPresent()) {
+                IInfobaseAssociation association = associationOpt.get();
+                InfobaseReference infobase = association.getDefaultInfobase();
+                if (infobase == null && !association.getInfobases().isEmpty()) {
+                    infobase = association.getInfobases().iterator().next();
+                }
+                if (infobase != null) {
+                    LOG.info("Resolved infobase for extension project %s via parent project %s", //$NON-NLS-1$
+                            project.getName(), parent.getName());
+                    return infobase;
+                }
+            }
+        } catch (Exception e) {
+            LOG.warn("Failed to resolve parent infobase for extension project " + project.getName() //$NON-NLS-1$
+                    + " (parent " + parent.getName() + "): " + e.getMessage(), e); //$NON-NLS-1$ //$NON-NLS-2$
         }
         return null;
     }

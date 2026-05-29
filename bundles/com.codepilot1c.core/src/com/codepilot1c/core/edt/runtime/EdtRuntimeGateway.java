@@ -9,6 +9,7 @@ import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationContextProvider;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseManager;
+import com._1c.g5.v8.dt.core.platform.IV8ProjectManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallationManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager;
 import com.codepilot1c.core.internal.VibeCorePlugin;
@@ -76,6 +77,20 @@ public class EdtRuntimeGateway {
             throw serviceUnavailable("IInfobaseAccessManager"); //$NON-NLS-1$
         }
         return service;
+    }
+
+    /**
+     * Returns the EDT V8 project manager if currently registered, or {@code null} otherwise.
+     * Non-blocking and best-effort: used by {@code resolveDefaultInfobase} to detect that a project
+     * is an extension project and fall back to its parent (base configuration) project's infobase.
+     * A {@code null} return (service not yet up) is expected and non-fatal.
+     */
+    public IV8ProjectManager peekV8ProjectManager() {
+        VibeCorePlugin plugin = VibeCorePlugin.getDefault();
+        if (plugin == null) {
+            return null;
+        }
+        return plugin.peekV8ProjectManager();
     }
 
     public IInfobaseManager getInfobaseManager() {

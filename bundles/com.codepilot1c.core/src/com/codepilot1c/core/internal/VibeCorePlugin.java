@@ -347,6 +347,21 @@ public class VibeCorePlugin extends Plugin {
         return getTrackedService(v8ProjectManagerTracker, "IV8ProjectManager"); //$NON-NLS-1$
     }
 
+    /**
+     * Returns the currently-tracked {@link IV8ProjectManager}, or {@code null} if the service is
+     * not registered at the moment of the call. Never blocks — used by best-effort lookups (e.g.
+     * resolving an extension project's parent so {@code update_infobase} can fall back to the base
+     * project's infobase) where a missing manager is non-fatal and a 30-second wait would stall
+     * the agent tool dispatcher.
+     */
+    public IV8ProjectManager peekV8ProjectManager() {
+        ServiceTracker<IV8ProjectManager, IV8ProjectManager> tracker = v8ProjectManagerTracker;
+        if (tracker == null) {
+            return null;
+        }
+        return tracker.getService();
+    }
+
     public IExternalObjectProjectManager getExternalObjectProjectManager() {
         return getTrackedService(externalObjectProjectManagerTracker, "IExternalObjectProjectManager"); //$NON-NLS-1$
     }
