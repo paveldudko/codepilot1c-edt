@@ -334,8 +334,16 @@ public class QaRunTool extends AbstractTool {
                     resultsRoot.mkdirs();
                 }
 
-                List<String> requestedFeatures = asStringList(parameters == null ? null
-                        : parameters.get("features")); //$NON-NLS-1$
+                Object rawFeatures = parameters == null ? null : parameters.get("features"); //$NON-NLS-1$
+                List<String> requestedFeatures = asStringList(rawFeatures);
+                // Diagnostic for the 2026-05-29 filter-bypass: if a `features` value arrived but parsed
+                // to an empty filter, the run would silently fall back to ALL features. Surface the raw
+                // type/value so the cause (client-side strip vs. unexpected arg shape) is pinpointable.
+                if (requestedFeatures.isEmpty() && rawFeatures != null
+                        && !rawFeatures.toString().isBlank()) {
+                    LOG.warn("[%s] qa_run: 'features' present but parsed to empty filter — running ALL. raw_type=%s raw=%s", //$NON-NLS-1$
+                            opId, rawFeatures.getClass().getName(), LogSanitizer.truncate(rawFeatures.toString()));
+                }
                 FeatureSelection featureSelection = resolveFeatureFiles(featuresDir, requestedFeatures);
                 if (!featureSelection.unresolved().isEmpty()) {
                     JsonObject error = new JsonObject();
@@ -964,20 +972,36 @@ public class QaRunTool extends AbstractTool {
         return new TimeoutResolution(DEFAULT_TIMEOUT_SECONDS, "default", DEFAULT_TIMEOUT_SECONDS, false); //$NON-NLS-1$
     }
 
-    private static List<String> asStringList(Object value) {
+    static List<String> asStringList(Object value) {
         List<String> result = new ArrayList<>();
         if (value instanceof List<?> list) {
             for (Object item : list) {
-                if (item == null) {
-                    continue;
-                }
-                String text = item.toString().trim();
-                if (!text.isBlank()) {
-                    result.add(text);
-                }
+                addIfPresent(result, item);
+            }
+        } else if (value instanceof Object[] array) {
+            // Some MCP arg-delivery paths hand array values as Object[] rather than List — accept both
+            // so the `features`/`tags_*` filters aren't silently dropped (2026-05-29 filter-bypass).
+            for (Object item : array) {
+                addIfPresent(result, item);
+            }
+        } else if (value instanceof String s) {
+            // Tolerate a single string or a comma-separated string for callers (or bridges) that
+            // pass a scalar instead of a JSON array.
+            for (String part : s.split(",")) { //$NON-NLS-1$
+                addIfPresent(result, part);
             }
         }
         return result;
+    }
+
+    private static void addIfPresent(List<String> target, Object item) {
+        if (item == null) {
+            return;
+        }
+        String text = item.toString().trim();
+        if (!text.isBlank()) {
+            target.add(text);
+        }
     }
 
     private static FeatureSelection resolveFeatureFiles(File featuresDir, List<String> featureNames) throws IOException {
