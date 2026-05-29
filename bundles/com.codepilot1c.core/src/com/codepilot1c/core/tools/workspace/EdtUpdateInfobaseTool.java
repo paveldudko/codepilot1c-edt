@@ -8,16 +8,21 @@ import java.io.File;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
-import org.eclipse.core.runtime.NullProgressMonitor;
+import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.core.runtime.IStatus;
+import org.eclipse.core.runtime.Status;
+import org.eclipse.core.runtime.jobs.Job;
 
 import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
 import com.codepilot1c.core.edt.runtime.EdtProjectResolver;
 import com.codepilot1c.core.edt.runtime.EdtToolErrorCode;
 import com.codepilot1c.core.edt.runtime.EdtToolException;
 import com.codepilot1c.core.edt.runtime.EdtRuntimeService;
+import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.google.gson.GsonBuilder;
@@ -159,8 +164,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                     result.addProperty("updated", false); //$NON-NLS-1$
                     return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
                 }
-                EdtRuntimeService.UpdateInfobaseStatus status = runtimeService.updateInfobaseWithStatus(
-                        projectName, keepConnected, new NullProgressMonitor());
+                EdtRuntimeService.UpdateInfobaseStatus status =
+                        runUpdateWithGuiProgress(projectName, keepConnected);
                 result.addProperty("updated", status.updated()); //$NON-NLS-1$
                 if (status.dynamicOnly()) {
                     // EDT could not acquire an exclusive lock (existing client/test sessions hold
@@ -203,8 +208,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                         infobase.getConnectionString().asConnectionString());
             }
             result.add("details", details); //$NON-NLS-1$
-            EdtRuntimeService.UpdateInfobaseStatus status = runtimeService.updateInfobaseWithStatus(
-                    projectName, keepConnected, new NullProgressMonitor());
+            EdtRuntimeService.UpdateInfobaseStatus status =
+                    runUpdateWithGuiProgress(projectName, keepConnected);
             boolean updated = status.updated();
             result.addProperty("updated", updated); //$NON-NLS-1$
             if (status.dynamicOnly()) {
@@ -226,6 +231,61 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             return pretty(errorPayload(opId, projectName, workspaceRoot,
                     EdtToolErrorCode.UPDATE_FAILED, e.getMessage()));
         }
+    }
+
+    /**
+     * Runs the EDT infobase update inside an Eclipse {@link Job} so its progress surfaces in the
+     * workbench progress area (status bar + Progress view) — the platform forwards the job's
+     * {@link IProgressMonitor} into EDT's update flow, which reports its sub-tasks ("Designer agent
+     * apply…") against it. Addresses feedback 2026-05-29-update-infobase-progress-visibility:
+     * previously the update ran with a {@code NullProgressMonitor}, so a 1-3 minute bind was
+     * completely silent in the GUI.
+     *
+     * <p>The job is non-user (no modal popup) and non-system (visible), matching how
+     * indexing/build progress shows. We schedule it and {@link Job#join() join} on the current
+     * worker thread (the tool already runs off the UI thread, in {@code supplyAsync} or the
+     * background-job pool), so the synchronous/async contract and the rendered result are
+     * unchanged — only a GUI affordance is added. Headless (no workbench) the job still runs
+     * normally; there is simply no progress UI to populate.</p>
+     */
+    private EdtRuntimeService.UpdateInfobaseStatus runUpdateWithGuiProgress(String projectName,
+            boolean keepConnected) throws Exception {
+        AtomicReference<EdtRuntimeService.UpdateInfobaseStatus> statusRef = new AtomicReference<>();
+        AtomicReference<Exception> errorRef = new AtomicReference<>();
+        String taskName = "Updating infobase: " + projectName + "…"; //$NON-NLS-1$ //$NON-NLS-2$
+        Job job = new Job(taskName) {
+            @Override
+            protected IStatus run(IProgressMonitor monitor) {
+                monitor.beginTask(taskName, IProgressMonitor.UNKNOWN);
+                try {
+                    statusRef.set(runtimeService.updateInfobaseWithStatus(projectName, keepConnected, monitor));
+                    return Status.OK_STATUS;
+                } catch (Exception e) {
+                    errorRef.set(e);
+                    String detail = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                    return new Status(IStatus.ERROR, VibeCorePlugin.PLUGIN_ID,
+                            "update_infobase failed for project: " + projectName + " (" + detail + ")", e); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                } finally {
+                    monitor.done();
+                }
+            }
+        };
+        job.setUser(false);   // status-bar/Progress-view affordance, not a modal dialog
+        job.setSystem(false); // keep it visible to the user
+        job.setPriority(Job.LONG);
+        job.schedule();
+        try {
+            job.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            job.cancel();
+            throw e;
+        }
+        Exception failure = errorRef.get();
+        if (failure != null) {
+            throw failure;
+        }
+        return statusRef.get();
     }
 
     private static JsonObject basePayload(String opId, String status, String projectName, boolean dryRun,

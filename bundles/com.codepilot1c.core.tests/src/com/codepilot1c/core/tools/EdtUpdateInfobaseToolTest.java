@@ -176,6 +176,83 @@ public class EdtUpdateInfobaseToolTest {
         pollForTerminal(BackgroundJobRegistry.getInstance(), jobId);
     }
 
+    @Test
+    public void runsUpdateInsideNamedEclipseJobWithWorkbenchMonitor() throws Exception {
+        // Feedback 2026-05-29-update-infobase-progress-visibility: the (non-dry) update must run
+        // inside an Eclipse Job named "Updating infobase: <project>…" so the workbench can attach a
+        // progress monitor and surface EDT's sub-task progress. Headless there is no progress UI,
+        // so we install a marker ProgressProvider (standing in for the workbench's) and assert the
+        // monitor the update receives is the one the provider supplied for our Job — proving the
+        // GUI hook fires when a workbench is present, regardless of this harness having none.
+        File workspaceRoot = Files.createTempDirectory("edt-update-tool-jobprogress").toFile(); //$NON-NLS-1$
+        ProbingRuntimeService runtimeService = new ProbingRuntimeService();
+        EdtUpdateInfobaseTool tool = new TestEdtUpdateInfobaseTool(
+                new StubProjectResolver(),
+                runtimeService,
+                workspaceRoot);
+
+        org.eclipse.core.runtime.jobs.IJobManager jobManager =
+                org.eclipse.core.runtime.jobs.Job.getJobManager();
+        jobManager.setProgressProvider(new org.eclipse.core.runtime.jobs.ProgressProvider() {
+            @Override
+            public org.eclipse.core.runtime.IProgressMonitor createMonitor(
+                    org.eclipse.core.runtime.jobs.Job job) {
+                return new MarkerMonitor();
+            }
+        });
+        try {
+            ToolResult result = tool.execute(Map.of("project_name", "Demo")).join(); //$NON-NLS-1$ //$NON-NLS-2$
+
+            assertTrue(result.isSuccess());
+            assertTrue(runtimeService.updateCalled);
+            assertEquals("REGRESSION: the update must run with the workbench-provided monitor so " //$NON-NLS-1$
+                    + "progress surfaces in the GUI — not a bare NullProgressMonitor", //$NON-NLS-1$
+                    MarkerMonitor.class.getName(), runtimeService.monitorClass);
+            assertEquals("update must run inside the named progress Job", //$NON-NLS-1$
+                    "Updating infobase: Demo…", runtimeService.currentJobName); //$NON-NLS-1$
+        } finally {
+            jobManager.setProgressProvider(null);
+        }
+    }
+
+    /** Sentinel monitor identifying the Job-framework progress provider's contribution. */
+    private static final class MarkerMonitor extends org.eclipse.core.runtime.NullProgressMonitor {
+    }
+
+    private static class ProbingRuntimeService extends EdtRuntimeService {
+        volatile boolean updateCalled;
+        volatile String monitorClass;
+        volatile String currentJobName;
+
+        @Override
+        public boolean updateInfobase(String projectName, boolean keepConnected,
+                org.eclipse.core.runtime.IProgressMonitor monitor) {
+            updateCalled = true;
+            // The Job framework wraps the provider's monitor; unwrap to the delegate so the
+            // assertion sees MarkerMonitor rather than the framework's wrapper.
+            org.eclipse.core.runtime.IProgressMonitor effective = unwrap(monitor);
+            monitorClass = effective == null ? null : effective.getClass().getName();
+            org.eclipse.core.runtime.jobs.Job current = org.eclipse.core.runtime.jobs.Job.getJobManager().currentJob();
+            currentJobName = current == null ? null : current.getName();
+            return true;
+        }
+
+        private static org.eclipse.core.runtime.IProgressMonitor unwrap(
+                org.eclipse.core.runtime.IProgressMonitor monitor) {
+            if (monitor instanceof org.eclipse.core.runtime.ProgressMonitorWrapper wrapper) {
+                return unwrap(wrapper.getWrappedProgressMonitor());
+            }
+            return monitor;
+        }
+
+        @Override
+        public UpdateInfobaseStatus updateInfobaseWithStatus(String projectName, boolean keepConnected,
+                org.eclipse.core.runtime.IProgressMonitor monitor) {
+            boolean updated = updateInfobase(projectName, keepConnected, monitor);
+            return new UpdateInfobaseStatus(updated, false);
+        }
+    }
+
     private static JobStatus pollForTerminal(BackgroundJobRegistry registry, String jobId)
             throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
