@@ -30,6 +30,7 @@ import com._1c.g5.v8.dt.md.extension.IMdAdoptedPropertyAccess;
 import com._1c.g5.v8.dt.md.extension.adopt.IModelObjectAdopter;
 import com._1c.g5.v8.dt.cli.api.workspace.IImportConfigurationFilesApi;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessManager;
+import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationContextProvider;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallationManager;
@@ -81,6 +82,7 @@ public class VibeCorePlugin extends Plugin {
     private ServiceTracker<ICheckRepository, ICheckRepository> checkRepositoryTracker;
     private ServiceTracker<IApplicationManager, IApplicationManager> applicationManagerTracker;
     private ServiceTracker<IInfobaseAssociationManager, IInfobaseAssociationManager> infobaseAssociationManagerTracker;
+    private ServiceTracker<IInfobaseAssociationContextProvider, IInfobaseAssociationContextProvider> infobaseAssociationContextProviderTracker;
     private ServiceTracker<IInfobaseAccessManager, IInfobaseAccessManager> infobaseAccessManagerTracker;
     private ServiceTracker<IInfobaseManager, IInfobaseManager> infobaseManagerTracker;
     private ServiceTracker<IRuntimeComponentManager, IRuntimeComponentManager> runtimeComponentManagerTracker;
@@ -183,6 +185,9 @@ public class VibeCorePlugin extends Plugin {
         applicationManagerTracker.open();
         infobaseAssociationManagerTracker = new ServiceTracker<>(context, IInfobaseAssociationManager.class, null);
         infobaseAssociationManagerTracker.open();
+        infobaseAssociationContextProviderTracker =
+                new ServiceTracker<>(context, IInfobaseAssociationContextProvider.class, null);
+        infobaseAssociationContextProviderTracker.open();
         infobaseAccessManagerTracker = new ServiceTracker<>(context, IInfobaseAccessManager.class, null);
         infobaseAccessManagerTracker.open();
         infobaseManagerTracker = new ServiceTracker<>(context, IInfobaseManager.class, null);
@@ -277,6 +282,8 @@ public class VibeCorePlugin extends Plugin {
         applicationManagerTracker = null;
         closeTracker(infobaseAssociationManagerTracker);
         infobaseAssociationManagerTracker = null;
+        closeTracker(infobaseAssociationContextProviderTracker);
+        infobaseAssociationContextProviderTracker = null;
         closeTracker(infobaseAccessManagerTracker);
         infobaseAccessManagerTracker = null;
         closeTracker(infobaseManagerTracker);
@@ -398,6 +405,22 @@ public class VibeCorePlugin extends Plugin {
 
     public IInfobaseAssociationManager getInfobaseAssociationManager() {
         return getTrackedService(infobaseAssociationManagerTracker, "IInfobaseAssociationManager"); //$NON-NLS-1$
+    }
+
+    /**
+     * Returns the currently-tracked {@link IInfobaseAssociationContextProvider}, or {@code null}
+     * if the service is not registered at the moment of the call. Never blocks: the provider is
+     * consulted only as a best-effort enhancement (to resolve the project's effective association
+     * context before writing the binding), and callers fall back to the empty context when it is
+     * absent, so a 30-second wait would needlessly stall {@code connect_infobase}.
+     */
+    public IInfobaseAssociationContextProvider peekInfobaseAssociationContextProvider() {
+        ServiceTracker<IInfobaseAssociationContextProvider, IInfobaseAssociationContextProvider> tracker =
+                infobaseAssociationContextProviderTracker;
+        if (tracker == null) {
+            return null;
+        }
+        return tracker.getService();
     }
 
     public IInfobaseAccessManager getInfobaseAccessManager() {

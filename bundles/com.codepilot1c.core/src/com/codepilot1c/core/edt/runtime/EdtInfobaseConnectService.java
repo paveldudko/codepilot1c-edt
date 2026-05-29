@@ -22,6 +22,7 @@ import org.eclipse.wst.server.core.IServer;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessSettings;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociation;
+import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationContextProvider;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.InfobaseAccessSettings;
@@ -823,7 +824,18 @@ public class EdtInfobaseConnectService {
 
     protected boolean associate(IProject project, InfobaseReference reference, boolean setPrimary) {
         IInfobaseAssociationManager associationManager = gateway.getInfobaseAssociationManager();
-        InfobaseAssociationSettings settings = InfobaseAssociationSettings.alreadySynchronized();
+        // Write the binding under the project's *effective* association context — the same context
+        // that EDT's no-arg getAssociation(project)/setDefaultInfobase/update_infobase reads back
+        // from (it resolves the context via IInfobaseAssociationContextProvider, not the empty one).
+        // Using the empty context unconditionally — as alreadySynchronized() does — silently
+        // partitions the write away from the read when an association-context extension is active
+        // (e.g. remote/SSH workspaces), so associate() reports success yet the association is
+        // invisible to every subsequent lookup. See feedback 2026-05-29-connect-infobase-success-
+        // not-persisted: setDefaultInfobase then threw "Project ... is not associated with infobase
+        // ..." and update_infobase returned INFOBASE_ASSOCIATION_NOT_FOUND. When no extension is
+        // contributed the provider returns empty(), preserving the historical behaviour.
+        InfobaseAssociationContext context = resolveAssociationContext(project);
+        InfobaseAssociationSettings settings = new InfobaseAssociationSettings(false, context);
         try {
             associationManager.associate(project, reference, settings);
         } catch (InfobaseAssociationException e) {
@@ -834,7 +846,7 @@ public class EdtInfobaseConnectService {
         }
         if (setPrimary) {
             try {
-                associationManager.setDefaultInfobase(project, reference, InfobaseAssociationContext.empty());
+                associationManager.setDefaultInfobase(project, reference, context);
             } catch (InfobaseAssociationException e) {
                 String detail = e.getMessage() != null && !e.getMessage().isBlank()
                         ? e.getMessage() : e.getClass().getSimpleName();
@@ -844,6 +856,41 @@ public class EdtInfobaseConnectService {
             return true;
         }
         return false;
+    }
+
+    /**
+     * Resolves the project's effective {@link InfobaseAssociationContext} — the context EDT's
+     * association manager uses internally for the no-arg {@code getAssociation(project)} reads that
+     * {@code setDefaultInfobase} and {@code update_infobase} rely on. Falls back to
+     * {@link InfobaseAssociationContext#empty()} whenever the provider is unavailable, contributes
+     * no extension, or fails, so a missing provider never blocks or breaks a connect.
+     *
+     * <p>Visible for testing.</p>
+     */
+    protected InfobaseAssociationContext resolveAssociationContext(IProject project) {
+        if (project == null) {
+            return InfobaseAssociationContext.empty();
+        }
+        IInfobaseAssociationContextProvider provider;
+        try {
+            provider = gateway.peekInfobaseAssociationContextProvider();
+        } catch (RuntimeException e) {
+            return InfobaseAssociationContext.empty();
+        }
+        if (provider == null) {
+            return InfobaseAssociationContext.empty();
+        }
+        try {
+            // get(project) declares InfobaseAssociationException, which is itself a RuntimeException,
+            // so a single RuntimeException catch covers both it and any other unchecked failure.
+            InfobaseAssociationContext context = provider.get(project);
+            return context != null ? context : InfobaseAssociationContext.empty();
+        } catch (RuntimeException e) {
+            LOG.warn("connect_infobase: failed to resolve association context for project=%s, " //$NON-NLS-1$
+                    + "falling back to empty context: %s", //$NON-NLS-1$
+                    project.getName(), e.getMessage());
+            return InfobaseAssociationContext.empty();
+        }
     }
 
     // -- Helpers --------------------------------------------------------------------------------

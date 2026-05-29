@@ -6,6 +6,7 @@ import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.IPath;
 
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessManager;
+import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationContextProvider;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallationManager;
@@ -50,6 +51,22 @@ public class EdtRuntimeGateway {
             throw serviceUnavailable("IInfobaseAssociationManager"); //$NON-NLS-1$
         }
         return service;
+    }
+
+    /**
+     * Returns the EDT association-context provider if currently registered, or {@code null}
+     * otherwise. Non-blocking and best-effort: {@code connect_infobase} uses it to resolve the
+     * project's effective {@code InfobaseAssociationContext} so the binding is written into the
+     * same context partition that {@code getAssociation(project)} later reads from. A {@code null}
+     * return (service not yet up, or no association-context extension contributed) is expected and
+     * non-fatal — callers fall back to the empty context.
+     */
+    public IInfobaseAssociationContextProvider peekInfobaseAssociationContextProvider() {
+        VibeCorePlugin plugin = VibeCorePlugin.getDefault();
+        if (plugin == null) {
+            return null;
+        }
+        return plugin.peekInfobaseAssociationContextProvider();
     }
 
     public IInfobaseAccessManager getInfobaseAccessManager() {
