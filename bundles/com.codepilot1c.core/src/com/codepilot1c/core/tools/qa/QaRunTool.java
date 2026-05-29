@@ -152,7 +152,7 @@ public class QaRunTool extends AbstractTool {
                 },
                 "test_client_login": {
                   "type": "string",
-                  "description": "Логин test-аккаунта для TestClient (не пишется в файлы конфига). Если задан вместе с test_client_password, плагин при vanessa.auto_inject_test_client_creds=true (default) инжектит Контекст со step'ом 'Я открыл сеанс TestClient от имени \"<login>\" с паролем \"<password>\" или подключаю уже существующий' в каждую feature, у которой ещё нет такого step'а. Также подставляется в va-params.json как ДанныеКлиентовТестирования[i].Логин (если оба заданы — приоритет над EDT-association). Env-fallback: VANESSA_TEST_CLIENT_LOGIN."
+                  "description": "Логин test-аккаунта для TestClient (не пишется в файлы конфига). Если задан вместе с test_client_password, плагин при vanessa.auto_inject_test_client_creds=true (default) инжектит Контекст со step'ом 'Я открыл сеанс TestClient от имени \\"<login>\\" с паролем \\"<password>\\" или подключаю уже существующий' в каждую feature, у которой ещё нет такого step'а. Также подставляется в va-params.json как ДанныеКлиентовТестирования[i].Логин (если оба заданы — приоритет над EDT-association). Env-fallback: VANESSA_TEST_CLIENT_LOGIN."
                 },
                 "test_client_password": {
                   "type": "string",
