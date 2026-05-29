@@ -569,6 +569,52 @@ public class EdtRuntimeService {
         return builder;
     }
 
+    /**
+     * Builds a thin-client ({@code 1cv8c.exe}) ENTERPRISE command that launches a Vanessa-Automation
+     * <em>TestClient</em> ({@code /TESTCLIENT -TPort <port> [-TestClientID <id>]}). In TestManager
+     * mode VA connects to these external clients by port; headless, nothing else launches them, so
+     * qa_run must spawn them itself before {@code StartFeaturePlayer} (the same thing rmcp's
+     * {@code connect_test_client} does). See feedback
+     * {@code 2026-05-29-qa-run-testmanager-no-va-log-no-junit.md}.
+     *
+     * <p>Uses EDT's supported {@link RuntimeExecutionCommandBuilder#testClientMode(Integer, String)}
+     * so the {@code /TESTCLIENT}/{@code -TPort} arguments are produced by the platform API, not hand
+     * rolled. Reuses the same thin-client resolution as the TestManager/SingleClient paths.</p>
+     *
+     * @param port          the {@code -TPort} the TestClient listens on; must match the
+     *                      {@code ПортЗапускаТестКлиента} written into {@code va-params.json}
+     * @param testClientId  optional {@code -TestClientID} (the client's configured name); may be null
+     * @param accessSettings credentials to log the TestClient in with (the test account), or null to
+     *                      fall back to the infobase's default access settings
+     */
+    public RuntimeExecutionCommandBuilder buildTestClientCommand(String projectName, Integer port,
+            String testClientId, File logFile, String versionMask, AccessSettings accessSettings) {
+        InfobaseReference infobase = resolveDefaultInfobase(projectName);
+        File clientFile = resolveThinClientFile(infobase, versionMask);
+        if (clientFile == null) {
+            throw new IllegalStateException(
+                    "Thin client (1cv8c.exe) runtime component not resolved — required to launch the Vanessa TestClient"); //$NON-NLS-1$
+        }
+        RuntimeExecutionCommandBuilder builder = new RuntimeExecutionCommandBuilder(clientFile,
+                ThickClientMode.ENTERPRISE);
+        if (infobase.getConnectionString() == null) {
+            throw new IllegalStateException("Infobase connection string not available"); //$NON-NLS-1$
+        }
+        builder.forInfobase(infobase.getConnectionString(), false);
+        if (accessSettings != null) {
+            applyAccessSettings(builder, accessSettings);
+        } else {
+            applyAccessSettings(builder, infobase);
+        }
+        builder.testClientMode(port, testClientId);
+        builder.disableStartupDialogs();
+        builder.disableStartupMessages();
+        if (logFile != null) {
+            builder.logTo(logFile, true);
+        }
+        return builder;
+    }
+
     public RuntimeExecutionCommandBuilder buildUnitTestCommand(String projectName, File configPath, File logFile) {
         return buildUnitTestCommand(projectName, configPath, logFile, null, null);
     }

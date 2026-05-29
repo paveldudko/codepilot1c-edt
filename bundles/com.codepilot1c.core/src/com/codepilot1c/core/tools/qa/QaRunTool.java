@@ -69,6 +69,8 @@ public class QaRunTool extends AbstractTool {
     private static final int MIN_TIMEOUT_SECONDS = 300;
     private static final int MAX_FAILURE_DETAILS = 20;
     private static final int MAX_TAIL_LINES = 200;
+    /** Grace period after launching external TestClients so they bind their -TPort before the TestManager connects. */
+    private static final long TEST_CLIENT_READY_DELAY_MS = 5_000L;
 
     private static final Pattern STEP_LINE_PATTERN = Pattern.compile(
             "^\\s*(Дано|Когда|Тогда|И|Но|Также|Пусть|Given|When|Then|And|But|\\*)\\b.*", //$NON-NLS-1$
@@ -540,9 +542,32 @@ public class QaRunTool extends AbstractTool {
                             Integer.valueOf(MIN_TIMEOUT_SECONDS), Integer.valueOf(MIN_TIMEOUT_SECONDS)));
                 }
                 int timeout = timeoutRes.seconds();
+
+                // Vanessa's TestManager connects to each external TestClient by -TPort; headless,
+                // nothing else launches them, so qa_run spawns them itself before StartFeaturePlayer
+                // (mirrors rmcp's connect_test_client) and tears them down in finally. Without this
+                // the TestManager hangs pre-FeaturePlayer with va.log=0 — see feedback
+                // 2026-05-29-qa-run-testmanager-no-va-log-no-junit.md.
+                boolean shouldSpawnTestClients =
+                        shouldSpawnTestClients(useEdtRuntime, useTestManager, runtimeService != null, config);
+                List<Process> testClientProcesses = List.of();
                 long start = System.currentTimeMillis();
-                ProcessResult processResult = runProcess(processBuilder, logFile, timeout, workspaceRoot, opId,
-                        timeoutRes.source(), useTestManager);
+                ProcessResult processResult;
+                try {
+                    if (shouldSpawnTestClients) {
+                        testClientProcesses = spawnTestClients(opId, runtimeService, projectName, config,
+                                testClientCreds, accessSettings, platformVersion, runDir);
+                        if (!testClientProcesses.isEmpty()) {
+                            // Let the clients bind their -TPort before the TestManager connects. VA
+                            // retries, but this trims the startup race that otherwise looks like a hang.
+                            Thread.sleep(TEST_CLIENT_READY_DELAY_MS);
+                        }
+                    }
+                    processResult = runProcess(processBuilder, logFile, timeout, workspaceRoot, opId,
+                            timeoutRes.source(), useTestManager);
+                } finally {
+                    destroyTestClients(opId, testClientProcesses);
+                }
                 long durationMs = System.currentTimeMillis() - start;
 
                 QaJUnitReport report = null;
@@ -1184,6 +1209,81 @@ public class QaRunTool extends AbstractTool {
             this.line = line;
             this.step = step;
         }
+    }
+
+    /**
+     * Decides whether qa_run should launch external TestClient processes for this run. True only for
+     * an EDT-runtime TestManager run that has {@code test_clients} configured and has not opted out
+     * via {@code vanessa.spawn_test_clients=false} (the flag defaults to on). SingleClient runs and
+     * non-EDT-runtime paths never spawn. Visible for testing.
+     */
+    static boolean shouldSpawnTestClients(boolean useEdtRuntime, boolean useTestManager,
+            boolean runtimeServicePresent, QaConfig config) {
+        return useEdtRuntime && useTestManager && runtimeServicePresent
+                && config != null && config.test_clients != null && !config.test_clients.isEmpty()
+                && (config.vanessa == null || !Boolean.FALSE.equals(config.vanessa.spawn_test_clients));
+    }
+
+    /**
+     * Launches one external Vanessa TestClient ({@code 1cv8c /TESTCLIENT -TPort <port>}) per
+     * configured {@code test_clients} entry, so the TestManager has clients to connect to. Test
+     * credentials (when supplied via tool params) log each client in as the test account; otherwise
+     * the infobase's default access settings are used. Clients without a configured port are
+     * skipped (VA addresses them by {@code -TPort}). Returns the spawned processes for teardown.
+     */
+    private static List<Process> spawnTestClients(String opId, EdtRuntimeService runtimeService,
+            String projectName, QaConfig config, TestClientCreds testClientCreds,
+            EdtRuntimeService.AccessSettings accessSettings, String platformVersion, File runDir)
+            throws IOException {
+        List<Process> processes = new ArrayList<>();
+        EdtRuntimeService.AccessSettings clientAccess = testClientCreds != null
+                ? EdtRuntimeService.AccessSettings.infobaseAuthentication(
+                        testClientCreds.login(), testClientCreds.password(), null)
+                : accessSettings;
+        int index = 0;
+        for (QaConfig.TestClient client : config.test_clients) {
+            if (client == null || client.port == null) {
+                LOG.warn("[%s] qa_run: skipping TestClient '%s' — no port configured (VA connects by -TPort)", //$NON-NLS-1$
+                        opId, client == null ? "<null>" : client.name); //$NON-NLS-1$
+                continue;
+            }
+            File clientLog = new File(runDir, "testclient-" + index + ".log"); //$NON-NLS-1$ //$NON-NLS-2$
+            RuntimeExecutionCommandBuilder builder = runtimeService.buildTestClientCommand(
+                    projectName, client.port, client.name, clientLog, platformVersion, clientAccess);
+            ProcessBuilder pb = builder.toProcessBuilder();
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            processes.add(process);
+            LOG.info("[%s] qa_run TestClient spawned (pid=%d, name=%s, port=%d, log=%s)", opId, //$NON-NLS-1$
+                    Long.valueOf(process.pid()), client.name, client.port, clientLog.getAbsolutePath());
+            index++;
+        }
+        return processes;
+    }
+
+    /** Terminates the TestClient processes (and their descendants) spawned for a TestManager run. */
+    private static void destroyTestClients(String opId, List<Process> processes) {
+        if (processes == null || processes.isEmpty()) {
+            return;
+        }
+        for (Process process : processes) {
+            if (process == null) {
+                continue;
+            }
+            try {
+                process.descendants().forEach(ProcessHandle::destroy);
+                process.destroy();
+                if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                    process.descendants().forEach(ProcessHandle::destroyForcibly);
+                    process.destroyForcibly();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (RuntimeException ignored) {
+                // Best-effort teardown; never let cleanup mask the run result.
+            }
+        }
+        LOG.info("[%s] qa_run: terminated %d TestClient process(es)", opId, Integer.valueOf(processes.size())); //$NON-NLS-1$
     }
 
     private static ProcessResult runProcess(ProcessBuilder builder, File logFile, int timeoutSeconds,

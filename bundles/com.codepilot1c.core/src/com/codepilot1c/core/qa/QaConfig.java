@@ -196,6 +196,16 @@ public class QaConfig {
          * want full control over the TestClient registration step.
          */
         public Boolean auto_inject_test_client_creds;
+        /**
+         * When {@code true} (default), and a TestManager run has {@code test_clients} configured,
+         * qa_run launches one external thin-client {@code /TESTCLIENT -TPort <port>} process per
+         * configured client before {@code StartFeaturePlayer} and tears them down afterwards.
+         * Vanessa's TestManager connects to these by port; headless nothing else launches them, so
+         * without this the run hangs pre-FeaturePlayer (see feedback
+         * {@code 2026-05-29-qa-run-testmanager-no-va-log-no-junit.md}). Set to {@code false} if the
+         * environment already provides connected TestClients (e.g. VA auto-launch is configured).
+         */
+        public Boolean spawn_test_clients;
     }
 
     public static class TestManager {
