@@ -27,6 +27,7 @@ public enum ValidationOperation {
     UPDATE_METADATA("update_metadata"), //$NON-NLS-1$
     DELETE_METADATA("delete_metadata"), //$NON-NLS-1$
     MUTATE_FORM_MODEL("mutate_form_model"), //$NON-NLS-1$
+    RIGHTS_MANAGE("rights_manage"), //$NON-NLS-1$
     RENDER_TEMPLATE("render_template"); //$NON-NLS-1$
 
     private final String toolName;

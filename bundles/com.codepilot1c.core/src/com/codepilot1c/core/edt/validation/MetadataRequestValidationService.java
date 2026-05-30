@@ -29,6 +29,7 @@ import com.codepilot1c.core.edt.metadata.MetadataChildKind;
 import com.codepilot1c.core.edt.metadata.MetadataKind;
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.RenderTemplateRequest;
+import com.codepilot1c.core.edt.metadata.RightsManageRequest;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 import com.codepilot1c.core.edt.metadata.MetadataProjectReadinessChecker;
 import com.codepilot1c.core.edt.metadata.MetadataNameValidator;
@@ -652,6 +653,30 @@ public class MetadataRequestValidationService {
         return payload;
     }
 
+    public Map<String, Object> normalizeRightsManagePayload(
+            String projectName,
+            String role,
+            List<Map<String, Object>> grants
+    ) {
+        List<RightsManageRequest.RightGrant> parsed = RightsManageRequest.parseGrants(grants, "grants"); //$NON-NLS-1$
+        RightsManageRequest request = new RightsManageRequest(projectName, role, parsed);
+        request.validate();
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("project", projectName); //$NON-NLS-1$
+        payload.put("role", role); //$NON-NLS-1$
+        List<Map<String, Object>> canonicalGrants = new ArrayList<>();
+        for (RightsManageRequest.RightGrant grant : parsed) {
+            Map<String, Object> normalized = new LinkedHashMap<>();
+            normalized.put("object_fqn", grant.objectFqn()); //$NON-NLS-1$
+            normalized.put("right", grant.right()); //$NON-NLS-1$
+            normalized.put("value", grant.value()); //$NON-NLS-1$
+            canonicalGrants.add(normalized);
+        }
+        payload.put("grants", canonicalGrants); //$NON-NLS-1$
+        return payload;
+    }
+
     public Map<String, Object> normalizeRenderTemplatePayload(
             String projectName,
             String templateFqn,
@@ -1102,6 +1127,14 @@ public class MetadataRequestValidationService {
                         asString(request.payload().get("form_fqn")), //$NON-NLS-1$
                         asListOfMaps(request.payload().get("operations"))); //$NON-NLS-1$
                 checks.add("Операция mutate_form_model валидирована по обязательным полям."); //$NON-NLS-1$
+                yield payload;
+            }
+            case RIGHTS_MANAGE -> {
+                Map<String, Object> payload = normalizeRightsManagePayload(
+                        coalesceProject(request.projectName(), request.payload()),
+                        asString(firstValue(request.payload(), "role", "role_fqn", "role_name")), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        asListOfMaps(request.payload().get("grants"))); //$NON-NLS-1$
+                checks.add("Операция rights_manage валидирована по обязательным полям."); //$NON-NLS-1$
                 yield payload;
             }
             case RENDER_TEMPLATE -> {

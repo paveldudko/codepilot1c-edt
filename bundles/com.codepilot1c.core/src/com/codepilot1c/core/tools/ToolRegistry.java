@@ -130,6 +130,7 @@ public class ToolRegistry {
         register(new EnsureModuleArtifactTool());
         register(new UpdateMetadataTool());
         register(new MutateFormModelTool());
+        register(new RightsManageTool());
         register(new DeleteMetadataTool());
         register(new RenderTemplateTool());
         register(new InspectTemplateTool());

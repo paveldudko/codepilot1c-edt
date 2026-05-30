@@ -141,6 +141,16 @@ import com._1c.g5.v8.dt.metadata.mdclass.FormType;
 import com._1c.g5.v8.dt.metadata.mdclass.TemplateType;
 import com._1c.g5.v8.dt.metadata.mdclass.AdjustableBoolean;
 import com._1c.g5.v8.dt.metadata.mdclass.ForRoleType;
+import com._1c.g5.v8.dt.metadata.mdclass.Role;
+import com._1c.g5.v8.dt.metadata.mdclass.AbstractRoleDescription;
+import com._1c.g5.v8.dt.rights.IRightInfosService;
+import com._1c.g5.v8.dt.rights.model.ObjectRight;
+import com._1c.g5.v8.dt.rights.model.ObjectRights;
+import com._1c.g5.v8.dt.rights.model.Right;
+import com._1c.g5.v8.dt.rights.model.RightValue;
+import com._1c.g5.v8.dt.rights.model.RightsFactory;
+import com._1c.g5.v8.dt.rights.model.RoleDescription;
+import com._1c.g5.v8.dt.rights.model.util.RightsModelUtil;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeDescriptionInfoWithTypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeProviderService;
@@ -194,6 +204,8 @@ public class EdtMetadataService {
     private static final String FORM_BUNDLE_ID = "com._1c.g5.v8.dt.form"; //$NON-NLS-1$
     private static final String PLATFORM_BUNDLE_ID = "com._1c.g5.v8.dt.platform"; //$NON-NLS-1$
     private static final String FORM_PLUGIN_CLASS = "com._1c.g5.v8.dt.internal.form.FormPlugin"; //$NON-NLS-1$
+    private static final String RIGHTS_BUNDLE_ID = "com._1c.g5.v8.dt.rights"; //$NON-NLS-1$
+    private static final String RIGHTS_PLUGIN_CLASS = "com._1c.g5.v8.dt.rights.RightsPlugin"; //$NON-NLS-1$
     private static final String FORM_GENERATOR_CLASS = "com._1c.g5.v8.dt.form.generator.IFormGenerator"; //$NON-NLS-1$
     private static final String FORM_FIELD_GENERATOR_CLASS = "com._1c.g5.v8.dt.form.generator.IFormFieldGenerator"; //$NON-NLS-1$
     private static final String FORM_FIELD_INFO_CLASS = "com._1c.g5.v8.dt.form.generator.FormFieldInfo"; //$NON-NLS-1$
@@ -4541,6 +4553,205 @@ public class EdtMetadataService {
                 "Metadata object updated successfully"); //$NON-NLS-1$
     }
 
+    /**
+     * Set object-level rights grants on a Role. A Role's rights live in the rights
+     * model reachable through the BM as {@code Role.getRights()} → {@code RoleDescription};
+     * each grant resolves a target {@code MdObject}, a named {@code Right} (validated
+     * against the catalog applicable to that object type), and a target value
+     * (set / unset / provided) applied via {@code RightsModelUtil.changeObjectRight}.
+     */
+    public MetadataOperationResult manageRights(RightsManageRequest request) {
+        String opId = LogSanitizer.newId("edt-rights"); //$NON-NLS-1$
+        long startedAt = System.currentTimeMillis();
+        LOG.info("[%s] manageRights START project=%s role=%s grants=%d", //$NON-NLS-1$
+                opId, request.projectName(), request.roleFqn(),
+                Integer.valueOf(request.grants() == null ? 0 : request.grants().size()));
+        request.validate();
+        gateway.ensureMutationRuntimeAvailable();
+        IProject project = requireProject(request.projectName());
+        readinessChecker.ensureReady(project);
+
+        IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
+        Configuration configuration = configurationProvider.getConfiguration(project);
+        if (configuration == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve project configuration", false); //$NON-NLS-1$
+        }
+
+        IRightInfosService rightInfosService = resolveRightInfosService();
+
+        List<String> summaries = executeWrite(project, transaction -> {
+            Configuration txConfiguration = transaction.toTransactionObject(configuration);
+            if (txConfiguration == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                        "Cannot access configuration in BM transaction", false); //$NON-NLS-1$
+            }
+            Role role = resolveRoleObject(txConfiguration, request.roleFqn());
+            RoleDescription roleDescription = ensureRoleDescription(role, request.roleFqn());
+
+            List<String> applied = new ArrayList<>();
+            int index = 1;
+            for (RightsManageRequest.RightGrant grant : request.grants()) {
+                MdObject targetObject = resolveByFqn(txConfiguration, grant.objectFqn());
+                if (targetObject == null) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.METADATA_NOT_FOUND,
+                            "Rights target object not found: " + grant.objectFqn(), false); //$NON-NLS-1$
+                }
+                if (!RightsModelUtil.isMdObjectHasRights(targetObject)) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.INVALID_METADATA_CHANGE,
+                            "Object does not support rights: " + grant.objectFqn(), false); //$NON-NLS-1$
+                }
+                Right right = resolveRight(rightInfosService, targetObject, grant.right(), grant.objectFqn());
+                RightValue newValue = toRightValue(grant.value());
+                ObjectRights objectRights = RightsModelUtil.getOrCreateObjectRights(targetObject, roleDescription);
+                RightValue currentValue = currentRightValue(objectRights, right, targetObject, role);
+                if (currentValue != newValue) {
+                    RightsModelUtil.changeObjectRight(currentValue, newValue, objectRights, right);
+                }
+                applied.add("grant[" + index + "]: " + grant.objectFqn() + "." + right.getName() //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        + "=" + newValue.getName()); //$NON-NLS-1$
+                index++;
+            }
+            return applied;
+        });
+
+        // Rights are serialized under the role's top-level object → force-export it.
+        String roleTopLevelFqn = extractTopLevelFqn(roleNameToFqn(request.roleFqn()));
+        forceExportTopLevelObject(project, roleTopLevelFqn, opId);
+        verifyObjectPersisted(project, roleTopLevelFqn, opId);
+        refreshProjectSafely(project);
+        LOG.info("[%s] manageRights SUCCESS in %s role=%s grants=%d", opId, //$NON-NLS-1$
+                LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                request.roleFqn(), Integer.valueOf(summaries.size()));
+
+        return new MetadataOperationResult(
+                true,
+                request.projectName(),
+                "RIGHTS", //$NON-NLS-1$
+                extractNameFromFqn(roleTopLevelFqn),
+                roleTopLevelFqn,
+                "Role rights updated: " + String.join("; ", summaries)); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private String roleNameToFqn(String roleRef) {
+        return roleRef.indexOf('.') >= 0 ? roleRef : "Role." + roleRef; //$NON-NLS-1$
+    }
+
+    private Role resolveRoleObject(Configuration configuration, String roleRef) {
+        MdObject resolved = resolveByFqn(configuration, roleNameToFqn(roleRef));
+        if (resolved instanceof Role role) {
+            return role;
+        }
+        throw new MetadataOperationException(
+                MetadataOperationCode.METADATA_NOT_FOUND,
+                "Role not found: " + roleRef, false); //$NON-NLS-1$
+    }
+
+    private RoleDescription ensureRoleDescription(Role role, String roleRef) {
+        AbstractRoleDescription existing = role.getRights();
+        if (existing instanceof RoleDescription roleDescription) {
+            return roleDescription;
+        }
+        if (existing != null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "Unsupported role rights model type for " + roleRef + ": " //$NON-NLS-1$ //$NON-NLS-2$
+                            + existing.eClass().getName(), false);
+        }
+        RoleDescription created = RightsFactory.eINSTANCE.createRoleDescription();
+        role.setRights(created);
+        return created;
+    }
+
+    private Right resolveRight(IRightInfosService rightInfosService, MdObject targetObject,
+            String rightName, String objectFqn) {
+        Set<Right> candidates = rightInfosService.getRights(targetObject);
+        if (candidates == null || candidates.isEmpty()) {
+            EClass rightsEClass = RightsModelUtil.getEClass(targetObject);
+            if (rightsEClass != null) {
+                candidates = rightInfosService.getEClassRights(targetObject, rightsEClass);
+            }
+        }
+        if (candidates != null) {
+            for (Right candidate : candidates) {
+                if (candidate != null && rightMatchesName(candidate, rightName)) {
+                    return candidate;
+                }
+            }
+        }
+        throw new MetadataOperationException(
+                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                "Right '" + rightName + "' is not applicable to " + objectFqn //$NON-NLS-1$ //$NON-NLS-2$
+                        + availableRightsHint(candidates), false);
+    }
+
+    private String availableRightsHint(Set<Right> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return ""; //$NON-NLS-1$
+        }
+        List<String> names = new ArrayList<>();
+        for (Right candidate : candidates) {
+            if (candidate != null && candidate.getName() != null) {
+                names.add(candidate.getName());
+            }
+        }
+        if (names.isEmpty()) {
+            return ""; //$NON-NLS-1$
+        }
+        names.sort(String::compareToIgnoreCase);
+        return " (available: " + String.join(", ", names) + ")"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+    }
+
+    private boolean rightMatchesName(Right right, String rightName) {
+        if (rightName == null) {
+            return false;
+        }
+        String wanted = rightName.trim();
+        if (wanted.equalsIgnoreCase(right.getName())) {
+            return true;
+        }
+        String nameRu = right.getNameRu();
+        return nameRu != null && wanted.equalsIgnoreCase(nameRu);
+    }
+
+    private RightValue currentRightValue(ObjectRights objectRights, Right right, MdObject targetObject, Role role) {
+        ObjectRight existing = RightsModelUtil.filterObjectRightByRight(right, objectRights.getRights());
+        if (existing != null && existing.getValue() != null) {
+            return existing.getValue();
+        }
+        RightValue defaultValue = RightsModelUtil.getDefaultRightValue(targetObject, role);
+        return defaultValue != null ? defaultValue : RightValue.UNSET;
+    }
+
+    private RightValue toRightValue(String token) {
+        return switch (token) {
+            case RightsManageRequest.VALUE_SET -> RightValue.SET;
+            case RightsManageRequest.VALUE_UNSET -> RightValue.UNSET;
+            case RightsManageRequest.VALUE_PROVIDED -> RightValue.PROVIDED;
+            default -> throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Unknown right value token: " + token, false); //$NON-NLS-1$
+        };
+    }
+
+    private IRightInfosService resolveRightInfosService() {
+        try {
+            Bundle rightsBundle = requireBundle(RIGHTS_BUNDLE_ID);
+            Object injector = resolveBundleInjector(rightsBundle, RIGHTS_PLUGIN_CLASS);
+            return (IRightInfosService) resolveInjectorService(injector, IRightInfosService.class);
+        } catch (MetadataOperationException e) {
+            throw e;
+        } catch (ReflectiveOperationException e) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "IRightInfosService is unavailable: " + e.getMessage(), false, e); //$NON-NLS-1$
+        }
+    }
+
     public FieldTypeCandidatesResult listFieldTypeCandidates(FieldTypeCandidatesRequest request) {
         request.validate();
         IProject project = requireProject(request.projectName());
@@ -6466,30 +6677,40 @@ public class EdtMetadataService {
     }
 
     private Object resolveFormInjector(Bundle formBundle) throws ReflectiveOperationException {
-        Class<?> formPluginClass = loadBundleClass(formBundle, FORM_PLUGIN_CLASS);
-        Method getDefault = formPluginClass.getMethod("getDefault"); //$NON-NLS-1$
+        return resolveBundleInjector(formBundle, FORM_PLUGIN_CLASS);
+    }
+
+    /**
+     * Resolve the Guice injector exposed by an EDT bundle's {@code *Plugin}
+     * activator ({@code getDefault().getInjector()}), starting the bundle if its
+     * singleton has not been instantiated yet. Generic over the form / rights /
+     * other EDT plugins that follow the {@code com._1c.g5.wiring} pattern.
+     */
+    private Object resolveBundleInjector(Bundle bundle, String pluginClassName) throws ReflectiveOperationException {
+        Class<?> pluginClass = loadBundleClass(bundle, pluginClassName);
+        Method getDefault = pluginClass.getMethod("getDefault"); //$NON-NLS-1$
         Object plugin = getDefault.invoke(null);
         if (plugin == null) {
             try {
-                formBundle.start(Bundle.START_TRANSIENT);
+                bundle.start(Bundle.START_TRANSIENT);
             } catch (Exception e) {
                 throw new MetadataOperationException(
                         MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
-                        "Failed to start EDT form bundle: " + e.getMessage(), false, e); //$NON-NLS-1$
+                        "Failed to start EDT bundle " + bundle.getSymbolicName() + ": " + e.getMessage(), false, e); //$NON-NLS-1$ //$NON-NLS-2$
             }
             plugin = getDefault.invoke(null);
         }
         if (plugin == null) {
             throw new MetadataOperationException(
                     MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
-                    "FormPlugin instance is unavailable", false); //$NON-NLS-1$
+                    pluginClassName + " instance is unavailable", false); //$NON-NLS-1$
         }
-        Method getInjector = formPluginClass.getMethod("getInjector"); //$NON-NLS-1$
+        Method getInjector = pluginClass.getMethod("getInjector"); //$NON-NLS-1$
         Object injector = getInjector.invoke(plugin);
         if (injector == null) {
             throw new MetadataOperationException(
                     MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
-                    "FormPlugin injector is unavailable", false); //$NON-NLS-1$
+                    pluginClassName + " injector is unavailable", false); //$NON-NLS-1$
         }
         return injector;
     }
