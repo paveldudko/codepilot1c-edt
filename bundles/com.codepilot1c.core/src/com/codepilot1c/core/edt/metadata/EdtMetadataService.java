@@ -140,6 +140,7 @@ import com._1c.g5.v8.dt.metadata.mdclass.Document;
 import com._1c.g5.v8.dt.metadata.mdclass.FormType;
 import com._1c.g5.v8.dt.metadata.mdclass.TemplateType;
 import com._1c.g5.v8.dt.metadata.mdclass.AdjustableBoolean;
+import com._1c.g5.v8.dt.metadata.mdclass.ForRoleType;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeDescriptionInfoWithTypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeProviderService;
@@ -472,7 +473,7 @@ public class EdtMetadataService {
                         "Form metadata not found: " + request.formFqn(), false); //$NON-NLS-1$
             }
             Form formModel = resolveManagedFormModel(basicForm, request.formFqn());
-            List<String> applied = applyFormModelOperations(formModel, request.operations());
+            List<String> applied = applyFormModelOperations(formModel, request.operations(), txConfiguration);
             ensureUuidsRecursively(basicForm, opId, request.formFqn());
             return applied;
         });
@@ -613,7 +614,7 @@ public class EdtMetadataService {
                     ? applyFormAttributeRecipe(formModel, request.attributes(), mode, transaction, preResolvedTypes, txConfiguration)
                     : new FormAttributeRecipeStats();
             List<String> summaries = hasLayoutOps
-                    ? applyFormModelOperations(formModel, request.layoutOperations())
+                    ? applyFormModelOperations(formModel, request.layoutOperations(), txConfiguration)
                     : List.of();
             // Normalize platform-required defaults after both attribute and
             // layout passes — handles the attributes-only path that does
@@ -828,7 +829,8 @@ public class EdtMetadataService {
         return formModel;
     }
 
-    private List<String> applyFormModelOperations(Form formModel, List<Map<String, Object>> operations) {
+    private List<String> applyFormModelOperations(Form formModel, List<Map<String, Object>> operations,
+            Configuration configuration) {
         List<String> summaries = new ArrayList<>();
         IFormItemManagementService itemManagementService = resolveOptionalFormItemManagementService();
         int operationIndex = 1;
@@ -845,7 +847,7 @@ public class EdtMetadataService {
                                 MetadataOperationCode.INVALID_METADATA_CHANGE,
                                 "set_form_props operation requires non-empty 'set' or 'properties' map", false); //$NON-NLS-1$
                     }
-                    applyFormPropertySet(formModel, set);
+                    applyFormPropertySet(formModel, set, configuration);
                     summaries.add("set_form_props[" + operationIndex + "]"); //$NON-NLS-1$ //$NON-NLS-2$
                 }
                 case "addgroup", "creategroup" -> {
@@ -876,7 +878,7 @@ public class EdtMetadataService {
                     ensureFormGroupExtInfo(group);
                     applyUsualGroupLayoutProperties(group, effectiveSet);
                     if (!effectiveSet.isEmpty()) {
-                        applyFormPropertySet(group, effectiveSet);
+                        applyFormPropertySet(group, effectiveSet, configuration);
                     }
                     applyDefaultVisibility(group, effectiveSet);
                     summaries.add("add_group[" + operationIndex + "]: name=" + group.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
@@ -903,7 +905,7 @@ public class EdtMetadataService {
                             itemManagementService);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title"); //$NON-NLS-1$ //$NON-NLS-2$
                     if (!effectiveSet.isEmpty()) {
-                        applyFormPropertySet(field, effectiveSet);
+                        applyFormPropertySet(field, effectiveSet, configuration);
                     }
                     applyDefaultVisibility(field, effectiveSet);
                     ensureFormFieldExtInfo(field);
@@ -930,7 +932,7 @@ public class EdtMetadataService {
                             "header", "headerHeight", "header_height", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                             "auto_command_bar", "autoCommandBar"); //$NON-NLS-1$ //$NON-NLS-2$
                     if (!effectiveSet.isEmpty()) {
-                        applyFormPropertySet(table, effectiveSet);
+                        applyFormPropertySet(table, effectiveSet, configuration);
                     }
                     applyDefaultVisibility(table, effectiveSet);
                     summaries.add("add_table[" + operationIndex + "]: name=" + table.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
@@ -957,7 +959,7 @@ public class EdtMetadataService {
                             itemManagementService);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title", "decoration_type", "decorationType", "kind"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
                     if (!effectiveSet.isEmpty()) {
-                        applyFormPropertySet(decoration, effectiveSet);
+                        applyFormPropertySet(decoration, effectiveSet, configuration);
                     }
                     applyDefaultVisibility(decoration, effectiveSet);
                     ensureFormDecorationExtInfo(decoration);
@@ -977,7 +979,7 @@ public class EdtMetadataService {
                     if (item instanceof FormGroup formGroup) {
                         applyUsualGroupLayoutProperties(formGroup, set);
                     }
-                    applyFormPropertySet(item, set);
+                    applyFormPropertySet(item, set, configuration);
                     summaries.add("set_item[" + operationIndex + "]: id=" + item.getId()); //$NON-NLS-1$ //$NON-NLS-2$
                 }
                 case "removeitem", "deleteitem" -> {
@@ -1062,7 +1064,7 @@ public class EdtMetadataService {
                     Map<String, Object> set = extractOperationSet(operation);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title", "command_name", "command"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
                     if (!effectiveSet.isEmpty()) {
-                        applyFormPropertySet(button, effectiveSet);
+                        applyFormPropertySet(button, effectiveSet, configuration);
                     }
                     applyDefaultVisibility(button, effectiveSet);
                     summaries.add("add_button[" + operationIndex + "]: name=" + button.getName() //$NON-NLS-1$ //$NON-NLS-2$
@@ -2747,6 +2749,10 @@ public class EdtMetadataService {
     }
 
     private void applyFormPropertySet(EObject target, Map<String, Object> set) {
+        applyFormPropertySet(target, set, null);
+    }
+
+    private void applyFormPropertySet(EObject target, Map<String, Object> set, Configuration configuration) {
         for (Map.Entry<String, Object> entry : set.entrySet()) {
             String key = entry.getKey();
             if (key == null || key.isBlank()) {
@@ -2777,7 +2783,7 @@ public class EdtMetadataService {
                 continue;
             }
             if ("uservisible".equals(normalized) && target instanceof Visible visible) { //$NON-NLS-1$
-                applyUserVisibleValue(visible, value, key);
+                applyUserVisibleValue(visible, value, key, configuration);
                 continue;
             }
             if ("visible".equals(normalized) && target instanceof Visible visible) { //$NON-NLS-1$
@@ -2798,7 +2804,7 @@ public class EdtMetadataService {
                 applyDataPath(field, value);
                 continue;
             }
-            applySimpleFeatureValue(target, key, value);
+            applySimpleFeatureValue(target, key, value, configuration);
         }
     }
 
@@ -2878,6 +2884,28 @@ public class EdtMetadataService {
     }
 
     private void applyUserVisibleValue(Visible visible, Object value, String fieldName) {
+        applyUserVisibleValue(visible, value, fieldName, null);
+    }
+
+    /**
+     * Apply a {@code userVisible} adjustment, supporting both the uniform
+     * {@code <common>…</common>} flag and per-role overrides
+     * ({@code <for><role>…</role><value>…</value></for>}).
+     *
+     * <p>Accepted shapes for {@code value}:</p>
+     * <ul>
+     *   <li>scalar boolean — sets {@code common}, no per-role entries;</li>
+     *   <li>{@code {common: bool}} — same, explicit;</li>
+     *   <li>{@code {common: bool, for: [{role: "Имя"|"Role.Имя", value: bool}, …]}} —
+     *       the blacklist form ({@code common=true} + per-role {@code false}) and the
+     *       whitelist form ({@code common=false}/omitted + per-role {@code true}).</li>
+     * </ul>
+     *
+     * <p>Per-role overrides require {@code configuration} to resolve the {@link Role}
+     * cross-references inside the same BM transaction; if it is unavailable the call
+     * fails loudly rather than silently dropping the per-role entries.</p>
+     */
+    private void applyUserVisibleValue(Visible visible, Object value, String fieldName, Configuration configuration) {
         if (visible == null) {
             return;
         }
@@ -2885,13 +2913,21 @@ public class EdtMetadataService {
             visible.setUserVisible(null);
             return;
         }
+        List<RoleVisibility> perRole = List.of();
         Boolean common = parseBoolean(value);
-        if (common == null && value instanceof Map<?, ?> map) {
-            common = firstParsedBoolean(
-                    getMapValueIgnoreCase(map, "common"), //$NON-NLS-1$
-                    getMapValueIgnoreCase(map, "value"), //$NON-NLS-1$
-                    getMapValueIgnoreCase(map, "visible"), //$NON-NLS-1$
-                    getMapValueIgnoreCase(map, "enabled")); //$NON-NLS-1$
+        if (value instanceof Map<?, ?> map) {
+            perRole = parseForRoleEntries(getMapValueIgnoreCase(map, "for"), fieldName); //$NON-NLS-1$
+            if (common == null) {
+                common = firstParsedBoolean(
+                        getMapValueIgnoreCase(map, "common"), //$NON-NLS-1$
+                        getMapValueIgnoreCase(map, "value"), //$NON-NLS-1$
+                        getMapValueIgnoreCase(map, "visible"), //$NON-NLS-1$
+                        getMapValueIgnoreCase(map, "enabled")); //$NON-NLS-1$
+            }
+            if (common == null && !perRole.isEmpty()) {
+                // Whitelist form: hidden by default, shown only for the listed roles.
+                common = Boolean.FALSE;
+            }
         }
         if (common == null) {
             throw new MetadataOperationException(
@@ -2901,7 +2937,110 @@ public class EdtMetadataService {
         AdjustableBoolean adjusted = MdClassFactory.eINSTANCE.createAdjustableBoolean();
         adjusted.setCommon(common.booleanValue());
         adjusted.getFor().clear();
+        for (RoleVisibility entry : perRole) {
+            if (configuration == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        "Per-role userVisible is not supported in this code path (no configuration context) for " //$NON-NLS-1$
+                                + fieldName, false);
+            }
+            ForRoleType forRole = MdClassFactory.eINSTANCE.createForRoleType();
+            forRole.setRole(resolveRoleReference(configuration, entry.role()));
+            forRole.setValue(entry.value());
+            adjusted.getFor().add(forRole);
+        }
         visible.setUserVisible(adjusted);
+    }
+
+    private com._1c.g5.v8.dt.metadata.mdclass.Role resolveRoleReference(Configuration configuration, String roleRef) {
+        String fqn = roleRef.indexOf('.') >= 0 ? roleRef : "Role." + roleRef; //$NON-NLS-1$
+        MdObject resolved = resolveByFqn(configuration, fqn);
+        if (resolved instanceof com._1c.g5.v8.dt.metadata.mdclass.Role role) {
+            return role;
+        }
+        throw new MetadataOperationException(
+                MetadataOperationCode.METADATA_NOT_FOUND,
+                "Role not found for per-role userVisible: " + roleRef, false); //$NON-NLS-1$
+    }
+
+    /**
+     * Parse the {@code for} payload of a {@code userVisible} adjustment into role/value
+     * pairs. Pure (no EMF/BM access) so the parsing contract is unit-testable. Accepts a
+     * list of {@code {role, value}} maps (or a single such map). The role key may be
+     * {@code role}/{@code role_name}/{@code name}; the value key {@code value}/{@code visible}.
+     */
+    static List<RoleVisibility> parseForRoleEntries(Object raw, String fieldName) {
+        if (raw == null) {
+            return List.of();
+        }
+        List<?> source;
+        if (raw instanceof List<?> list) {
+            source = list;
+        } else if (raw instanceof Map<?, ?>) {
+            source = List.of(raw);
+        } else {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "'for' must be a list of {role, value} objects for " + fieldName, false); //$NON-NLS-1$
+        }
+        List<RoleVisibility> result = new ArrayList<>(source.size());
+        for (Object item : source) {
+            if (!(item instanceof Map<?, ?> entry)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Each 'for' entry must be a {role, value} object for " + fieldName, false); //$NON-NLS-1$
+            }
+            String role = asTrimmedString(firstMapValueIgnoreCase(entry, "role", "role_name", "name")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            if (role == null || role.isBlank()) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Each 'for' entry requires a non-empty 'role' for " + fieldName, false); //$NON-NLS-1$
+            }
+            Boolean visibleValue = parseBooleanLiteral(firstMapValueIgnoreCase(entry, "value", "visible")); //$NON-NLS-1$ //$NON-NLS-2$
+            if (visibleValue == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "'for' entry for role '" + role + "' requires a boolean 'value' for " + fieldName, false); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            result.add(new RoleVisibility(role, visibleValue.booleanValue()));
+        }
+        return result;
+    }
+
+    private static Object firstMapValueIgnoreCase(Map<?, ?> map, String... keys) {
+        for (String key : keys) {
+            for (Map.Entry<?, ?> mapEntry : map.entrySet()) {
+                if (mapEntry.getKey() instanceof String str && str.equalsIgnoreCase(key)) {
+                    return mapEntry.getValue();
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String asTrimmedString(Object value) {
+        return value == null ? null : String.valueOf(value).trim();
+    }
+
+    private static Boolean parseBooleanLiteral(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        String text = String.valueOf(value).trim();
+        if ("true".equalsIgnoreCase(text)) { //$NON-NLS-1$
+            return Boolean.TRUE;
+        }
+        if ("false".equalsIgnoreCase(text)) { //$NON-NLS-1$
+            return Boolean.FALSE;
+        }
+        return null;
+    }
+
+    /** Role visibility override parsed from a {@code userVisible.for} entry. */
+    record RoleVisibility(String role, boolean value) {
     }
 
     private void applyFormAttributesPatch(Form formModel, Object value) {
@@ -4254,6 +4393,10 @@ public class EdtMetadataService {
     }
 
     private void applySimpleFeatureValue(EObject target, String fieldName, Object value) {
+        applySimpleFeatureValue(target, fieldName, value, null);
+    }
+
+    private void applySimpleFeatureValue(EObject target, String fieldName, Object value, Configuration configuration) {
         EStructuralFeature feature = resolveStructuralFeatureIgnoreCase(target, fieldName);
         if (feature == null) {
             throw new MetadataOperationException(
@@ -4265,7 +4408,7 @@ public class EdtMetadataService {
                 return;
             }
             if ("uservisible".equals(normalizeToken(reference.getName())) && target instanceof Visible visible) { //$NON-NLS-1$
-                applyUserVisibleValue(visible, value, fieldName);
+                applyUserVisibleValue(visible, value, fieldName, configuration);
                 return;
             }
             throw new MetadataOperationException(

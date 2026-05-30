@@ -53,7 +53,7 @@ public class MutateFormModelTool extends AbstractTool {
                     "required": ["op"],
                     "additionalProperties": true
                   },
-                  "description": "Список операций: set_form_props/add_group/add_field/add_command/add_button/set_item/remove_item/move_item. add_command: name+action (handler). add_button: name+command_name+parent_item_id."
+                  "description": "Список операций: set_form_props/add_group/add_field/add_command/add_button/set_item/remove_item/move_item. add_command: name+action (handler). add_button: name+command_name+parent_item_id. set_item visibility: set:{visible|enabled:bool}; per-role userVisible via set:{uservisible:{common:bool, for:[{role:\\\"RoleName\\\", value:bool}]}} (blacklist: common true + value false; whitelist: common false + value true)."
                 },
                 "validation_token": {
                   "type": "string",

@@ -5,6 +5,7 @@ Document: create_metadata(kind=Document). Reserved: Номер, Дата, Про
 AccumulationRegister: create_metadata(kind=AccumulationRegister). Children: add_metadata_child(child_kind=Dimension|Resource|Attribute). Reserved: Период, Регистратор, Активность.
 InformationRegister: create_metadata(kind=InformationRegister). Set periodicity via update_metadata.
 Form: create_form(owner_fqn=...) or apply_form_recipe(mode=create). Inspect: inspect_form_layout. Mutate: mutate_form_model.
+Form item visibility: mutate_form_model set_item set:{visible|enabled:bool}. Per-role userVisible: set:{uservisible:{common:bool, for:[{role:"RoleName"|"Role.RoleName", value:bool}]}} — blacklist = common:true + per-role value:false (visible to all except listed); whitelist = common:false (or omit) + per-role value:true (hidden except listed). Scalar uservisible:bool sets only the common flag.
 DCS: dcs_manage(command=create_schema) then dcs_manage(command=upsert_dataset|upsert_param|upsert_field).
 Module: ALWAYS ensure_module_artifact before edit_file for BSL modules.
 Validation: edt_validate_request -> get validation_token -> pass to mutation tool -> get_diagnostics.
