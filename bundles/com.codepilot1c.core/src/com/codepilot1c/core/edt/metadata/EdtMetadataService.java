@@ -3,6 +3,7 @@ package com.codepilot1c.core.edt.metadata;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ByteArrayInputStream;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.nio.file.Files;
@@ -5788,6 +5789,12 @@ public class EdtMetadataService {
         if (normalized.contains("элемента") || normalized.contains("объекта") || normalized.contains("object")) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             return FormUsage.OBJECT;
         }
+        // Register record / record-set forms ("ФормаЗаписи", "ФормаНабораЗаписей", "RecordForm",
+        // "RecordSetForm") are OBJECT-usage forms — without this they fall through to the register's
+        // LIST default and silently downgrade.
+        if (normalized.contains("записи") || normalized.contains("record")) { //$NON-NLS-1$ //$NON-NLS-2$
+            return FormUsage.OBJECT;
+        }
         return null;
     }
 
@@ -6278,7 +6285,7 @@ public class EdtMetadataService {
     private void bindDefaultForm(MdObject owner, MdObject form, FormUsage usage, String opId) {
         // Path 1: kind-specific setter for owners that distinguish forms by usage
         // (Catalog/Document/Register/etc. have setDefaultObjectForm / setDefaultListForm / setDefaultChoiceForm).
-        String setter = formOwnerStrategy.resolveDefaultSetter(usage);
+        String setter = formOwnerStrategy.resolveDefaultSetter(usage, owner.eClass().getName());
         if (setter != null) {
             Method targetMethod = findCompatibleSetter(owner.getClass(), setter, form.getClass());
             if (targetMethod == null) {
@@ -6438,7 +6445,18 @@ public class EdtMetadataService {
                     String.valueOf(generatorFormType));
         } catch (MetadataOperationException e) {
             throw e;
+        } catch (InvocationTargetException e) {
+            // The generator was reachable but threw while producing the form (e.g. an NPE for an
+            // unsupported owner/usage combination such as OBJECT on a register). Surface the real cause
+            // instead of mislabeling it as EDT_SERVICE_UNAVAILABLE.
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_FORM_GENERATION_FAILED,
+                    "EDT form generation failed for " + owner.eClass().getName() + " (" + usage + "): " //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                            + cause.getClass().getSimpleName()
+                            + (cause.getMessage() != null ? ": " + cause.getMessage() : ""), false, cause); //$NON-NLS-1$ //$NON-NLS-2$
         } catch (ReflectiveOperationException e) {
+            // Class/method/service wiring failed — the generator infrastructure is genuinely unavailable.
             throw new MetadataOperationException(
                     MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
                     "EDT form generator is unavailable: " + e.getMessage(), false, e); //$NON-NLS-1$
@@ -6512,8 +6530,9 @@ public class EdtMetadataService {
     }
 
     private Object resolveFormGeneratorType(MdObject owner, FormUsage usage, Class<?> formTypeClass) {
+        String ownerClass = owner == null || owner.eClass() == null ? null : owner.eClass().getName();
         String typeName = switch (usage) {
-            case OBJECT -> "OBJECT"; //$NON-NLS-1$
+            case OBJECT -> formOwnerStrategy.objectFormGeneratorType(ownerClass);
             case LIST -> "LIST"; //$NON-NLS-1$
             case CHOICE -> "CHOICE"; //$NON-NLS-1$
             case AUXILIARY -> inferAuxiliaryFormType(owner);
