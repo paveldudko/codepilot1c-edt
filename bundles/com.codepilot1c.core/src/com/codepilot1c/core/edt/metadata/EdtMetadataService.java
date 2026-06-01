@@ -22,6 +22,10 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Stream;
+
+import com.codepilot1c.core.edt.metadata.eol.EolNormalizer;
+import com.codepilot1c.core.edt.metadata.eol.EolStyle;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IContainer;
@@ -293,6 +297,7 @@ public class EdtMetadataService {
 
         String fqn = request.kind().getFqnPrefix() + "." + request.name(); //$NON-NLS-1$
         LOG.debug("[%s] Target FQN: %s", opId, fqn); //$NON-NLS-1$
+        EolGuard eolGuard = beginEolGuard(project, fqn, opId);
 
         executeWrite(project, transaction -> {
             LOG.debug("[%s] Transaction started for createMetadata", opId); //$NON-NLS-1$
@@ -337,6 +342,7 @@ public class EdtMetadataService {
         forceExportTopLevelObject(project, fqn, opId);
         verifyTopLevelPersisted(project, fqn, opId);
         verifyConfigurationEntryPersisted(project, request.kind(), fqn, opId);
+        eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] createMetadata SUCCESS in %s fqn=%s", opId, // $NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
@@ -383,6 +389,7 @@ public class EdtMetadataService {
         final FormUsage capturedUsage = effectiveUsage;
         final boolean capturedBindAsDefault = bindAsDefault;
         final String capturedName = effectiveName;
+        EolGuard eolGuard = beginEolGuard(project, formFqn, opId);
 
         executeWrite(project, transaction -> {
             Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
@@ -438,6 +445,7 @@ public class EdtMetadataService {
                 effectiveName,
                 request.effectiveWaitMs(),
                 opId);
+        eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] createForm SUCCESS in %s form=%s", opId, //$NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
@@ -477,6 +485,7 @@ public class EdtMetadataService {
                     "Cannot resolve project configuration", false); //$NON-NLS-1$
         }
 
+        EolGuard eolGuard = beginEolGuard(project, request.formFqn(), opId);
         List<String> operationSummaries = executeWrite(project, transaction -> {
             Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
             MdObject resolved = resolveObjectForTransaction(project, transaction, txConfiguration, request.formFqn());
@@ -494,6 +503,7 @@ public class EdtMetadataService {
         String topLevelFqn = extractTopLevelFqn(request.formFqn());
         forceExportTopLevelObject(project, topLevelFqn, opId);
         verifyObjectPersisted(project, request.formFqn(), opId);
+        eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] updateFormModel SUCCESS in %s form=%s operations=%d", //$NON-NLS-1$
                 opId,
@@ -613,6 +623,7 @@ public class EdtMetadataService {
 
         final String applyFormFqn = formFqn;
         final String applyOwnerFqn = ownerFqn;
+        EolGuard eolGuard = beginEolGuard(project, applyFormFqn, opId);
         FormRecipeApplyResult applyResult = executeWrite(project, transaction -> {
             Configuration txConfiguration = toTransactionConfigurationOrNull(transaction, configuration);
             MdObject resolved = resolveObjectForTransaction(project, transaction, txConfiguration, applyFormFqn);
@@ -654,6 +665,7 @@ public class EdtMetadataService {
         String topLevelFqn = extractTopLevelFqn(formFqn);
         forceExportTopLevelObject(project, topLevelFqn, opId);
         verifyObjectPersisted(project, formFqn, opId);
+        eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] applyFormRecipe SUCCESS in %s form=%s", opId, //$NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
@@ -779,6 +791,7 @@ public class EdtMetadataService {
 
         Map<String, TypeItem> preResolvedTypes = preResolveChildTypes(project, request);
         final Map<String, TypeItem> capturedTypes = preResolvedTypes;
+        EolGuard eolGuard = beginEolGuard(project, request.parentFqn(), opId);
 
         String childFqn = executeWrite(project, transaction -> {
             LOG.debug("[%s] Transaction started for addMetadataChild", opId); //$NON-NLS-1$
@@ -805,6 +818,12 @@ public class EdtMetadataService {
             return createGenericChild(txConfiguration, request, transaction, capturedTypes);
         });
         verifyObjectPersisted(project, childFqn, opId);
+        if (!externalProject) {
+            // No explicit export otherwise — force the .mdo write so EOL preservation
+            // sees a settled file (matches updateMetadata's flow).
+            forceExportTopLevelObject(project, extractTopLevelFqn(childFqn), opId);
+        }
+        eolGuard.restore();
 
         String templateArtifactPath = null;
         if (request.childKind() == MetadataChildKind.TEMPLATE) {
@@ -4517,6 +4536,7 @@ public class EdtMetadataService {
             });
         }
         final Map<String, TypeItem> capturedTypes = preResolvedTypes;
+        EolGuard eolGuard = beginEolGuard(project, request.targetFqn(), opId);
 
         String targetFqn = executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
@@ -4540,6 +4560,7 @@ public class EdtMetadataService {
         String topLevelFqn = extractTopLevelFqn(targetFqn);
         forceExportTopLevelObject(project, topLevelFqn, opId);
         verifyObjectPersisted(project, targetFqn, opId);
+        eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] updateMetadata SUCCESS in %s target=%s", opId, // $NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
@@ -4581,6 +4602,7 @@ public class EdtMetadataService {
         }
 
         IRightInfosService rightInfosService = resolveRightInfosService();
+        EolGuard eolGuard = beginEolGuard(project, roleNameToFqn(request.roleFqn()), opId);
 
         List<String> summaries = executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
@@ -4624,6 +4646,7 @@ public class EdtMetadataService {
         String roleTopLevelFqn = extractTopLevelFqn(roleNameToFqn(request.roleFqn()));
         forceExportTopLevelObject(project, roleTopLevelFqn, opId);
         verifyObjectPersisted(project, roleTopLevelFqn, opId);
+        eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] manageRights SUCCESS in %s role=%s grants=%d", opId, //$NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
@@ -4835,6 +4858,7 @@ public class EdtMetadataService {
 
         String targetFqn = request.targetFqn();
         ensureNoIncomingReferences(project, configuration, targetFqn, request.force());
+        EolGuard eolGuard = beginEolGuard(project, targetFqn, opId);
         executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
             if (txConfiguration == null) {
@@ -4861,6 +4885,7 @@ public class EdtMetadataService {
         forceExportTopLevelObject(project, topLevelFqn, opId);
         verifyObjectRemoved(project, targetFqn, opId);
         cleanupRemovedFilesystemArtifacts(project, targetFqn, opId);
+        eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] deleteMetadata SUCCESS in %s target=%s", opId, // $NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
@@ -11333,6 +11358,183 @@ public class EdtMetadataService {
             project.refreshLocal(IResource.DEPTH_INFINITE, null);
         } catch (CoreException e) {
             LOG.warn("refreshProjectSafely failed for %s: %s", project.getName(), e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
+    // ===== EOL preservation (feedback 2026-06-01-bm-api-crlf-eol-rewrites-mdo-form) =====
+    // The EDT BM serializer rewrites .mdo/.form/.bsl as CRLF regardless of the file's
+    // existing EOL, turning a 1-line logical change into a whole-file diff on LF repos.
+    // We snapshot each touched file's EOL BEFORE the mutation and put it back AFTER the
+    // export pipeline has flushed to disk; new files adopt the project default.
+
+    private static final Set<String> EOL_MANAGED_EXTENSIONS =
+            Set.of("mdo", "form", "bsl"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+    /**
+     * Snapshots the per-file EOL of the artifacts a BM export of {@code fqn} may rewrite.
+     * Must be called BEFORE the mutating transaction — once the export pipeline runs the
+     * original EOL is gone. Returns a guard whose {@link EolGuard#restore()} re-applies it.
+     */
+    private EolGuard beginEolGuard(IProject project, String fqn, String opId) {
+        Map<Path, EolStyle> snapshot = new HashMap<>();
+        if (project != null && !isExternalProject(project)) {
+            for (Path file : collectEolCandidateFiles(project, fqn)) {
+                try {
+                    String content = Files.readString(file, StandardCharsets.UTF_8);
+                    EolNormalizer.detect(content).ifPresent(style -> snapshot.put(file, style));
+                } catch (IOException | RuntimeException e) {
+                    // unreadable or binary — nothing to preserve
+                }
+            }
+        }
+        return new EolGuard(project, fqn, opId, snapshot);
+    }
+
+    /** Re-applies a captured EOL snapshot once serialization has settled. Never throws. */
+    private final class EolGuard {
+        private final IProject project;
+        private final String fqn;
+        private final String opId;
+        private final Map<Path, EolStyle> snapshot;
+
+        EolGuard(IProject project, String fqn, String opId, Map<Path, EolStyle> snapshot) {
+            this.project = project;
+            this.fqn = fqn;
+            this.opId = opId;
+            this.snapshot = snapshot;
+        }
+
+        void restore() {
+            if (project == null || isExternalProject(project)) {
+                return;
+            }
+            EolDefaults defaults = loadEolDefaults(project);
+            int fixed = 0;
+            try {
+                for (Path file : collectEolCandidateFiles(project, fqn)) {
+                    EolStyle target = snapshot.get(file);
+                    if (target == null) {
+                        // A file created by this operation — follow the project convention.
+                        target = defaults.resolve(file.getFileName().toString());
+                    }
+                    if (normalizeFileEol(file, target)) {
+                        fixed++;
+                    }
+                }
+            } catch (RuntimeException e) {
+                LOG.warn("[%s] EOL preservation failed for %s: %s", opId, fqn, e.getMessage()); //$NON-NLS-1$
+                return;
+            }
+            if (fixed > 0) {
+                LOG.debug("[%s] EOL preservation normalized %d file(s) for %s", opId, fixed, fqn); //$NON-NLS-1$
+                refreshProjectSafely(project);
+            }
+        }
+    }
+
+    private List<Path> collectEolCandidateFiles(IProject project, String fqn) {
+        List<Path> files = new ArrayList<>();
+        if (project == null || project.getLocation() == null) {
+            return files;
+        }
+        Path base = project.getLocation().toFile().toPath();
+        Path configMdo = base.resolve("src").resolve("Configuration").resolve("Configuration.mdo"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        if (Files.isRegularFile(configMdo)) {
+            files.add(configMdo);
+        }
+        String topKind = topKindFromFqn(fqn);
+        String topName = topNameFromFqn(fqn);
+        String folder = topKind != null ? tryMapTopFolder(topKind) : null;
+        if (folder != null && topName != null && !topName.isBlank()) {
+            Path objectDir = base.resolve("src").resolve(folder).resolve(topName); //$NON-NLS-1$
+            if (Files.isDirectory(objectDir)) {
+                try (Stream<Path> walk = Files.walk(objectDir)) {
+                    walk.filter(Files::isRegularFile)
+                        .filter(this::isEolManagedFile)
+                        .forEach(files::add);
+                } catch (IOException | RuntimeException e) {
+                    // best-effort enumeration
+                }
+            }
+        }
+        return files;
+    }
+
+    private boolean isEolManagedFile(Path file) {
+        String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
+        int dot = name.lastIndexOf('.');
+        return dot >= 0 && EOL_MANAGED_EXTENSIONS.contains(name.substring(dot + 1));
+    }
+
+    private boolean normalizeFileEol(Path file, EolStyle target) {
+        try {
+            String content = Files.readString(file, StandardCharsets.UTF_8);
+            String normalized = EolNormalizer.normalizeTo(content, target);
+            if (!normalized.equals(content)) {
+                Files.writeString(file, normalized, StandardCharsets.UTF_8);
+                return true;
+            }
+        } catch (IOException | RuntimeException e) {
+            // binary / unreadable / concurrently changed — skip
+        }
+        return false;
+    }
+
+    private EolDefaults loadEolDefaults(IProject project) {
+        List<String> gitattributes = new ArrayList<>();
+        List<String> editorconfigs = new ArrayList<>();
+        if (project != null && project.getLocation() != null) {
+            Path base = project.getLocation().toFile().toPath();
+            Path parent = base.getParent();
+            for (Path dir : parent != null ? List.of(base, parent) : List.of(base)) {
+                String ga = readTextSafely(dir.resolve(".gitattributes")); //$NON-NLS-1$
+                if (ga != null) {
+                    gitattributes.add(ga);
+                }
+                String ec = readTextSafely(dir.resolve(".editorconfig")); //$NON-NLS-1$
+                if (ec != null) {
+                    editorconfigs.add(ec);
+                }
+            }
+        }
+        return new EolDefaults(gitattributes, editorconfigs);
+    }
+
+    private String readTextSafely(Path path) {
+        if (path == null || !Files.isRegularFile(path)) {
+            return null;
+        }
+        try {
+            return Files.readString(path, StandardCharsets.UTF_8);
+        } catch (IOException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** Resolves the EOL convention for newly created files from repo config, default LF. */
+    private static final class EolDefaults {
+        private final List<String> gitattributes;
+        private final List<String> editorconfigs;
+
+        EolDefaults(List<String> gitattributes, List<String> editorconfigs) {
+            this.gitattributes = gitattributes;
+            this.editorconfigs = editorconfigs;
+        }
+
+        EolStyle resolve(String fileName) {
+            for (String content : gitattributes) {
+                EolStyle style = EolNormalizer.fromGitattributes(content, fileName).orElse(null);
+                if (style != null) {
+                    return style;
+                }
+            }
+            for (String content : editorconfigs) {
+                EolStyle style = EolNormalizer.fromEditorconfig(content, fileName).orElse(null);
+                if (style != null) {
+                    return style;
+                }
+            }
+            return EolStyle.LF; // EDT's default for new projects on this codebase
         }
     }
 
