@@ -4646,7 +4646,7 @@ public class EdtMetadataService {
                         "Cannot access configuration in BM transaction", false); //$NON-NLS-1$
             }
             Role role = resolveRoleObject(txConfiguration, request.roleFqn());
-            RoleDescription roleDescription = ensureRoleDescription(role, request.roleFqn());
+            RoleDescription roleDescription = ensureRoleDescription(transaction, project, role, request.roleFqn());
 
             List<String> applied = new ArrayList<>();
             int index = 1;
@@ -4709,7 +4709,8 @@ public class EdtMetadataService {
                 "Role not found: " + roleRef, false); //$NON-NLS-1$
     }
 
-    static RoleDescription ensureRoleDescription(Role role, String roleRef) {
+    private RoleDescription ensureRoleDescription(IBmPlatformTransaction transaction, IProject project,
+            Role role, String roleRef) {
         AbstractRoleDescription existing = role.getRights();
         if (existing instanceof RoleDescription roleDescription) {
             return roleDescription;
@@ -4727,9 +4728,57 @@ public class EdtMetadataService {
                     "Unsupported role rights model type for " + roleRef + ": " //$NON-NLS-1$ //$NON-NLS-2$
                             + existing.eClass().getName(), false);
         }
+        return attachBootstrappedRoleDescription(transaction, project, role);
+    }
+
+    /**
+     * Materialize a concrete {@link RoleDescription} for a role that has none. Role rights
+     * are serialized into a SEPARATE {@code Rights.rights} fragment, so the new description
+     * must be attached to the BM as an external top object — the same pattern as a generated
+     * Form for {@code BASIC_FORM__FORM} in {@link #linkGeneratedFormToTransaction} — before it
+     * is referenced from {@code Role.rights}. A bare {@code role.setRights(factory.create())}
+     * of an unattached EObject commits to a "Failed to persist reference value" failure.
+     */
+    private RoleDescription attachBootstrappedRoleDescription(IBmPlatformTransaction transaction,
+            IProject project, Role role) {
+        String externalFqn = gateway.getTopObjectFqnGenerator()
+                .generateExternalPropertyFqn(role, MdClassPackage.Literals.ROLE__RIGHTS);
+        if (externalFqn == null || externalFqn.isBlank()) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                    "Cannot generate external FQN for Role.rights", false); //$NON-NLS-1$
+        }
+        IBmNamespace namespace = gateway.getBmModelManager().getBmNamespace(project);
+        if (namespace == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve BM namespace for project: " + project.getName(), false); //$NON-NLS-1$
+        }
+        // Defensive: if a rights fragment already exists under this FQN (stale getRights()
+        // returned only the placeholder), reuse it instead of double-attaching.
+        Object preexisting = transaction.getTopObjectByFqn(namespace, externalFqn);
+        if (preexisting instanceof RoleDescription existingDescription) {
+            role.setRights(existingDescription);
+            return existingDescription;
+        }
+
         RoleDescription created = RightsFactory.eINSTANCE.createRoleDescription();
-        role.setRights(created);
-        return created;
+        if (!(created instanceof IBmObject createdBm)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                    "Bootstrapped RoleDescription is not a BM object: " //$NON-NLS-1$
+                            + created.getClass().getName(), false);
+        }
+        transaction.attachTopObject(namespace, createdBm, externalFqn);
+        Object attached = transaction.getTopObjectByFqn(namespace, externalFqn);
+        if (!(attached instanceof RoleDescription txDescription)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                    "Cannot resolve attached RoleDescription in transaction by FQN: " + externalFqn, //$NON-NLS-1$
+                    false);
+        }
+        role.setRights(txDescription);
+        return txDescription;
     }
 
     private Right resolveRight(IRightInfosService rightInfosService, MdObject targetObject,
