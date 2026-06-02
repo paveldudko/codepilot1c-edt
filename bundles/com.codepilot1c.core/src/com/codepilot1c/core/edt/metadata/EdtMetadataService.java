@@ -2238,10 +2238,16 @@ public class EdtMetadataService {
      * {@link FormItemInformationService#getAllowedEvents(ExtInfo)} (type-specific events
      * declared by the item's ExtInfo, e.g. CheckBoxField's OnClick). Each EventHandler is
      * created via FormFactory, wired with the resolved Event reference + handler-procedure
-     * name, and appended to the container whose getAllowedEvents listed that Event. The
-     * supplied handlers list replaces any prior handlers on the container (and its ExtInfo
-     * sibling, when applicable) — that matches the set_item replace-not-merge convention
-     * already used by update_metadata's many-valued attribute writes.</p>
+     * name, and appended to the container whose getAllowedEvents listed that Event.</p>
+     *
+     * <p><b>Merge, not replace.</b> Each requested binding upserts the handler for its own
+     * event into the proper container, leaving handlers for events the caller did not mention
+     * untouched. This matters for register/manager forms, whose write events (BeforeWrite,
+     * OnWriteAtServer, …) live in the {@code *FormExtInfo} sibling container while events like
+     * OnCreateAtServer sit on the top-level form: an earlier replace-all implementation cleared
+     * <em>both</em> containers on every call, so binding a single top-level handler silently
+     * destroyed the extInfo write events. See the 2026-06-02 feedback note. An empty handlers
+     * list therefore carries no bindings to merge and is a no-op (it no longer clears).</p>
      */
     private void applyEventHandlersBinding(EObject target, EventHandlerContainer container, Object handlersValue) {
         List<Map<String, Object>> entries = coerceHandlerEntries(handlersValue);
@@ -2273,10 +2279,9 @@ public class EdtMetadataService {
                     false);
         }
         if (entries.isEmpty()) {
-            container.getHandlers().clear();
-            if (extInfoContainer != null && extInfoContainer != container) {
-                extInfoContainer.getHandlers().clear();
-            }
+            // No bindings to merge → no-op. Deliberately does NOT clear: a prior replace-all
+            // implementation wiped both the top-level and extInfo handler containers here,
+            // silently destroying register/manager-form write events. See method javadoc.
             return;
         }
         // Pre-resolve every requested event so we can validate before clearing existing handlers.
@@ -2325,21 +2330,42 @@ public class EdtMetadataService {
             }
             bound.add(new Bound(resolved, handlerName, atExtInfo && extInfoContainer != null));
         }
-        // All validated — now clear and rebuild.
-        container.getHandlers().clear();
-        if (extInfoContainer != null && extInfoContainer != container) {
-            extInfoContainer.getHandlers().clear();
-        }
+        // All validated — now upsert each binding into its proper container. Handlers for
+        // events the caller did not mention are left untouched (crucially, the extInfo-hosted
+        // write events of register/manager forms when only a top-level event is being set).
         for (Bound b : bound) {
+            EventHandlerContainer targetContainer =
+                    (b.atExtInfo() && extInfoContainer != null) ? extInfoContainer : container;
+            removeExistingHandlerForEvent(targetContainer, b.event());
             EventHandler handler = FormFactory.eINSTANCE.createEventHandler();
             handler.setEvent(b.event());
             handler.setName(b.handlerName());
-            if (b.atExtInfo() && extInfoContainer != null) {
-                extInfoContainer.getHandlers().add(handler);
-            } else {
-                container.getHandlers().add(handler);
-            }
+            targetContainer.getHandlers().add(handler);
         }
+    }
+
+    /**
+     * Remove any handler already bound to {@code event} on {@code containerToClean} so an
+     * upsert can re-add it without duplicating the event. Matches by Event identity first,
+     * then by case-insensitive event name as a fallback (the resolved Event and a previously
+     * persisted handler's Event can be distinct EObject instances after a transaction round-trip).
+     */
+    private static void removeExistingHandlerForEvent(EventHandlerContainer containerToClean, Event event) {
+        if (containerToClean == null || event == null) {
+            return;
+        }
+        String eventName = event.getName();
+        containerToClean.getHandlers().removeIf(existing -> {
+            if (existing == null) {
+                return false;
+            }
+            Event existingEvent = existing.getEvent();
+            if (existingEvent == event) {
+                return true;
+            }
+            return existingEvent != null && eventName != null
+                    && eventName.equalsIgnoreCase(existingEvent.getName());
+        });
     }
 
     @SuppressWarnings("unchecked")
@@ -3158,7 +3184,15 @@ public class EdtMetadataService {
         }
         throw new MetadataOperationException(
                 MetadataOperationCode.METADATA_NOT_FOUND,
-                "Form attribute not found: id=" + id + ", name=" + name, false); //$NON-NLS-1$ //$NON-NLS-2$
+                "Form attribute not found: id=" + id + ", name=" + name //$NON-NLS-1$ //$NON-NLS-2$
+                        + ". mutate_form_model set_form_props attributes:[...] only PATCHES existing" //$NON-NLS-1$
+                        + " form attributes. To CREATE a new form attribute (e.g. a Boolean backing" //$NON-NLS-1$
+                        + " field for a toggle, or a staging field), use apply_form_recipe with" //$NON-NLS-1$
+                        + " attributes:[{action:\"create\", name:\"" //$NON-NLS-1$
+                        + (name != null ? name : "<name>") //$NON-NLS-1$
+                        + "\", type:\"<type token>\"}] — that path resolves the value type and wires" //$NON-NLS-1$
+                        + " the <attributes> section and generated form code for you.", //$NON-NLS-1$
+                false);
     }
 
     private void applyFormAttributePatch(FormAttribute attribute, Map<String, Object> patch) {
