@@ -4667,7 +4667,12 @@ public class EdtMetadataService {
                 ObjectRights objectRights = RightsModelUtil.getOrCreateObjectRights(targetObject, roleDescription);
                 RightValue currentValue = currentRightValue(objectRights, right, targetObject, role);
                 if (currentValue != newValue) {
-                    RightsModelUtil.changeObjectRight(currentValue, newValue, objectRights, right);
+                    // changeObjectRight(newValue, oldValue, ...): the FIRST RightValue is the
+                    // value assigned via ObjectRight.setValue (verified by bytecode), the second
+                    // is only the previous value for the equality/remove decision. Passing them
+                    // in the wrong order writes the OLD value — e.g. value="set" persisted as
+                    // <value>false</value> instead of true (codepilot1c-feedback 2026-06-02).
+                    RightsModelUtil.changeObjectRight(newValue, currentValue, objectRights, right);
                 }
                 applied.add("grant[" + index + "]: " + grant.objectFqn() + "." + right.getName() //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                         + "=" + newValue.getName()); //$NON-NLS-1$
@@ -4763,6 +4768,12 @@ public class EdtMetadataService {
         }
 
         RoleDescription created = RightsFactory.eINSTANCE.createRoleDescription();
+        // Match EDT's own role-editor bootstrap (RoleEditorInputFactory): a freshly
+        // materialized RoleDescription enables "set rights for new objects/attributes",
+        // consistent with platform-created roles (independentRightsOfChildObjects stays
+        // at its false default).
+        created.setSetForNewObjects(true);
+        created.setSetForAttributesByDefault(true);
         if (!(created instanceof IBmObject createdBm)) {
             throw new MetadataOperationException(
                     MetadataOperationCode.EDT_TRANSACTION_FAILED,
