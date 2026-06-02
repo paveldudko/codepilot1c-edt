@@ -4709,12 +4709,19 @@ public class EdtMetadataService {
                 "Role not found: " + roleRef, false); //$NON-NLS-1$
     }
 
-    private RoleDescription ensureRoleDescription(Role role, String roleRef) {
+    static RoleDescription ensureRoleDescription(Role role, String roleRef) {
         AbstractRoleDescription existing = role.getRights();
         if (existing instanceof RoleDescription roleDescription) {
             return roleDescription;
         }
-        if (existing != null) {
+        // A freshly created (or never-edited) role carries an empty AbstractRoleDescription
+        // placeholder — a featureless marker with no rights data — instead of a concrete
+        // RoleDescription. Lazily bootstrap a real RoleDescription so the MCP path
+        // create_metadata kind=Role → rights_manage works end-to-end without a manual
+        // .rights edit (codepilot1c-feedback 2026-06-02 / BF-11938). Any other, genuinely
+        // unexpected subtype still errors out rather than being silently replaced.
+        if (existing != null
+                && existing.eClass() != MdClassPackage.Literals.ABSTRACT_ROLE_DESCRIPTION) {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Unsupported role rights model type for " + roleRef + ": " //$NON-NLS-1$ //$NON-NLS-2$
