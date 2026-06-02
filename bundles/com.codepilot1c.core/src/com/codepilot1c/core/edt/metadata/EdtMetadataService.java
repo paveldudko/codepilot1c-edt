@@ -4768,11 +4768,14 @@ public class EdtMetadataService {
         }
 
         RoleDescription created = RightsFactory.eINSTANCE.createRoleDescription();
-        // Match EDT's own role-editor bootstrap (RoleEditorInputFactory): a freshly
-        // materialized RoleDescription enables "set rights for new objects/attributes",
-        // consistent with platform-created roles (independentRightsOfChildObjects stays
-        // at its false default).
-        created.setSetForNewObjects(true);
+        // Flag conventions for a granular (non-Administrator) role, matching real roles on
+        // disk: setForNewObjects MUST stay false. EDT only serializes a right entry when it
+        // differs from the applicable default, and for a top-level object the default IS
+        // setForNewObjects (RightsModelUtil.getDefaultRightValue). With it true, every
+        // top-level grant equals the default and is silently dropped (empty <object>) — the
+        // exact regression that setting it true caused. setForAttributesByDefault=true matches
+        // the granular-role convention (attribute default = granted; explicit denials persist)
+        // and does not affect top-level grants. independentRightsOfChildObjects stays false.
         created.setSetForAttributesByDefault(true);
         if (!(created instanceof IBmObject createdBm)) {
             throw new MetadataOperationException(
