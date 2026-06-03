@@ -245,7 +245,7 @@ public class EdtDiagnosticsCollector {
             sb.append(errorCount).append(" errors, "); //$NON-NLS-1$
             sb.append(warningCount).append(" warnings, "); //$NON-NLS-1$
             sb.append(infoCount).append(" info ("); //$NON-NLS-1$
-            sb.append(groups.size()).append(" unique)\n\n"); //$NON-NLS-1$
+            sb.append(groups.size()).append(" unique rules)\n\n"); //$NON-NLS-1$
 
             boolean includeDebug = isDiagVerbose();
             for (List<EdtDiagnostic> group : groups.values()) {
@@ -296,7 +296,14 @@ public class EdtDiagnosticsCollector {
             }
             lines.sort(Comparator.naturalOrder());
             if (!lines.isEmpty()) {
-                sb.append(" — lines: "); //$NON-NLS-1$
+                // When several diagnostics of the rule sit on the same line the
+                // distinct-line count is below the occurrence count — spell it
+                // out so "×25" next to 14 lines doesn't read as a bug.
+                if (lines.size() == group.size()) {
+                    sb.append(" — lines: "); //$NON-NLS-1$
+                } else {
+                    sb.append(" (").append(lines.size()).append(" lines): "); //$NON-NLS-1$ //$NON-NLS-2$
+                }
                 for (int i = 0; i < lines.size(); i++) {
                     if (i > 0) {
                         sb.append(", "); //$NON-NLS-1$
