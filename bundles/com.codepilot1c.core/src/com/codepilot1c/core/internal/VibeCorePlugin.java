@@ -33,7 +33,10 @@ import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAccessManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationContextProvider;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseManager;
+import com._1c.g5.v8.dt.platform.services.core.publication.IPublicationManager;
+import com._1c.g5.v8.dt.platform.services.core.publication.IWebServerPublishDelegateRegistry;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallationManager;
+import com._1c.g5.v8.dt.platform.services.core.webservers.IWebServerManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager;
 import com._1c.g5.v8.dt.validation.marker.IMarkerManager;
 import com.e1c.g5.dt.applications.IApplicationManager;
@@ -85,6 +88,9 @@ public class VibeCorePlugin extends Plugin {
     private ServiceTracker<IInfobaseAssociationContextProvider, IInfobaseAssociationContextProvider> infobaseAssociationContextProviderTracker;
     private ServiceTracker<IInfobaseAccessManager, IInfobaseAccessManager> infobaseAccessManagerTracker;
     private ServiceTracker<IInfobaseManager, IInfobaseManager> infobaseManagerTracker;
+    private ServiceTracker<IWebServerManager, IWebServerManager> webServerManagerTracker;
+    private ServiceTracker<IPublicationManager, IPublicationManager> publicationManagerTracker;
+    private ServiceTracker<IWebServerPublishDelegateRegistry, IWebServerPublishDelegateRegistry> webServerPublishDelegateRegistryTracker;
     private ServiceTracker<IRuntimeComponentManager, IRuntimeComponentManager> runtimeComponentManagerTracker;
     private ServiceTracker<IResolvableRuntimeInstallationManager, IResolvableRuntimeInstallationManager> resolvableRuntimeInstallationManagerTracker;
     private ServiceTracker<IImportConfigurationFilesApi, IImportConfigurationFilesApi> importConfigurationFilesApiTracker;
@@ -192,6 +198,13 @@ public class VibeCorePlugin extends Plugin {
         infobaseAccessManagerTracker.open();
         infobaseManagerTracker = new ServiceTracker<>(context, IInfobaseManager.class, null);
         infobaseManagerTracker.open();
+        webServerManagerTracker = new ServiceTracker<>(context, IWebServerManager.class, null);
+        webServerManagerTracker.open();
+        publicationManagerTracker = new ServiceTracker<>(context, IPublicationManager.class, null);
+        publicationManagerTracker.open();
+        webServerPublishDelegateRegistryTracker =
+                new ServiceTracker<>(context, IWebServerPublishDelegateRegistry.class, null);
+        webServerPublishDelegateRegistryTracker.open();
         runtimeComponentManagerTracker = new ServiceTracker<>(context, IRuntimeComponentManager.class, null);
         runtimeComponentManagerTracker.open();
         resolvableRuntimeInstallationManagerTracker =
@@ -288,6 +301,12 @@ public class VibeCorePlugin extends Plugin {
         infobaseAccessManagerTracker = null;
         closeTracker(infobaseManagerTracker);
         infobaseManagerTracker = null;
+        closeTracker(webServerManagerTracker);
+        webServerManagerTracker = null;
+        closeTracker(publicationManagerTracker);
+        publicationManagerTracker = null;
+        closeTracker(webServerPublishDelegateRegistryTracker);
+        webServerPublishDelegateRegistryTracker = null;
         closeTracker(runtimeComponentManagerTracker);
         runtimeComponentManagerTracker = null;
         closeTracker(resolvableRuntimeInstallationManagerTracker);
@@ -448,6 +467,18 @@ public class VibeCorePlugin extends Plugin {
 
     public IRuntimeComponentManager getRuntimeComponentManager() {
         return getTrackedService(runtimeComponentManagerTracker, "IRuntimeComponentManager"); //$NON-NLS-1$
+    }
+
+    public IWebServerManager getWebServerManager() {
+        return getTrackedService(webServerManagerTracker, "IWebServerManager"); //$NON-NLS-1$
+    }
+
+    public IPublicationManager getPublicationManager() {
+        return getTrackedService(publicationManagerTracker, "IPublicationManager"); //$NON-NLS-1$
+    }
+
+    public IWebServerPublishDelegateRegistry getWebServerPublishDelegateRegistry() {
+        return getTrackedService(webServerPublishDelegateRegistryTracker, "IWebServerPublishDelegateRegistry"); //$NON-NLS-1$
     }
 
     public IResolvableRuntimeInstallationManager getResolvableRuntimeInstallationManager() {

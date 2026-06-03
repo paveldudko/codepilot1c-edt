@@ -10,7 +10,10 @@ import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationCon
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseManager;
 import com._1c.g5.v8.dt.core.platform.IV8ProjectManager;
+import com._1c.g5.v8.dt.platform.services.core.publication.IPublicationManager;
+import com._1c.g5.v8.dt.platform.services.core.publication.IWebServerPublishDelegateRegistry;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.environments.IResolvableRuntimeInstallationManager;
+import com._1c.g5.v8.dt.platform.services.core.webservers.IWebServerManager;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager;
 import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
@@ -134,6 +137,33 @@ public class EdtRuntimeGateway {
         IRuntimeComponentManager service = plugin.getRuntimeComponentManager();
         if (service == null) {
             throw serviceUnavailable("IRuntimeComponentManager"); //$NON-NLS-1$
+        }
+        return service;
+    }
+
+    public IWebServerManager getWebServerManager() {
+        VibeCorePlugin plugin = requirePlugin();
+        IWebServerManager service = plugin.getWebServerManager();
+        if (service == null) {
+            throw serviceUnavailable("IWebServerManager"); //$NON-NLS-1$
+        }
+        return service;
+    }
+
+    public IPublicationManager getPublicationManager() {
+        VibeCorePlugin plugin = requirePlugin();
+        IPublicationManager service = plugin.getPublicationManager();
+        if (service == null) {
+            throw serviceUnavailable("IPublicationManager"); //$NON-NLS-1$
+        }
+        return service;
+    }
+
+    public IWebServerPublishDelegateRegistry getWebServerPublishDelegateRegistry() {
+        VibeCorePlugin plugin = requirePlugin();
+        IWebServerPublishDelegateRegistry service = plugin.getWebServerPublishDelegateRegistry();
+        if (service == null) {
+            throw serviceUnavailable("IWebServerPublishDelegateRegistry"); //$NON-NLS-1$
         }
         return service;
     }
