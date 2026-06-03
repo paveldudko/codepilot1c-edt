@@ -29,6 +29,19 @@ public record EdtDiagnostic(
         String locationText) {
 
     /**
+     * Normalizes the message at construction: trims and collapses internal
+     * whitespace/newline runs to single spaces. Source-derived messages can
+     * carry trailing newlines/indentation (e.g. a TODO comment line), which
+     * would otherwise split identical diagnostics into separate groups and
+     * inject stray line breaks into the rendered output.
+     */
+    public EdtDiagnostic {
+        if (message != null) {
+            message = message.strip().replaceAll("\\s+", " "); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    /**
      * Diagnostic severity level.
      */
     public enum Severity {

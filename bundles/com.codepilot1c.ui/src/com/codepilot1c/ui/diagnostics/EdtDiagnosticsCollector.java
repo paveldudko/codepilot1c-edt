@@ -347,13 +347,29 @@ public class EdtDiagnosticsCollector {
                 }
             }
 
-            String msg = head.message();
-            if (msg != null && !msg.isBlank()) {
-                String sample = msg.strip();
-                if (sample.length() > GROUP_SAMPLE_MAX) {
-                    sample = sample.substring(0, GROUP_SAMPLE_MAX - 1) + "…"; //$NON-NLS-1$
+            // Up to 3 distinct sample messages, so the variety of a parametrized
+            // rule (different names/identifiers) is visible without expanding.
+            // Messages are already trimmed/whitespace-collapsed at construction.
+            LinkedHashSet<String> distinct = new LinkedHashSet<>();
+            for (EdtDiagnostic d : group) {
+                String m = d.message();
+                if (m != null && !m.isBlank()) {
+                    distinct.add(m);
                 }
+            }
+            int shown = 0;
+            for (String m : distinct) {
+                if (shown >= 3) {
+                    break;
+                }
+                String sample = m.length() > GROUP_SAMPLE_MAX
+                        ? m.substring(0, GROUP_SAMPLE_MAX - 1) + "…" //$NON-NLS-1$
+                        : m;
                 sb.append("\n    ").append(sample); //$NON-NLS-1$
+                shown++;
+            }
+            if (distinct.size() > 3) {
+                sb.append("\n    (+").append(distinct.size() - 3).append(" more variants)"); //$NON-NLS-1$ //$NON-NLS-2$
             }
             return sb.toString();
         }
