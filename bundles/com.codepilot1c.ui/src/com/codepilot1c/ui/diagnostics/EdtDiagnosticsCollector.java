@@ -165,8 +165,7 @@ public class EdtDiagnosticsCollector {
 
         /**
          * Backwards-compatible constructor for callers that predate the
-         * {@code includeCheckHelp} / {@code helpLocale} fields. Defaults the
-         * new flags to {@code false} / {@code "en"}.
+         * {@code includeCheckHelp} / {@code helpLocale} fields.
          */
         public DiagnosticsQuery(
                 Severity minSeverity, int maxItems, boolean includeSnippets, long waitMs,
@@ -215,26 +214,45 @@ public class EdtDiagnosticsCollector {
         }
 
         /**
-         * Formats result for LLM consumption.
+         * Formats result for LLM consumption. Diagnostics that share a rule
+         * (kebab check id, or identical message when the rule is unknown) are
+         * collapsed into one compact line with an occurrence count and the list
+         * of lines, so a module with hundreds of same-rule warnings stays
+         * token-cheap. Singletons keep the detailed single-line form.
          */
         public String formatForLlm() {
             StringBuilder sb = new StringBuilder();
-            sb.append("## Диагностики: ").append(filePath).append("\n\n"); //$NON-NLS-1$ //$NON-NLS-2$
+            sb.append("## Diagnostics: ").append(filePath).append("\n\n"); //$NON-NLS-1$ //$NON-NLS-2$
 
             if (editorDirty) {
-                sb.append("⚠️ *Файл не сохранён — диагностики могут быть неполными*\n\n"); //$NON-NLS-1$
+                sb.append("⚠️ *File not saved — diagnostics may be incomplete*\n\n"); //$NON-NLS-1$
             }
 
-            sb.append("**Итого:** "); //$NON-NLS-1$
-            sb.append(errorCount).append(" ошибок, "); //$NON-NLS-1$
-            sb.append(warningCount).append(" предупреждений, "); //$NON-NLS-1$
-            sb.append(infoCount).append(" информационных\n\n"); //$NON-NLS-1$
-
             if (diagnostics.isEmpty()) {
-                sb.append("✅ Диагностик не найдено.\n"); //$NON-NLS-1$
-            } else {
-                for (EdtDiagnostic diag : diagnostics) {
-                    sb.append(diag.formatForLlm()).append("\n"); //$NON-NLS-1$
+                sb.append("**Total:** 0 errors, 0 warnings, 0 info\n\n"); //$NON-NLS-1$
+                sb.append("✅ No diagnostics found.\n"); //$NON-NLS-1$
+                return sb.toString();
+            }
+
+            // Group preserving first-seen order; key = severity + rule (or message).
+            java.util.LinkedHashMap<String, List<EdtDiagnostic>> groups = new java.util.LinkedHashMap<>();
+            for (EdtDiagnostic d : diagnostics) {
+                String key = d.severity().name() + " " + d.groupKey(); //$NON-NLS-1$
+                groups.computeIfAbsent(key, k -> new ArrayList<>()).add(d);
+            }
+
+            sb.append("**Total:** "); //$NON-NLS-1$
+            sb.append(errorCount).append(" errors, "); //$NON-NLS-1$
+            sb.append(warningCount).append(" warnings, "); //$NON-NLS-1$
+            sb.append(infoCount).append(" info ("); //$NON-NLS-1$
+            sb.append(groups.size()).append(" unique)\n\n"); //$NON-NLS-1$
+
+            boolean includeDebug = isDiagVerbose();
+            for (List<EdtDiagnostic> group : groups.values()) {
+                if (group.size() == 1) {
+                    sb.append(group.get(0).formatForLlm(includeDebug)).append("\n"); //$NON-NLS-1$
+                } else {
+                    sb.append(formatGroup(group)).append("\n"); //$NON-NLS-1$
                 }
             }
 
@@ -254,6 +272,38 @@ public class EdtDiagnosticsCollector {
                 }
             }
 
+            return sb.toString();
+        }
+
+        /**
+         * Renders a collapsed group of same-rule diagnostics as one compact
+         * line: {@code - **SEV** <rule-or-message> ×N — lines: a, b, c}.
+         * Line numbers are deduplicated and sorted; entries with no precise
+         * line are simply omitted from the list.
+         */
+        private static String formatGroup(List<EdtDiagnostic> group) {
+            EdtDiagnostic head = group.get(0);
+            StringBuilder sb = new StringBuilder();
+            sb.append("- **").append(head.severity().name()).append("** "); //$NON-NLS-1$ //$NON-NLS-2$
+            sb.append(head.groupLabel()).append(" ×").append(group.size()); //$NON-NLS-1$
+
+            List<Integer> lines = new ArrayList<>();
+            for (EdtDiagnostic d : group) {
+                int ln = d.lineNumber();
+                if (ln > 0 && !lines.contains(ln)) {
+                    lines.add(ln);
+                }
+            }
+            lines.sort(Comparator.naturalOrder());
+            if (!lines.isEmpty()) {
+                sb.append(" — lines: "); //$NON-NLS-1$
+                for (int i = 0; i < lines.size(); i++) {
+                    if (i > 0) {
+                        sb.append(", "); //$NON-NLS-1$
+                    }
+                    sb.append(lines.get(i));
+                }
+            }
             return sb.toString();
         }
     }
@@ -308,7 +358,7 @@ public class EdtDiagnosticsCollector {
                     ITextEditor editor = getActiveTextEditor();
                     if (editor == null) {
                         future.complete(new DiagnosticsResult(
-                                "нет активного редактора", false, List.of(), 0, 0, 0)); //$NON-NLS-1$
+                                "no active editor", false, List.of(), 0, 0, 0)); //$NON-NLS-1$
                         return;
                     }
 
@@ -334,7 +384,8 @@ public class EdtDiagnosticsCollector {
                             ? docProvider.getAnnotationModel(input) : null;
 
                     if (annotationModel != null && document != null) {
-                        collectFromAnnotations(annotationModel, document, filePath, q, diagnostics, seen);
+                        collectFromAnnotations(annotationModel, document, filePath,
+                                file != null ? file.getProject() : null, q, diagnostics, seen);
                     }
 
                     // Sort by severity (errors first) then by line
@@ -668,6 +719,10 @@ public class EdtDiagnosticsCollector {
 
                         String checkId = safeString(marker.getCheckId());
                         CheckMetadata meta = checkMetadata.get(checkId);
+                        String kebab = resolveCheckIdFromShortUid(checkId, context.project());
+                        if (kebab != null) {
+                            checkId = kebab;
+                        }
                         String key = context.resolvedPath() + ":" + checkId + ":" + message + ":" //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                                 + safeString(marker.getLocation()) + ":" + safeString(marker.getObjectPresentation()); //$NON-NLS-1$
                         if (!seen.add(key)) {
@@ -819,7 +874,7 @@ public class EdtDiagnosticsCollector {
                 }
 
                 if (projectName == null || projectName.isBlank()) {
-                    return new DiagnosticsResult("проект не указан", false, List.of(), 0, 0, 0); //$NON-NLS-1$
+                    return new DiagnosticsResult("project not specified", false, List.of(), 0, 0, 0); //$NON-NLS-1$
                 }
 
                 IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
@@ -1127,6 +1182,10 @@ public class EdtDiagnosticsCollector {
 
                 String checkId = safeString(marker.getCheckId());
                 CheckMetadata meta = checkMetadata.get(checkId);
+                String kebab = resolveCheckIdFromShortUid(checkId, project);
+                if (kebab != null) {
+                    checkId = kebab;
+                }
                 String markerPath = marker.getProject() != null
                         ? marker.getProject().getFullPath().toString()
                         : project.getFullPath().toString();
@@ -1162,6 +1221,7 @@ public class EdtDiagnosticsCollector {
             IAnnotationModel model,
             IDocument document,
             String filePath,
+            IProject project,
             DiagnosticsQuery query,
             List<EdtDiagnostic> diagnostics,
             Set<String> seen) {
@@ -1223,9 +1283,23 @@ public class EdtDiagnosticsCollector {
                     ? getSnippetFromDocument(document, offset, length)
                     : null;
 
+            // Open Xtext editors expose problem annotations as XtextAnnotation,
+            // which carries the check code via getIssueCode(). We avoid a hard
+            // dependency on org.eclipse.xtext.ui (not imported by this UI
+            // bundle) and probe it reflectively — the recovered code is the
+            // candidate v8-code-style identifier we want to surface.
+            // Resolve the stable kebab check id (used for grouping, the [code]
+            // tag, and check-help lookup); fall back to the SU short code when
+            // the registry can't resolve it. Cheap in-memory lookup.
+            String issueCode = reflectIssueCode(ann);
+            String checkId = resolveCheckIdFromShortUid(issueCode, project);
+            if (checkId == null) {
+                checkId = issueCode;
+            }
+
             diagnostics.add(EdtDiagnostic.fromAnnotation(
                     filePath, line, offset, charEnd, text, sev,
-                    markerType != null ? markerType : annType, snippet));
+                    markerType != null ? markerType : annType, snippet, checkId));
             count++;
             if (count >= getSoftScanLimit(query.maxItems(), 2)) {
                 break;
@@ -1245,6 +1319,32 @@ public class EdtDiagnosticsCollector {
         if (type.contains("error")) return Severity.ERROR; //$NON-NLS-1$
         if (type.contains("warning")) return Severity.WARNING; //$NON-NLS-1$
         return Severity.INFO;
+    }
+
+    /**
+     * Reflectively reads the Xtext issue code from a problem annotation. Open
+     * Xtext editors expose problems as
+     * {@code org.eclipse.xtext.ui.editor.validation.XtextAnnotation}, which has
+     * {@code String getIssueCode()} — the check identifier (our candidate
+     * v8-code-style code). Done reflectively because this UI bundle does not
+     * import {@code org.eclipse.xtext.ui}. Returns {@code null} for annotations
+     * with no such method (plain MarkerAnnotation, quickdiff, etc.).
+     */
+    private static String reflectIssueCode(Annotation ann) {
+        if (ann == null) {
+            return null;
+        }
+        try {
+            java.lang.reflect.Method m = ann.getClass().getMethod("getIssueCode"); //$NON-NLS-1$
+            Object value = m.invoke(ann);
+            if (value == null) {
+                return null;
+            }
+            String code = value.toString().trim();
+            return code.isEmpty() ? null : code;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
     }
 
     private Severity fromRuntimeSeverity(MarkerSeverity severity) {
@@ -1298,6 +1398,37 @@ public class EdtDiagnosticsCollector {
     private ICheckRepository getCheckRepository() {
         VibeCorePlugin plugin = VibeCorePlugin.getDefault();
         return plugin != null ? plugin.getCheckRepository() : null;
+    }
+
+    /**
+     * Resolves an EDT "short uid" check code (e.g. {@code SU4}, what the editor
+     * and marker manager expose) to the stable kebab check id (e.g.
+     * {@code export-procedure-missing-comment}) via the check repository's
+     * short-uid index ({@code ICheckRepository.getUidForShortUid}). The kebab id
+     * is the v8-code-style identifier external services key on. Returns
+     * {@code null} when the repository is unavailable, the project is unknown,
+     * or the code does not resolve (e.g. a non-SU code).
+     */
+    private String resolveCheckIdFromShortUid(String shortUid, IProject project) {
+        if (shortUid == null || shortUid.isBlank() || project == null) {
+            return null;
+        }
+        ICheckRepository repository = getCheckRepository();
+        if (repository == null) {
+            return null;
+        }
+        try {
+            CheckUid uid = repository.getUidForShortUid(shortUid.trim(), project);
+            if (uid == null) {
+                return null;
+            }
+            String checkId = safeString(uid.getCheckId());
+            return checkId.isBlank() ? null : checkId;
+        } catch (Exception e) {
+            // Best-effort: registry may not be ready, or the code may be from a
+            // non-EDT-check source. Fall back to the caller's short code.
+            return null;
+        }
     }
 
     private IApplicationManager getApplicationManager() {
@@ -1364,11 +1495,16 @@ public class EdtDiagnosticsCollector {
             if (!seen.add(key)) {
                 continue;
             }
-            String typeLabel = issue.code() != null && !issue.code().isBlank()
-                    ? "xtext:" + issue.code() //$NON-NLS-1$
+            String shortUid = issue.code();
+            String checkId = resolveCheckIdFromShortUid(shortUid, context.project());
+            if (checkId == null && shortUid != null && !shortUid.isBlank()) {
+                checkId = shortUid;
+            }
+            String typeLabel = shortUid != null && !shortUid.isBlank()
+                    ? "xtext:" + shortUid //$NON-NLS-1$
                     : "xtext"; //$NON-NLS-1$
             diagnostics.add(EdtDiagnostic.fromAnnotation(
-                    filePath, line, offset, charEnd, issue.message(), sev, typeLabel, null));
+                    filePath, line, offset, charEnd, issue.message(), sev, typeLabel, null, checkId));
         }
         diagInfo("[get_diagnostics] xtext-live: file=%s issuesScanned=%d emitted=%d", //$NON-NLS-1$
                 filePath, issues.size(), diagnostics.size() - sizeBefore);
@@ -1495,7 +1631,8 @@ public class EdtDiagnosticsCollector {
         IDocument document = documentRef[0];
         IAnnotationModel annotationModel = modelRef[0];
         if (document != null && annotationModel != null) {
-            collectFromAnnotations(annotationModel, document, filePath, query, diagnostics, seen);
+            collectFromAnnotations(annotationModel, document, filePath,
+                    file != null ? file.getProject() : null, query, diagnostics, seen);
             return;
         }
 
@@ -1513,7 +1650,8 @@ public class EdtDiagnosticsCollector {
                     annotationModel = modelRef[0];
                     if (document != null && annotationModel != null) {
                         diagInfo("[get_diagnostics] annotations: headless-open succeeded for %s", file.getFullPath()); //$NON-NLS-1$
-                        collectFromAnnotations(annotationModel, document, filePath, query, diagnostics, seen);
+                        collectFromAnnotations(annotationModel, document, filePath,
+                                file != null ? file.getProject() : null, query, diagnostics, seen);
                         return;
                     }
                 }

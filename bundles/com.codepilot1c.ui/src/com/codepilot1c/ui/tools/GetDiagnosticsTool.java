@@ -42,7 +42,7 @@ public class GetDiagnosticsTool implements ITool {
                     "scope": {
                         "type": "string",
                         "enum": ["project", "file", "active_editor"],
-                        "description": "Область live UI diagnostics: project, file, or active_editor. Use edt_diagnostics:metadata_smoke when UI is unavailable."
+                        "description": "Scope of live UI diagnostics: project, file, or active_editor. Use edt_diagnostics:metadata_smoke when UI is unavailable."
                     },
                     "path": {
                         "type": "string",
@@ -55,36 +55,36 @@ public class GetDiagnosticsTool implements ITool {
                     "severity": {
                         "type": "string",
                         "enum": ["error", "warning", "info"],
-                        "description": "Минимальный уровень серьёзности: error (только ошибки), warning (ошибки и предупреждения), info (все). По умолчанию: info"
+                        "description": "Minimum severity level: error (errors only), warning (errors and warnings), info (all). Default: info"
                     },
                     "max_items": {
                         "type": "integer",
-                        "description": "Максимальное количество диагностик. 0 означает без ограничений. По умолчанию: 0"
+                        "description": "Maximum number of diagnostics. 0 means unlimited. Default: 0"
                     },
                     "wait_ms": {
                         "type": "integer",
-                        "description": "Время ожидания пересчёта диагностик в мс (0-2000). По умолчанию: 0"
+                        "description": "Time to wait for diagnostics to be recalculated, in ms (0-2000). Default: 0"
                     },
                     "include_runtime_markers": {
                         "type": "boolean",
-                        "description": "Включить дополнительные диагностики из EDT marker manager (для scope=project). По умолчанию: true"
+                        "description": "Include diagnostics from the EDT runtime marker manager (project-wide validation results: metadata/object checks). Default true — keep it on for scope=project to get the full picture. Set false to restrict to workspace-attached markers only (rarely needed). Note: for scope=file on an OPEN module the live diagnostics come from the editor's annotations, so toggling this has little visible effect there; it mainly matters for scope=project."
                     },
                     "line_from": {
                         "type": "integer",
-                        "description": "Нижняя граница диапазона строк (1-based, включительно). 0 = без ограничения. Полезно для получения диагностик конкретного метода/выделения."
+                        "description": "Lower bound of the line range (1-based, inclusive). 0 = no limit. USE this together with line_to when editing/inspecting a specific method or fragment: only diagnostics within the range are returned, which sharply shrinks the response on large modules (with hundreds of warnings). Example: editing a function on lines 40-75 -> line_from=40, line_to=75."
                     },
                     "line_to": {
                         "type": "integer",
-                        "description": "Верхняя граница диапазона строк (1-based, включительно). 0 = без ограничения. Диагностики без точной строки (lineNumber<=0) отсеиваются, если диапазон задан."
+                        "description": "Upper bound of the line range (1-based, inclusive). 0 = no limit. Set together with line_from to focus on a method/selection. Diagnostics with no precise line (lineNumber<=0) are filtered out when a range is set."
                     },
                     "include_check_help": {
                         "type": "boolean",
-                        "description": "When true, append a 'Check details' section with the rich EDT check description (Markdown) for every unique check_id in the result. Checks whose contributor bundle ships no HTML description are silently omitted. Off by default — turn on only when the model needs guidance on how to fix the issue. For a two-step flow, leave this off and call get_diagnostics_details on selected check_ids instead."
+                        "description": "RECOMMENDED whenever you intend to FIX or explain diagnostics: appends a 'Check details' section with the FULL official rule explanation + fix guidance (Markdown, the same content as EDT's Check Info view) for each unique rule in the result. This is the authoritative source on how to resolve a diagnostic — prefer it over guessing from the message. The section is DEDUPLICATED: each rule is explained exactly once even if dozens of diagnostics share it, so it stays compact on repeated warnings (cost scales with the number of distinct rules, not diagnostics). Works on its own — it resolves rule ids internally, you do NOT need include_check_id. Default false. Use help_locale to choose language. Rules whose bundle ships no description are silently omitted. Leaner alternative for one-off lookups: leave this off and call get_diagnostics_details for just the rules you care about."
                     },
                     "help_locale": {
                         "type": "string",
                         "enum": ["en", "ru"],
-                        "description": "Locale for check descriptions when include_check_help=true. Defaults to 'en' (matches the project's English-only code/UI). Falls back to English if the requested locale has no localized HTML."
+                        "description": "Language for the rule explanations when include_check_help=true: 'en' (default) or 'ru'. Falls back to English if the requested locale has no localized description."
                     }
                 },
                 "required": []
@@ -98,11 +98,19 @@ public class GetDiagnosticsTool implements ITool {
 
     @Override
     public String getDescription() {
-        return "Возвращает живые EDT diagnostics из UI workbench для проекта, файла или активного редактора. "  //$NON-NLS-1$
-                + "Для .dcs (scope=file) дополнительно проверяет курируемый набор элементов, недопустимых в схеме DCS " //$NON-NLS-1$
-                + "(напр. <editFormat>), которые импортёр EDT молча выкидывает вместе с набором данных. Это точечная " //$NON-NLS-1$
-                + "проверка, а НЕ полная валидация схемы: .dcs — это platform-формат, разбираемый ленивым BM-импортёром " //$NON-NLS-1$
-                + "EDT, поэтому строгий парсер недоступен. Для корректности структуры DCS всё равно открой схему в дизайнере."; //$NON-NLS-1$
+        return "Returns live EDT diagnostics from the UI workbench for a project, file, or the active editor. "  //$NON-NLS-1$
+                + "TOKEN-SAVING TIP: on large modules pass line_from/line_to to get diagnostics for just the method/fragment " //$NON-NLS-1$
+                + "you care about instead of the whole file; also filter with severity/max_items. " //$NON-NLS-1$
+                + "Each diagnostic is tagged with its stable rule code in brackets (e.g. [export-procedure-missing-comment], " //$NON-NLS-1$
+                + "the same id used at v8std.ru); repeated diagnostics of the same rule are collapsed into one line with a count " //$NON-NLS-1$
+                + "and the list of lines, so big modules stay compact. " //$NON-NLS-1$
+                + "When you intend to FIX or explain diagnostics, set include_check_help=true: it appends the official " //$NON-NLS-1$
+                + "rule explanation + fix per unique rule (deduplicated) — the authoritative way to learn how to resolve a diagnostic. " //$NON-NLS-1$
+                + "Example — review and fix one module: get_diagnostics(scope=file, path=\"/Proj/src/CommonModules/X/Module.bsl\", include_check_help=true). " //$NON-NLS-1$
+                + "For .dcs (scope=file) it additionally checks a curated set of elements invalid in the DCS schema " //$NON-NLS-1$
+                + "(e.g. <editFormat>) that the EDT importer silently drops together with the data set. This is a targeted " //$NON-NLS-1$
+                + "check, NOT full schema validation: .dcs is a platform format parsed by EDT's lenient BM importer, " //$NON-NLS-1$
+                + "so a strict parser is unavailable. To verify DCS structure correctness, still open the schema in the designer."; //$NON-NLS-1$
     }
 
     @Override
@@ -177,7 +185,7 @@ public class GetDiagnosticsTool implements ITool {
             return ToolResult.success(formatted);
         }).exceptionally(e -> {
             LOG.error("get_diagnostics failed: %s", e.getMessage()); //$NON-NLS-1$
-            return ToolResult.failure("Ошибка получения диагностик: " + e.getMessage()); //$NON-NLS-1$
+            return ToolResult.failure("Failed to get diagnostics: " + e.getMessage()); //$NON-NLS-1$
         });
     }
 

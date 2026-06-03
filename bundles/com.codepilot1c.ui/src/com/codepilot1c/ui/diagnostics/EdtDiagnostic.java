@@ -101,6 +101,28 @@ public record EdtDiagnostic(
             Severity severity,
             String annotationType,
             String codeSnippet) {
+        return fromAnnotation(
+                filePath, lineNumber, charStart, charEnd, message, severity,
+                annotationType, codeSnippet, null);
+    }
+
+    /**
+     * Creates a diagnostic from annotation data, carrying an optional
+     * {@code checkId} (e.g. the Xtext {@code Issue.getCode()} recovered from an
+     * open editor's {@code XtextAnnotation}). Surfaced in the debug-gated
+     * branch only — see {@link #formatForLlm(boolean)} — until we confirm these
+     * codes match the v8-code-style identifiers.
+     */
+    public static EdtDiagnostic fromAnnotation(
+            String filePath,
+            int lineNumber,
+            int charStart,
+            int charEnd,
+            String message,
+            Severity severity,
+            String annotationType,
+            String codeSnippet,
+            String checkId) {
         return new EdtDiagnostic(
                 filePath,
                 lineNumber,
@@ -111,7 +133,7 @@ public record EdtDiagnostic(
                 annotationType,
                 "annotation", //$NON-NLS-1$
                 codeSnippet,
-                null,
+                checkId,
                 null,
                 null,
                 null,
@@ -156,24 +178,35 @@ public record EdtDiagnostic(
     }
 
     /**
-     * Formats diagnostic for LLM output.
+     * Formats a single diagnostic for LLM output (no debug provenance).
      */
     public String formatForLlm() {
+        return formatForLlm(false);
+    }
+
+    /**
+     * Formats a single diagnostic for LLM output. Used for groups of size 1;
+     * repeated diagnostics that share a rule are collapsed by
+     * {@code DiagnosticsResult.formatForLlm} into a compact grouped line.
+     *
+     * @param includeDebug when {@code true}, append debug-only {@code source} /
+     *        {@code source_type} lines for inspecting marker provenance. Gated
+     *        behind the diagnostics-verbose toggle to avoid token noise.
+     */
+    public String formatForLlm(boolean includeDebug) {
         StringBuilder sb = new StringBuilder();
-        sb.append("- **").append(severity.name()).append("** строка ").append(lineNumber); //$NON-NLS-1$ //$NON-NLS-2$
+        sb.append("- **").append(severity.name()).append("** line ").append(lineNumber); //$NON-NLS-1$ //$NON-NLS-2$
         if (lineNumber < 0) {
             sb.setLength(0);
             sb.append("- **").append(severity.name()).append("**"); //$NON-NLS-1$ //$NON-NLS-2$
         }
         if (charStart >= 0 && charEnd >= 0 && lineNumber >= 0) {
-            sb.append(" (позиция ").append(charStart).append("-").append(charEnd).append(")"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            sb.append(" (pos ").append(charStart).append("-").append(charEnd).append(")"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         }
         sb.append(": ").append(message); //$NON-NLS-1$
+        // Stable kebab rule code as a trailing tag, e.g. [export-procedure-missing-comment].
         if (checkId != null && !checkId.isBlank()) {
-            sb.append("\n  check_id: ").append(checkId); //$NON-NLS-1$
-        }
-        if (checkTitle != null && !checkTitle.isBlank()) {
-            sb.append("\n  check: ").append(checkTitle); //$NON-NLS-1$
+            sb.append("  [").append(checkId).append("]"); //$NON-NLS-1$ //$NON-NLS-2$
         }
         if (issueType != null && !issueType.isBlank()) {
             sb.append("\n  issue_type: ").append(issueType); //$NON-NLS-1$
@@ -187,12 +220,35 @@ public record EdtDiagnostic(
         if (objectPresentation != null && !objectPresentation.isBlank()) {
             sb.append("\n  object: ").append(objectPresentation); //$NON-NLS-1$
         }
-        if (checkDescription != null && !checkDescription.isBlank()) {
-            sb.append("\n  details: ").append(checkDescription); //$NON-NLS-1$
+        if (includeDebug) {
+            // Debug-only marker provenance: source = collection path,
+            // source_type = marker.getSourceType()/annotation type.
+            if (source != null && !source.isBlank()) {
+                sb.append("\n  source: ").append(source); //$NON-NLS-1$
+            }
+            if (markerType != null && !markerType.isBlank()) {
+                sb.append("\n  source_type: ").append(markerType); //$NON-NLS-1$
+            }
         }
         if (codeSnippet != null && !codeSnippet.isBlank()) {
             sb.append("\n  ```\n  ").append(codeSnippet.trim()).append("\n  ```"); //$NON-NLS-1$ //$NON-NLS-2$
         }
         return sb.toString();
+    }
+
+    /** Stable grouping key: the rule code when known, else the message text. */
+    public String groupKey() {
+        if (checkId != null && !checkId.isBlank()) {
+            return checkId;
+        }
+        return message != null ? message : ""; //$NON-NLS-1$
+    }
+
+    /** Label for a collapsed group: the rule code when known, else the message. */
+    public String groupLabel() {
+        if (checkId != null && !checkId.isBlank()) {
+            return checkId;
+        }
+        return message != null ? message : ""; //$NON-NLS-1$
     }
 }
