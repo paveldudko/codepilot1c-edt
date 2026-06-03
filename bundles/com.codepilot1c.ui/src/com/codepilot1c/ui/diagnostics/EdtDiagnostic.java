@@ -208,11 +208,7 @@ public record EdtDiagnostic(
             sb.append("**").append(severity.name()).append("** "); //$NON-NLS-1$ //$NON-NLS-2$
         }
         if (lineNumber >= 0) {
-            sb.append("line ").append(lineNumber); //$NON-NLS-1$
-            if (charStart >= 0 && charEnd >= 0) {
-                sb.append(" (pos ").append(charStart).append("-").append(charEnd).append(")"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            }
-            sb.append(": "); //$NON-NLS-1$
+            sb.append("line ").append(lineNumber).append(": "); //$NON-NLS-1$ //$NON-NLS-2$
         }
         sb.append(message); //$NON-NLS-1$
         // Stable kebab rule code as a trailing tag, e.g. [export-procedure-missing-comment].
