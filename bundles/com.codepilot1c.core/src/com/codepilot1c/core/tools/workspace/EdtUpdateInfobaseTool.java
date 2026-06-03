@@ -53,6 +53,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                   "type": "boolean",
                   "description": "Keep infobase connected after EDT update (default: true)"
                 },
+                "runtime_version": {
+                  "type": "string",
+                  "description": "Версия платформы 1С: линия ('8.3.27' — новейший установленный билд) или точный билд ('8.3.27.2074'). Пинит выбор платформы для project+infobase в настройках EDT (persistent, его же использует EDT UI) перед обновлением. Без пина auto = НОВЕЙШАЯ установленная платформа, включая пре-релизные билды — проверяйте runtime_used в dry_run."
+                },
                 "dry_run": {
                   "type": "boolean",
                   "description": "Resolve project and infobase without updating"
@@ -80,7 +84,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Обновляет инфобазу, связанную с EDT проектом, через EDT runtime."; //$NON-NLS-1$
+        return "Обновляет инфобазу, связанную с EDT проектом, через EDT runtime. " //$NON-NLS-1$
+                + "Версия платформы: pin в EDT (runtime_version пинит persistent) > auto " //$NON-NLS-1$
+                + "(НОВЕЙШАЯ установленная, включая пре-релизы) — проверяйте runtime_used в dry_run."; //$NON-NLS-1$
     }
 
     @Override
@@ -109,6 +115,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         boolean keepConnected = asBoolean(parameters == null ? null : parameters.get("keep_connected"), true); //$NON-NLS-1$
         boolean dryRun = asBoolean(parameters == null ? null : parameters.get("dry_run"), false); //$NON-NLS-1$
         boolean async = asBoolean(parameters == null ? null : parameters.get("async"), false); //$NON-NLS-1$
+        String runtimeVersionRaw = asString(parameters == null ? null : parameters.get("runtime_version")); //$NON-NLS-1$
+        String runtimeVersion = runtimeVersionRaw == null || runtimeVersionRaw.isBlank() ? null : runtimeVersionRaw;
 
         if (async && dryRun) {
             // Dry-run is fast and deterministic; running it synchronously avoids
@@ -119,7 +127,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             try {
                 String jobId = BackgroundJobRegistry.getInstance().startJob(
                         "edt_update_infobase", //$NON-NLS-1$
-                        () -> runUpdateAndRenderResult(opId, projectName, keepConnected, workspaceRoot));
+                        () -> runUpdateAndRenderResult(opId, projectName, keepConnected, workspaceRoot,
+                                runtimeVersion));
                 LOG.info("[%s] edt_update_infobase scheduled async job=%s", opId, jobId); //$NON-NLS-1$
                 JsonObject accepted = basePayload(opId, "scheduled", projectName, false, workspaceRoot); //$NON-NLS-1$
                 accepted.addProperty("async", true); //$NON-NLS-1$
@@ -160,6 +169,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                             infobase.getConnectionString().asConnectionString()); //$NON-NLS-1$
                 }
                 result.add("details", details); //$NON-NLS-1$
+                applyRuntimeControls(result, projectName, runtimeVersion, dryRun);
                 if (dryRun) {
                     result.addProperty("updated", false); //$NON-NLS-1$
                     return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
@@ -197,7 +207,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
      * synchronous output.
      */
     private String runUpdateAndRenderResult(String opId, String projectName, boolean keepConnected,
-            File workspaceRoot) {
+            File workspaceRoot, String runtimeVersion) {
         LOG.info("[%s] START edt_update_infobase (async)", opId); //$NON-NLS-1$
         try {
             InfobaseReference infobase = projectResolver.resolveInfobase(projectName, workspaceRoot);
@@ -208,6 +218,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                         infobase.getConnectionString().asConnectionString());
             }
             result.add("details", details); //$NON-NLS-1$
+            applyRuntimeControls(result, projectName, runtimeVersion, false);
             EdtRuntimeService.UpdateInfobaseStatus status =
                     runUpdateWithGuiProgress(projectName, keepConnected);
             boolean updated = status.updated();
@@ -230,6 +241,54 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         } catch (Exception e) {
             return pretty(errorPayload(opId, projectName, workspaceRoot,
                     EdtToolErrorCode.UPDATE_FAILED, e.getMessage()));
+        }
+    }
+
+    /**
+     * Applies the optional runtime pin and reports the platform installation EDT will use.
+     *
+     * <p>When {@code runtimeVersion} is set and this is not a dry run, the version is pinned
+     * EDT-natively ({@code IInfobaseAccessManager.updateSelectedInstallation}) BEFORE the update —
+     * persistent for this project+infobase, also honoured by the EDT UI in auto mode. Dry runs
+     * never mutate the pin store; they only report what a real run would do.</p>
+     *
+     * <p>Always (incl. dry_run) decorates {@code result} with {@code runtime_used} —
+     * version/location/pinned of the installation EDT's auto-resolution picks. Auto resolves to
+     * the NEWEST installed platform, including pre-release builds (feedback
+     * {@code 2026-06-03-edt-diagnostics-runtime-version-uncontrollable.md}); when there is no pin,
+     * an explicit {@code runtime_auto_resolved=true} flags it.</p>
+     *
+     * @throws EdtToolException when the requested pin cannot be applied (unknown version, store
+     *                          failure) — failing the call is better than silently updating the
+     *                          infobase with the wrong platform
+     */
+    private void applyRuntimeControls(JsonObject result, String projectName, String runtimeVersion,
+            boolean dryRun) {
+        if (runtimeVersion != null && !dryRun) {
+            try {
+                EdtRuntimeService.ResolvedRuntimeInfo pinnedTo =
+                        runtimeService.pinRuntimeVersion(projectName, runtimeVersion);
+                result.addProperty("runtime_pinned_to", pinnedTo.version()); //$NON-NLS-1$
+            } catch (IllegalArgumentException | IllegalStateException e) {
+                throw new EdtToolException(EdtToolErrorCode.RUNTIME_NOT_RESOLVED,
+                        "Failed to pin runtime_version '" + runtimeVersion + "': " + e.getMessage(), e); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+        } else if (runtimeVersion != null) {
+            result.addProperty("runtime_version_requested", runtimeVersion); //$NON-NLS-1$
+            result.addProperty("runtime_pin_applied", false); //$NON-NLS-1$
+            result.addProperty("runtime_pin_note", //$NON-NLS-1$
+                    "dry_run never mutates the EDT pin store; a real run pins before updating"); //$NON-NLS-1$
+        }
+        EdtRuntimeService.ResolvedRuntimeInfo info = runtimeService.describeUpdateRuntime(projectName);
+        if (info != null) {
+            JsonObject runtimeUsed = new JsonObject();
+            runtimeUsed.addProperty("version", info.version() == null ? "" : info.version()); //$NON-NLS-1$ //$NON-NLS-2$
+            runtimeUsed.addProperty("location", info.location() == null ? "" : info.location()); //$NON-NLS-1$ //$NON-NLS-2$
+            runtimeUsed.addProperty("pinned", info.pinned()); //$NON-NLS-1$
+            result.add("runtime_used", runtimeUsed); //$NON-NLS-1$
+            if (!info.pinned()) {
+                result.addProperty("runtime_auto_resolved", true); //$NON-NLS-1$
+            }
         }
     }
 

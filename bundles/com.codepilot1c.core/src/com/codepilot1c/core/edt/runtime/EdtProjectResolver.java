@@ -27,6 +27,17 @@ public class EdtProjectResolver {
     }
 
     public EdtResolvedLaunchInputs resolveLaunchInputs(String projectName, File workspaceRoot) {
+        return resolveLaunchInputs(projectName, workspaceRoot, null);
+    }
+
+    /**
+     * Same as {@link #resolveLaunchInputs(String, File)} but with an optional explicit runtime
+     * version pin ({@code runtime_version} tool param). When set, it overrides the
+     * {@code .launch}-derived version; when {@code null}, the pinned {@code .launch} version (if
+     * {@code USE_AUTO=false}) or project+infobase-aware auto-resolution applies.
+     */
+    public EdtResolvedLaunchInputs resolveLaunchInputs(String projectName, File workspaceRoot,
+            String runtimeVersionOverride) {
         InfobaseReference infobase = resolveInfobase(projectName, workspaceRoot);
 
         EdtLaunchConfigurationService.LaunchConfigurationSettings launchConfiguration;
@@ -40,16 +51,18 @@ public class EdtProjectResolver {
             throw new EdtToolException(EdtToolErrorCode.LAUNCH_CONFIG_NOT_FOUND,
                     "EDT launch configuration not found for project: " + projectName); //$NON-NLS-1$
         }
-        if (!launchConfiguration.runtimeInstallationUseAuto()
+        if (runtimeVersionOverride == null && !launchConfiguration.runtimeInstallationUseAuto()
                 && (launchConfiguration.runtimeVersion() == null || launchConfiguration.runtimeVersion().isBlank())) {
             throw new EdtToolException(EdtToolErrorCode.RUNTIME_VERSION_NOT_FOUND,
                     "EDT launch configuration does not define runtime version"); //$NON-NLS-1$
         }
 
         EdtRuntimeService.AccessSettings accessSettings = runtimeService.resolveAccessSettings(infobase);
-        String runtimeVersion = launchConfiguration.runtimeInstallationUseAuto()
-                ? null
-                : launchConfiguration.runtimeVersion();
+        String runtimeVersion = runtimeVersionOverride != null
+                ? runtimeVersionOverride
+                : (launchConfiguration.runtimeInstallationUseAuto() ? null : launchConfiguration.runtimeVersion());
+        IProject project = ResourcesPlugin.getWorkspace() == null ? null
+                : ResourcesPlugin.getWorkspace().getRoot().getProject(projectName);
         try {
             return new EdtResolvedLaunchInputs(
                     workspaceRoot,
@@ -57,12 +70,33 @@ public class EdtProjectResolver {
                     infobase,
                     launchConfiguration,
                     runtimeVersion,
-                    launchConfiguration.runtimeInstallationUseAuto(),
-                    runtimeService.resolveThickClientInfo(infobase, runtimeVersion),
+                    runtimeVersionOverride == null && launchConfiguration.runtimeInstallationUseAuto(),
+                    runtimeService.resolveThickClientInfo(infobase, runtimeVersion, project),
                     accessSettings);
         } catch (IllegalStateException e) {
             throw new EdtToolException(EdtToolErrorCode.RUNTIME_NOT_RESOLVED,
                     "Failed to resolve EDT runtime: " + e.getMessage(), e); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Returns the runtime version pinned in the project's {@code .launch} configuration
+     * ({@code ATTR_RUNTIME_INSTALLATION_USE_AUTO=false}), or {@code null} when there is no launch
+     * configuration, it uses auto-resolution, or it cannot be read. Best-effort, never throws —
+     * the mode/creds launch path uses this so an environment-owner's explicit pin is inherited
+     * instead of silently auto-resolving to the newest installed platform (incl. pre-release).
+     */
+    public String resolvePinnedRuntimeVersion(String projectName, File workspaceRoot) {
+        try {
+            EdtLaunchConfigurationService.LaunchConfigurationSettings launchConfiguration =
+                    launchConfigurationService.resolveRuntimeClientConfiguration(projectName, workspaceRoot);
+            if (launchConfiguration == null || launchConfiguration.runtimeInstallationUseAuto()) {
+                return null;
+            }
+            String version = launchConfiguration.runtimeVersion();
+            return version == null || version.isBlank() ? null : version;
+        } catch (Exception e) {
+            return null;
         }
     }
 

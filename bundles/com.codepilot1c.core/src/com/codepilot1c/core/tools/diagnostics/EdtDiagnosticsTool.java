@@ -63,6 +63,10 @@ public class EdtDiagnosticsTool extends AbstractTool {
                   "enum": ["thin", "thick", "designer"],
                   "description": "Только для launch_app: клиент для запуска — thin (1cv8c), thick (1cv8, по умолчанию), designer (Конфигуратор)."
                 },
+                "runtime_version": {
+                  "type": "string",
+                  "description": "Для launch_app и update_infobase: версия платформы 1С — линия ('8.3.27', новейший установленный билд линии) или точный билд ('8.3.27.2074'). Без неё auto-резолв берёт НОВЕЙШУЮ установленную платформу, включая пре-релизные билды — проверяйте runtime_used в dry_run. Для update_infobase значение пинится persistent в настройках EDT (project+infobase)."
+                },
                 "user": {
                   "type": "string",
                   "description": "Только для launch_app: логин сессии ИБ (override настроек EDT; требует password)."

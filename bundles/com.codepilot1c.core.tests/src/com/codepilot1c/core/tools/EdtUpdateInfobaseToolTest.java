@@ -20,6 +20,7 @@ import com.codepilot1c.core.tools.workspace.EdtUpdateInfobaseTool;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
 import com.codepilot1c.core.edt.runtime.EdtProjectResolver;
 import com.codepilot1c.core.edt.runtime.EdtRuntimeService;
+import com.codepilot1c.core.edt.runtime.EdtRuntimeService.ResolvedRuntimeInfo;
 import com.codepilot1c.core.edt.runtime.EdtToolErrorCode;
 import com.codepilot1c.core.edt.runtime.EdtToolException;
 import com.google.gson.JsonObject;
@@ -75,6 +76,91 @@ public class EdtUpdateInfobaseToolTest {
         assertTrue(json.has("async_ignored_reason")); //$NON-NLS-1$
         // No job id should be issued for dry-run; the response is a plain sync payload.
         assertFalse(json.has("job_id")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void runtimeVersionPinsBeforeUpdateAndReportsRuntimeUsed() throws Exception {
+        // Feedback 2026-06-03: update_infobase auto-resolved the runtime to the newest installed
+        // platform (incl. pre-release) with no caller control and no visibility. runtime_version
+        // must pin EDT-natively BEFORE the update and the result must carry runtime_used.
+        File workspaceRoot = Files.createTempDirectory("edt-update-tool-rtv").toFile(); //$NON-NLS-1$
+        RuntimeControlsRuntimeService runtimeService = new RuntimeControlsRuntimeService(
+                new ResolvedRuntimeInfo("8.3.27.2074", "file:/C:/1cv8/8.3.27.2074", true)); //$NON-NLS-1$ //$NON-NLS-2$
+        EdtUpdateInfobaseTool tool = new TestEdtUpdateInfobaseTool(
+                new StubProjectResolver(), runtimeService, workspaceRoot);
+
+        ToolResult result = tool.execute(Map.of(
+                "project_name", "Demo", //$NON-NLS-1$ //$NON-NLS-2$
+                "runtime_version", "8.3.27" //$NON-NLS-1$ //$NON-NLS-2$
+        )).join();
+
+        assertTrue(result.isSuccess());
+        assertEquals("8.3.27", runtimeService.pinnedMask); //$NON-NLS-1$
+        assertEquals("pin must happen BEFORE the update so the designer agent uses it", //$NON-NLS-1$
+                java.util.List.of("pin", "update"), runtimeService.callOrder); //$NON-NLS-1$ //$NON-NLS-2$
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        assertEquals("8.3.27.2074", json.get("runtime_pinned_to").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        JsonObject runtimeUsed = json.getAsJsonObject("runtime_used"); //$NON-NLS-1$
+        assertEquals("8.3.27.2074", runtimeUsed.get("version").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(runtimeUsed.get("pinned").getAsBoolean()); //$NON-NLS-1$
+        assertFalse(json.has("runtime_auto_resolved")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void dryRunNeverPinsButReportsRuntimeUsed() throws Exception {
+        File workspaceRoot = Files.createTempDirectory("edt-update-tool-rtv-dry").toFile(); //$NON-NLS-1$
+        RuntimeControlsRuntimeService runtimeService = new RuntimeControlsRuntimeService(
+                new ResolvedRuntimeInfo("8.5.1.1302", "file:/C:/1cv8/8.5.1.1302", false)); //$NON-NLS-1$ //$NON-NLS-2$
+        EdtUpdateInfobaseTool tool = new TestEdtUpdateInfobaseTool(
+                new StubProjectResolver(), runtimeService, workspaceRoot);
+
+        ToolResult result = tool.execute(Map.of(
+                "project_name", "Demo", //$NON-NLS-1$ //$NON-NLS-2$
+                "runtime_version", "8.3.27", //$NON-NLS-1$ //$NON-NLS-2$
+                "dry_run", Boolean.TRUE //$NON-NLS-1$
+        )).join();
+
+        assertTrue(result.isSuccess());
+        assertEquals("dry_run must not mutate the EDT pin store", null, runtimeService.pinnedMask); //$NON-NLS-1$
+        assertFalse(runtimeService.updateCalled);
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        assertEquals("8.3.27", json.get("runtime_version_requested").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(json.get("runtime_pin_applied").getAsBoolean()); //$NON-NLS-1$
+        // Auto-resolution to a pre-release build is exactly what dry_run must make visible.
+        JsonObject runtimeUsed = json.getAsJsonObject("runtime_used"); //$NON-NLS-1$
+        assertEquals("8.5.1.1302", runtimeUsed.get("version").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(runtimeUsed.get("pinned").getAsBoolean()); //$NON-NLS-1$
+        assertTrue(json.get("runtime_auto_resolved").getAsBoolean()); //$NON-NLS-1$
+    }
+
+    private static class RuntimeControlsRuntimeService extends StubRuntimeService {
+        private final ResolvedRuntimeInfo describeResult;
+        volatile String pinnedMask;
+        final java.util.List<String> callOrder =
+                java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+
+        RuntimeControlsRuntimeService(ResolvedRuntimeInfo describeResult) {
+            this.describeResult = describeResult;
+        }
+
+        @Override
+        public ResolvedRuntimeInfo pinRuntimeVersion(String projectName, String versionMask) {
+            pinnedMask = versionMask;
+            callOrder.add("pin"); //$NON-NLS-1$
+            return describeResult;
+        }
+
+        @Override
+        public ResolvedRuntimeInfo describeUpdateRuntime(String projectName) {
+            return describeResult;
+        }
+
+        @Override
+        public boolean updateInfobase(String projectName, boolean keepConnected,
+                org.eclipse.core.runtime.IProgressMonitor monitor) {
+            callOrder.add("update"); //$NON-NLS-1$
+            return super.updateInfobase(projectName, keepConnected, monitor);
+        }
     }
 
     @Test
@@ -324,7 +410,7 @@ public class EdtUpdateInfobaseToolTest {
     }
 
     private static class StubRuntimeService extends EdtRuntimeService {
-        private boolean updateCalled;
+        boolean updateCalled;
 
         @Override
         public boolean updateInfobase(String projectName, boolean keepConnected,

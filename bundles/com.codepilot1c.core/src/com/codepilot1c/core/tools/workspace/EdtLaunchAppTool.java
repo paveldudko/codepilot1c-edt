@@ -64,6 +64,10 @@ public class EdtLaunchAppTool extends AbstractTool {
                   "enum": ["thin", "thick", "designer"],
                   "description": "Клиент для запуска: thin (1cv8c, ENTERPRISE), thick (1cv8, ENTERPRISE; по умолчанию), designer (1cv8, Конфигуратор). thin переиспользует проверенный live путь резолва тонкого клиента."
                 },
+                "runtime_version": {
+                  "type": "string",
+                  "description": "Версия платформы 1С: линия ('8.3.27' — новейший установленный билд линии) или точный билд ('8.3.27.2074'). Без неё берётся pin из .launch проекта, иначе auto = НОВЕЙШАЯ установленная платформа, включая пре-релизные билды. Проверяйте runtime_used/command[] в dry_run."
+                },
                 "user": {
                   "type": "string",
                   "description": "Логин сессии ИБ (override настроек EDT). Требует password. Без него — настройки доступа из EDT/.launch."
@@ -116,7 +120,9 @@ public class EdtLaunchAppTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Запускает приложение EDT проекта через EDT runtime и RuntimeClient launch configuration."; //$NON-NLS-1$
+        return "Запускает приложение EDT проекта через EDT runtime и RuntimeClient launch configuration. " //$NON-NLS-1$
+                + "Версия платформы: runtime_version > pin в .launch проекта > auto (НОВЕЙШАЯ установленная, " //$NON-NLS-1$
+                + "включая пре-релизы) — проверяйте runtime_used в dry_run."; //$NON-NLS-1$
     }
 
     @Override
@@ -149,6 +155,8 @@ public class EdtLaunchAppTool extends AbstractTool {
             String additionalParameters = asOptionalString(
                     parameters == null ? null : parameters.get("additional_parameters")); //$NON-NLS-1$
             String mode = asOptionalString(parameters == null ? null : parameters.get("mode")); //$NON-NLS-1$
+            String runtimeVersion = asOptionalString(
+                    parameters == null ? null : parameters.get("runtime_version")); //$NON-NLS-1$
             String user = asOptionalString(parameters == null ? null : parameters.get("user")); //$NON-NLS-1$
             String password = asOptionalString(parameters == null ? null : parameters.get("password")); //$NON-NLS-1$
             EdtRuntimeService.AccessSettings creds = (user != null && password != null)
@@ -166,13 +174,25 @@ public class EdtLaunchAppTool extends AbstractTool {
                 JsonObject result;
                 if (modePath) {
                     String effectiveMode = mode == null ? "thick" : mode; //$NON-NLS-1$
+                    // Runtime pin priority: explicit runtime_version param > the project's pinned
+                    // .launch config (USE_AUTO=false) > project+infobase-aware auto-resolution.
+                    // Without this the mode path always auto-resolved to the NEWEST installed
+                    // platform — including pre-release builds (feedback 2026-06-03).
+                    String pinnedVersion = runtimeVersion != null ? null
+                            : projectResolver.resolvePinnedRuntimeVersion(projectName, workspaceRoot);
+                    String effectiveVersion = runtimeVersion != null ? runtimeVersion : pinnedVersion;
+                    String runtimeSource = runtimeVersion != null ? "param" //$NON-NLS-1$
+                            : (pinnedVersion != null ? "launch_config" : "auto"); //$NON-NLS-1$ //$NON-NLS-2$
                     processBuilder = runtimeService.buildModeLaunchProcess(projectName, effectiveMode,
-                            additionalParameters, creds, logFile);
+                            additionalParameters, creds, logFile, effectiveVersion);
                     configureProcess(processBuilder, workspaceRoot, logFile);
                     result = modePayload(opId, dryRun ? "dry_run" : "ready", projectName, dryRun, //$NON-NLS-1$ //$NON-NLS-2$
                             workspaceRoot, effectiveMode, processBuilder.command(), logFile);
+                    result.addProperty("runtime_version", effectiveVersion == null ? "" : effectiveVersion); //$NON-NLS-1$ //$NON-NLS-2$
+                    result.addProperty("runtime_source", runtimeSource); //$NON-NLS-1$
                 } else {
-                    EdtResolvedLaunchInputs inputs = projectResolver.resolveLaunchInputs(projectName, workspaceRoot);
+                    EdtResolvedLaunchInputs inputs = projectResolver.resolveLaunchInputs(projectName, workspaceRoot,
+                            runtimeVersion);
                     EdtResolvedLaunchContext context = contextBuilder.build(inputs);
                     processBuilder = runtimeService.buildEnterpriseLaunchProcess(context,
                             additionalParameters, logFile);
@@ -180,6 +200,8 @@ public class EdtLaunchAppTool extends AbstractTool {
                     result = basePayload(opId, dryRun ? "dry_run" : "ready", projectName, dryRun, //$NON-NLS-1$ //$NON-NLS-2$
                             workspaceRoot, context, processBuilder.command(), logFile);
                     result.addProperty("mode", "thick"); //$NON-NLS-1$ //$NON-NLS-2$
+                    result.addProperty("runtime_source", runtimeVersion != null ? "param" //$NON-NLS-1$ //$NON-NLS-2$
+                            : (context.runtimeUseAuto() ? "auto" : "launch_config")); //$NON-NLS-1$ //$NON-NLS-2$
                 }
                 if (dryRun) {
                     return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
@@ -249,6 +271,9 @@ public class EdtLaunchAppTool extends AbstractTool {
             result.addProperty("infobase_connection",
                     context.infobase().getConnectionString().asConnectionString()); //$NON-NLS-1$
         }
+        // The resolved client binary — callers verify the platform version here (the path embeds
+        // it, e.g. ...\1cv8\8.3.27.2074\bin\1cv8.exe) without diffing the whole command[].
+        result.addProperty("runtime_used", command.isEmpty() ? "" : command.get(0)); //$NON-NLS-1$ //$NON-NLS-2$
         JsonArray commandJson = new JsonArray();
         for (String item : command) {
             commandJson.add(item);
@@ -273,6 +298,9 @@ public class EdtLaunchAppTool extends AbstractTool {
         result.addProperty("dry_run", dryRun); //$NON-NLS-1$
         result.addProperty("workspace_root", workspaceRoot == null ? "" : workspaceRoot.getAbsolutePath()); //$NON-NLS-1$ //$NON-NLS-2$
         result.addProperty("log_path", logFile == null ? "" : logFile.getAbsolutePath()); //$NON-NLS-1$ //$NON-NLS-2$
+        // The resolved client binary — callers verify the platform version here (the path embeds
+        // it, e.g. ...\1cv8\8.3.27.2074\bin\1cv8c.exe) without diffing the whole command[].
+        result.addProperty("runtime_used", command.isEmpty() ? "" : command.get(0)); //$NON-NLS-1$ //$NON-NLS-2$
         JsonArray commandJson = new JsonArray();
         for (String item : command) {
             commandJson.add(item);

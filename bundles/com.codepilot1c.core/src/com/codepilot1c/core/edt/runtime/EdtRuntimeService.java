@@ -35,6 +35,7 @@ import com.codepilot1c.core.logging.VibeLogger;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerInfobase;
 import org.eclipse.core.resources.IProject;
+import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.NullProgressMonitor;
 import org.eclipse.wst.server.core.IModule;
@@ -367,18 +368,14 @@ public class EdtRuntimeService {
     }
 
     public ThickClientInfo resolveThickClientInfo(InfobaseReference infobase, String versionMask) {
+        return resolveThickClientInfo(infobase, versionMask, null);
+    }
+
+    public ThickClientInfo resolveThickClientInfo(InfobaseReference infobase, String versionMask, IProject project) {
         IRuntimeComponentManager runtimeComponentManager = gateway.getRuntimeComponentManager();
-        IResolvableRuntimeInstallationManager installationManager =
-                gateway.getResolvableRuntimeInstallationManager();
         ThickClientInfo info;
         try {
-            IResolvableRuntimeInstallation resolvable;
-            if (versionMask != null && !versionMask.isBlank()) {
-                resolvable = installationManager.resolveByVersionOrMask(RUNTIME_TYPE_ENTERPRISE_PLATFORM, versionMask);
-            } else {
-                resolvable = installationManager.resolveByProjectAndInfobase(RUNTIME_TYPE_ENTERPRISE_PLATFORM,
-                        null, infobase, InfobaseAccessType.UPDATE);
-            }
+            IResolvableRuntimeInstallation resolvable = resolveInstallation(versionMask, project, infobase);
             info = resolveThickClient(runtimeComponentManager, resolvable, infobase);
         } catch (Exception | NoSuchMethodError e) {
             LOG.warn("Failed to resolve thick client (possible EDT API incompatibility): " + e.getMessage(), e); //$NON-NLS-1$
@@ -388,6 +385,33 @@ public class EdtRuntimeService {
             throw new IllegalStateException("Thick client runtime component not resolved for infobase"); //$NON-NLS-1$
         }
         return info;
+    }
+
+    /**
+     * Resolves the {@link IResolvableRuntimeInstallation} for the enterprise platform runtime type.
+     *
+     * <p>Resolution priority mirrors the feedback in
+     * {@code 2026-06-03-edt-diagnostics-runtime-version-uncontrollable.md}:</p>
+     * <ol>
+     *   <li>explicit {@code versionMask} (caller pin, e.g. {@code runtime_version} tool param) via
+     *       {@code resolveByVersionOrMask};</li>
+     *   <li>otherwise {@code resolveByProjectAndInfobase} with the REAL project — EDT then consults
+     *       the per-project+infobase pinned installation
+     *       ({@code IInfobaseAccessManager.loadSelectedInstallation}) before falling back to
+     *       "newest compatible". Passing {@code null} project (the old behaviour) skipped the pin
+     *       store entirely, so auto-resolution silently picked the newest installed platform —
+     *       including pre-release builds (8.5.1 beta over the project's working 8.3.27).</li>
+     * </ol>
+     */
+    private IResolvableRuntimeInstallation resolveInstallation(String versionMask, IProject project,
+            InfobaseReference infobase) throws MatchingRuntimeNotFound {
+        IResolvableRuntimeInstallationManager installationManager =
+                gateway.getResolvableRuntimeInstallationManager();
+        if (versionMask != null && !versionMask.isBlank()) {
+            return installationManager.resolveByVersionOrMask(RUNTIME_TYPE_ENTERPRISE_PLATFORM, versionMask);
+        }
+        return installationManager.resolveByProjectAndInfobase(RUNTIME_TYPE_ENTERPRISE_PLATFORM,
+                project, infobase, InfobaseAccessType.UPDATE);
     }
 
     /**
@@ -425,17 +449,13 @@ public class EdtRuntimeService {
      * ENTERPRISE arg shape for either binary; only the executable path differs.</p>
      */
     public File resolveThinClientFile(InfobaseReference infobase, String versionMask) {
+        return resolveThinClientFile(infobase, versionMask, null);
+    }
+
+    public File resolveThinClientFile(InfobaseReference infobase, String versionMask, IProject project) {
         IRuntimeComponentManager runtimeComponentManager = gateway.getRuntimeComponentManager();
-        IResolvableRuntimeInstallationManager installationManager =
-                gateway.getResolvableRuntimeInstallationManager();
         try {
-            IResolvableRuntimeInstallation resolvable;
-            if (versionMask != null && !versionMask.isBlank()) {
-                resolvable = installationManager.resolveByVersionOrMask(RUNTIME_TYPE_ENTERPRISE_PLATFORM, versionMask);
-            } else {
-                resolvable = installationManager.resolveByProjectAndInfobase(RUNTIME_TYPE_ENTERPRISE_PLATFORM,
-                        null, infobase, InfobaseAccessType.UPDATE);
-            }
+            IResolvableRuntimeInstallation resolvable = resolveInstallation(versionMask, project, infobase);
             AppArch appArch = infobase != null ? infobase.getAppArch() : AppArch.AUTO;
             RuntimeInstallation installation = resolvable.resolve(List.of(COMPONENT_TYPE_THIN_CLIENT), appArch);
             ComponentExecutorInfo<ILaunchableRuntimeComponent, IThinClientLauncher> executorInfo =
@@ -480,7 +500,7 @@ public class EdtRuntimeService {
         // pre-FeaturePlayer with descendants=0 and a zero-byte va.log (manual repro Test D in
         // codepilot1c-feedback/2026-05-28-qa-run-thin-client-breakthrough.md). Both qa_run spawn
         // paths (TestManager and SingleClient) flow through here, so both must use thin.
-        File clientFile = resolveThinClientFile(infobase, versionMask);
+        File clientFile = resolveThinClientFile(infobase, versionMask, gateway.resolveProject(projectName));
         if (clientFile == null) {
             throw new IllegalStateException(
                     "Thin client (1cv8c.exe) runtime component not resolved — Vanessa-Automation requires it"); //$NON-NLS-1$
@@ -539,7 +559,7 @@ public class EdtRuntimeService {
         // pre-FeaturePlayer with descendants=0 and a zero-byte va.log (manual repro Test D in
         // codepilot1c-feedback/2026-05-28-qa-run-thin-client-breakthrough.md). Both qa_run spawn
         // paths (TestManager and SingleClient) flow through here, so both must use thin.
-        File clientFile = resolveThinClientFile(infobase, versionMask);
+        File clientFile = resolveThinClientFile(infobase, versionMask, gateway.resolveProject(projectName));
         if (clientFile == null) {
             throw new IllegalStateException(
                     "Thin client (1cv8c.exe) runtime component not resolved — Vanessa-Automation requires it"); //$NON-NLS-1$
@@ -590,7 +610,7 @@ public class EdtRuntimeService {
     public RuntimeExecutionCommandBuilder buildTestClientCommand(String projectName, Integer port,
             String testClientId, File logFile, String versionMask, AccessSettings accessSettings) {
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
-        File clientFile = resolveThinClientFile(infobase, versionMask);
+        File clientFile = resolveThinClientFile(infobase, versionMask, gateway.resolveProject(projectName));
         if (clientFile == null) {
             throw new IllegalStateException(
                     "Thin client (1cv8c.exe) runtime component not resolved — required to launch the Vanessa TestClient"); //$NON-NLS-1$
@@ -639,7 +659,7 @@ public class EdtRuntimeService {
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
         // Thin client (1cv8c.exe) is this plugin's validated launch surface on EDT 2025.2
         // (resolveExecutor path). YAxUnit runs fine in-process on it; thick is unnecessary.
-        File clientFile = resolveThinClientFile(infobase, versionMask);
+        File clientFile = resolveThinClientFile(infobase, versionMask, gateway.resolveProject(projectName));
         if (clientFile == null) {
             throw new IllegalStateException(
                     "Thin client (1cv8c.exe) runtime component not resolved — YAxUnit requires a 1C client"); //$NON-NLS-1$
@@ -667,7 +687,7 @@ public class EdtRuntimeService {
 
     public RuntimeExecutionCommandBuilder buildUpdateCommand(String projectName, File logFile) {
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
-        ThickClientInfo info = resolveThickClientInfo(infobase);
+        ThickClientInfo info = resolveThickClientInfo(infobase, null, gateway.resolveProject(projectName));
         File clientFile = info.component().getFile();
 
         RuntimeExecutionCommandBuilder builder = new RuntimeExecutionCommandBuilder(clientFile,
@@ -727,18 +747,32 @@ public class EdtRuntimeService {
      */
     public ProcessBuilder buildModeLaunchProcess(String projectName, String mode, String additionalParameters,
             AccessSettings explicitAccessSettings, File logFile) {
+        return buildModeLaunchProcess(projectName, mode, additionalParameters, explicitAccessSettings, logFile,
+                null);
+    }
+
+    /**
+     * Same as {@link #buildModeLaunchProcess(String, String, String, AccessSettings, File)} but with
+     * an explicit runtime version pin. {@code runtimeVersionMask} accepts a line ({@code "8.3.27"} —
+     * newest build of that line) or an exact build ({@code "8.3.27.2074"}); {@code null}/blank keeps
+     * project+infobase-aware auto-resolution (which honours the EDT-stored per-infobase pin, see
+     * {@link #resolveInstallation}).
+     */
+    public ProcessBuilder buildModeLaunchProcess(String projectName, String mode, String additionalParameters,
+            AccessSettings explicitAccessSettings, File logFile, String runtimeVersionMask) {
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
+        IProject project = gateway.resolveProject(projectName);
         String requested = mode == null ? "thick" : mode.trim(); //$NON-NLS-1$
         File clientFile;
         ThickClientMode clientMode;
         if (requested.equalsIgnoreCase("thin")) { //$NON-NLS-1$
-            clientFile = resolveThinClientFile(infobase, null);
+            clientFile = resolveThinClientFile(infobase, runtimeVersionMask, project);
             clientMode = ThickClientMode.ENTERPRISE;
         } else if (requested.equalsIgnoreCase("designer")) { //$NON-NLS-1$
-            clientFile = resolveThickClientInfo(infobase).component().getFile();
+            clientFile = resolveThickClientInfo(infobase, runtimeVersionMask, project).component().getFile();
             clientMode = ThickClientMode.DESIGNER;
         } else if (requested.isEmpty() || requested.equalsIgnoreCase("thick")) { //$NON-NLS-1$
-            clientFile = resolveThickClientInfo(infobase).component().getFile();
+            clientFile = resolveThickClientInfo(infobase, runtimeVersionMask, project).component().getFile();
             clientMode = ThickClientMode.ENTERPRISE;
         } else {
             throw new IllegalArgumentException("Unknown launch mode: " + mode + " (use thin|thick|designer)"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -766,6 +800,91 @@ public class EdtRuntimeService {
             builder.logTo(logFile, true);
         }
         return builder.toProcessBuilder();
+    }
+
+    /**
+     * What concrete platform installation EDT resolves for a project+infobase pair.
+     *
+     * @param version  full version with build, e.g. {@code 8.3.27.2074}
+     * @param location installation root URI as a string, or {@code null} if unknown
+     * @param pinned   {@code true} when the version came from the EDT-stored per-project+infobase
+     *                 selected installation ({@code IInfobaseAccessManager.loadSelectedInstallation});
+     *                 {@code false} means auto-resolution picked it (newest compatible installed
+     *                 platform, INCLUDING pre-release builds)
+     */
+    public record ResolvedRuntimeInfo(String version, String location, boolean pinned) {
+    }
+
+    /**
+     * Best-effort description of the platform installation EDT will use for an infobase update of
+     * this project. Runs the same {@code resolveByProjectAndInfobase(..., UPDATE)} resolution the
+     * EDT synchronization manager performs internally, so callers (update_infobase dry_run and
+     * real runs) can surface {@code runtime_used} BEFORE the designer agent touches the infobase —
+     * the silent 8.5-beta-updates-a-8.3.27-infobase scenario from feedback
+     * {@code 2026-06-03-edt-diagnostics-runtime-version-uncontrollable.md}.
+     *
+     * @return resolved info, or {@code null} when resolution fails (never throws)
+     */
+    public ResolvedRuntimeInfo describeUpdateRuntime(String projectName) {
+        try {
+            IProject project = gateway.resolveProject(projectName);
+            InfobaseReference infobase = resolveDefaultInfobase(projectName);
+            boolean pinned = false;
+            try {
+                pinned = project != null && infobase != null
+                        && gateway.getInfobaseAccessManager().loadSelectedInstallation(project, infobase).isPresent();
+            } catch (Exception | NoSuchMethodError e) {
+                LOG.warn("Failed to query selected installation: " + e.getMessage(), e); //$NON-NLS-1$
+            }
+            IResolvableRuntimeInstallation resolvable = resolveInstallation(null, project, infobase);
+            AppArch appArch = infobase != null ? infobase.getAppArch() : AppArch.AUTO;
+            RuntimeInstallation installation = resolvable.resolve(List.of(COMPONENT_TYPE_THICK_CLIENT), appArch);
+            return new ResolvedRuntimeInfo(installation.getVersionWithBuild(),
+                    installation.getLocation() == null ? null : installation.getLocation().toString(), pinned);
+        } catch (Exception | NoSuchMethodError e) {
+            LOG.warn("Failed to describe update runtime for project " + projectName //$NON-NLS-1$
+                    + ": " + e.getMessage(), e); //$NON-NLS-1$
+            return null;
+        }
+    }
+
+    /**
+     * Pins the platform version EDT uses for this project+infobase pair by storing the selected
+     * installation via {@code IInfobaseAccessManager.updateSelectedInstallation} — the same store
+     * the EDT launch-configuration UI writes and {@code resolveByProjectAndInfobase} reads first.
+     * The pin is PERSISTENT and EDT-native: subsequent infobase updates and launches (both from
+     * this plugin and from the EDT UI in auto mode) resolve to it instead of "newest installed".
+     *
+     * @param versionMask version line ({@code "8.3.27"} — newest matching build) or exact build
+     *                    ({@code "8.3.27.2074"})
+     * @return the concrete installation the mask resolved to
+     * @throws IllegalStateException when no installed platform matches the mask, the project or
+     *                               infobase cannot be resolved, or the store rejects the update
+     */
+    public ResolvedRuntimeInfo pinRuntimeVersion(String projectName, String versionMask) {
+        if (versionMask == null || versionMask.isBlank()) {
+            throw new IllegalArgumentException("runtime version mask is required"); //$NON-NLS-1$
+        }
+        IProject project = gateway.resolveProject(projectName);
+        if (project == null || !project.exists()) {
+            throw new IllegalStateException("EDT project not found: " + projectName); //$NON-NLS-1$
+        }
+        InfobaseReference infobase = resolveDefaultInfobase(projectName);
+        try {
+            IResolvableRuntimeInstallation resolvable = gateway.getResolvableRuntimeInstallationManager()
+                    .resolveByVersionOrMask(RUNTIME_TYPE_ENTERPRISE_PLATFORM, versionMask);
+            gateway.getInfobaseAccessManager().updateSelectedInstallation(project, infobase, resolvable);
+            AppArch appArch = infobase != null ? infobase.getAppArch() : AppArch.AUTO;
+            RuntimeInstallation installation = resolvable.resolve(List.of(COMPONENT_TYPE_THICK_CLIENT), appArch);
+            return new ResolvedRuntimeInfo(installation.getVersionWithBuild(),
+                    installation.getLocation() == null ? null : installation.getLocation().toString(), true);
+        } catch (MatchingRuntimeNotFound e) {
+            throw new IllegalStateException("No installed 1C platform matches runtime_version '" //$NON-NLS-1$
+                    + versionMask + "': " + e.getMessage(), e); //$NON-NLS-1$
+        } catch (CoreException e) {
+            throw new IllegalStateException("Failed to pin runtime version '" + versionMask //$NON-NLS-1$
+                    + "': " + e.getMessage(), e); //$NON-NLS-1$
+        }
     }
 
     public boolean updateInfobase(String projectName) throws Exception {

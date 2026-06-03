@@ -71,6 +71,88 @@ public class EdtLaunchAppToolTest {
     }
 
     @Test
+    public void runtimeVersionParamFlowsToModeLaunchAsMask() throws Exception {
+        // Feedback 2026-06-03: the mode/creds launch path always auto-resolved the runtime to the
+        // newest installed platform (including pre-release builds). An explicit runtime_version
+        // must reach buildModeLaunchProcess as the version mask and be reported back.
+        File workspaceRoot = Files.createTempDirectory("edt-launch-tool-rtv").toFile(); //$NON-NLS-1$
+        StubRuntimeService runtimeService = new StubRuntimeService();
+        EdtLaunchAppTool tool = new TestEdtLaunchAppTool(
+                new StubProjectResolver(workspaceRoot),
+                new StubLaunchContextBuilder(workspaceRoot),
+                runtimeService,
+                ProcessBuilder::start,
+                EdtLaunchProcessRegistry.getInstance(),
+                workspaceRoot);
+
+        ToolResult result = tool.execute(Map.of(
+                "project_name", "Demo", //$NON-NLS-1$ //$NON-NLS-2$
+                "mode", "thin", //$NON-NLS-1$ //$NON-NLS-2$
+                "runtime_version", "8.3.27.2074", //$NON-NLS-1$ //$NON-NLS-2$
+                "dry_run", Boolean.TRUE //$NON-NLS-1$
+        )).join();
+
+        assertTrue(result.isSuccess());
+        assertEquals("8.3.27.2074", runtimeService.capturedRuntimeVersionMask); //$NON-NLS-1$
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        assertEquals("8.3.27.2074", json.get("runtime_version").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("param", json.get("runtime_source").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        // runtime_used surfaces the resolved binary (command[0]) for cheap version verification.
+        assertEquals(json.getAsJsonArray("command").get(0).getAsString(), //$NON-NLS-1$
+                json.get("runtime_used").getAsString()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void modeLaunchInheritsPinnedLaunchConfigVersion() throws Exception {
+        // Without an explicit runtime_version the mode path must inherit the environment owner's
+        // pin from the project's .launch (USE_AUTO=false) instead of auto-resolving.
+        File workspaceRoot = Files.createTempDirectory("edt-launch-tool-pin").toFile(); //$NON-NLS-1$
+        StubRuntimeService runtimeService = new StubRuntimeService();
+        EdtLaunchAppTool tool = new TestEdtLaunchAppTool(
+                new StubProjectResolver(workspaceRoot).withPinnedRuntimeVersion("8.3.27"), //$NON-NLS-1$
+                new StubLaunchContextBuilder(workspaceRoot),
+                runtimeService,
+                ProcessBuilder::start,
+                EdtLaunchProcessRegistry.getInstance(),
+                workspaceRoot);
+
+        ToolResult result = tool.execute(Map.of(
+                "project_name", "Demo", //$NON-NLS-1$ //$NON-NLS-2$
+                "mode", "thin", //$NON-NLS-1$ //$NON-NLS-2$
+                "dry_run", Boolean.TRUE //$NON-NLS-1$
+        )).join();
+
+        assertTrue(result.isSuccess());
+        assertEquals("8.3.27", runtimeService.capturedRuntimeVersionMask); //$NON-NLS-1$
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        assertEquals("launch_config", json.get("runtime_source").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void modeLaunchWithoutAnyPinReportsAutoSource() throws Exception {
+        File workspaceRoot = Files.createTempDirectory("edt-launch-tool-auto").toFile(); //$NON-NLS-1$
+        StubRuntimeService runtimeService = new StubRuntimeService();
+        EdtLaunchAppTool tool = new TestEdtLaunchAppTool(
+                new StubProjectResolver(workspaceRoot),
+                new StubLaunchContextBuilder(workspaceRoot),
+                runtimeService,
+                ProcessBuilder::start,
+                EdtLaunchProcessRegistry.getInstance(),
+                workspaceRoot);
+
+        ToolResult result = tool.execute(Map.of(
+                "project_name", "Demo", //$NON-NLS-1$ //$NON-NLS-2$
+                "mode", "thin", //$NON-NLS-1$ //$NON-NLS-2$
+                "dry_run", Boolean.TRUE //$NON-NLS-1$
+        )).join();
+
+        assertTrue(result.isSuccess());
+        assertEquals(null, runtimeService.capturedRuntimeVersionMask);
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        assertEquals("auto", json.get("runtime_source").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
     public void waitsForShortLivedProcess() throws Exception {
         File workspaceRoot = Files.createTempDirectory("edt-launch-tool-wait").toFile(); //$NON-NLS-1$
         EdtLaunchAppTool tool = new TestEdtLaunchAppTool(
@@ -112,13 +194,20 @@ public class EdtLaunchAppToolTest {
 
     private static class StubProjectResolver extends EdtProjectResolver {
         private final File workspaceRoot;
+        private String pinnedRuntimeVersion;
 
         StubProjectResolver(File workspaceRoot) {
             this.workspaceRoot = workspaceRoot;
         }
 
+        StubProjectResolver withPinnedRuntimeVersion(String version) {
+            this.pinnedRuntimeVersion = version;
+            return this;
+        }
+
         @Override
-        public EdtResolvedLaunchInputs resolveLaunchInputs(String projectName, File ignoredWorkspaceRoot) {
+        public EdtResolvedLaunchInputs resolveLaunchInputs(String projectName, File ignoredWorkspaceRoot,
+                String runtimeVersionOverride) {
             return new EdtResolvedLaunchInputs(
                     workspaceRoot,
                     projectName,
@@ -127,7 +216,12 @@ public class EdtLaunchAppToolTest {
                             new File(workspaceRoot, "test.launch"), "test", //$NON-NLS-1$ //$NON-NLS-2$
                             EdtLaunchConfigurationService.RUNTIME_CLIENT_TYPE,
                             projectName, false, null, "8.3.25.1", false, null, true, false, true), //$NON-NLS-1$
-                    "8.3.25.1", false, null, null); //$NON-NLS-1$
+                    runtimeVersionOverride != null ? runtimeVersionOverride : "8.3.25.1", false, null, null); //$NON-NLS-1$
+        }
+
+        @Override
+        public String resolvePinnedRuntimeVersion(String projectName, File ignoredWorkspaceRoot) {
+            return pinnedRuntimeVersion;
         }
     }
 
@@ -149,6 +243,8 @@ public class EdtLaunchAppToolTest {
     }
 
     private static class StubRuntimeService extends EdtRuntimeService {
+        volatile String capturedRuntimeVersionMask;
+
         @Override
         public ProcessBuilder buildEnterpriseLaunchProcess(EdtResolvedLaunchContext context,
                 String additionalParameters, File logFile) {
@@ -157,8 +253,10 @@ public class EdtLaunchAppToolTest {
 
         @Override
         public ProcessBuilder buildModeLaunchProcess(String projectName, String mode,
-                String additionalParameters, AccessSettings explicitAccessSettings, File logFile) {
+                String additionalParameters, AccessSettings explicitAccessSettings, File logFile,
+                String runtimeVersionMask) {
             // Marker so the test can assert the mode path was taken (dry_run never starts it).
+            capturedRuntimeVersionMask = runtimeVersionMask;
             return new ProcessBuilder("mode-launch", javaBin(), "-version"); //$NON-NLS-1$ //$NON-NLS-2$
         }
     }
