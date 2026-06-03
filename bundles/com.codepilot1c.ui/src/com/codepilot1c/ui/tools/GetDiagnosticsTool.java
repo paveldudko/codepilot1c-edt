@@ -98,24 +98,14 @@ public class GetDiagnosticsTool implements ITool {
 
     @Override
     public String getDescription() {
-        return "Returns live EDT diagnostics from the UI workbench for a project, file, or the active editor. "  //$NON-NLS-1$
-                + "TOKEN-SAVING TIP: on large modules pass line_from/line_to to get diagnostics for just the method/fragment " //$NON-NLS-1$
-                + "you care about instead of the whole file; also filter with severity/max_items. " //$NON-NLS-1$
-                + "Output is grouped into per-severity sections (### Errors/Warnings/Info). Each diagnostic carries its stable " //$NON-NLS-1$
-                + "rule code in brackets (e.g. [export-procedure-missing-comment], the same id used at v8std.ru). Repeated " //$NON-NLS-1$
-                + "diagnostics of the same rule collapse into a block: '<rule> ×N — lines: 41(×2), 88, …' (per-line counts) " //$NON-NLS-1$
-                + "plus up to 3 distinct sample messages and '(+K more variants)'; singletons stay as '<line>: <message> [rule]' " //$NON-NLS-1$
-                + "with a code snippet. Line numbers are 1-based; there are no byte offsets. " //$NON-NLS-1$
-                + "When you intend to FIX or explain diagnostics, set include_check_help=true: it appends the official " //$NON-NLS-1$
-                + "rule explanation + fix per unique rule (deduplicated) — the authoritative way to learn how to resolve a diagnostic. " //$NON-NLS-1$
-                + "Example — review and fix one module: get_diagnostics(scope=file, path=\"/Proj/src/CommonModules/X/Module.bsl\", include_check_help=true). " //$NON-NLS-1$
-                + "CAUTION: a sudden drop to 0 diagnostics on a file you expected to be dirty usually means EDT is still " //$NON-NLS-1$
-                + "recalculating markers (cold start, or right after an edit/save) — it does NOT prove the file is clean. " //$NON-NLS-1$
-                + "Re-run after a few seconds, or pass wait_ms (up to 5000) to let the recompute settle. " //$NON-NLS-1$
-                + "For .dcs (scope=file) it additionally checks a curated set of elements invalid in the DCS schema " //$NON-NLS-1$
-                + "(e.g. <editFormat>) that the EDT importer silently drops together with the data set. This is a targeted " //$NON-NLS-1$
-                + "check, NOT full schema validation: .dcs is a platform format parsed by EDT's lenient BM importer, " //$NON-NLS-1$
-                + "so a strict parser is unavailable. To verify DCS structure correctness, still open the schema in the designer."; //$NON-NLS-1$
+        return "Live EDT diagnostics (errors/warnings) for a project, file, or active editor; grouped by rule, each tagged " //$NON-NLS-1$
+                + "with its v8-code-style rule code. Options: line_from/line_to to focus on a method and cut tokens on big " //$NON-NLS-1$
+                + "modules; severity/max_items to filter; include_check_help=true to append the official rule explanation+fix " //$NON-NLS-1$
+                + "(use when you intend to FIX); include_runtime_markers (project-wide checks). " //$NON-NLS-1$
+                + "CAUTION: a sudden drop to 0 on a file you expected to be dirty usually means EDT is still recalculating " //$NON-NLS-1$
+                + "markers (cold start / right after an edit) — not a clean file; re-run or pass wait_ms (≤5000). " //$NON-NLS-1$
+                + "For .dcs (scope=file) it also flags curated elements invalid in the DCS schema (e.g. <editFormat>) that EDT's " //$NON-NLS-1$
+                + "lenient importer drops — a targeted check, not full schema validation."; //$NON-NLS-1$
     }
 
     @Override
