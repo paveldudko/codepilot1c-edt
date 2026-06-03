@@ -248,13 +248,21 @@ public class EdtDiagnosticsCollector {
             sb.append(groups.size()).append(" unique rules)\n\n"); //$NON-NLS-1$
 
             boolean includeDebug = isDiagVerbose();
+            // Partition groups into per-severity sections so the **SEVERITY** tag
+            // is printed once as a section header, not repeated on every line.
+            List<List<EdtDiagnostic>> errorGroups = new ArrayList<>();
+            List<List<EdtDiagnostic>> warningGroups = new ArrayList<>();
+            List<List<EdtDiagnostic>> infoGroups = new ArrayList<>();
             for (List<EdtDiagnostic> group : groups.values()) {
-                if (group.size() == 1) {
-                    sb.append(group.get(0).formatForLlm(includeDebug)).append("\n"); //$NON-NLS-1$
-                } else {
-                    sb.append(formatGroup(group)).append("\n"); //$NON-NLS-1$
+                switch (group.get(0).severity()) {
+                    case ERROR -> errorGroups.add(group);
+                    case WARNING -> warningGroups.add(group);
+                    default -> infoGroups.add(group);
                 }
             }
+            appendSeveritySection(sb, "Errors", errorGroups, includeDebug); //$NON-NLS-1$
+            appendSeveritySection(sb, "Warnings", warningGroups, includeDebug); //$NON-NLS-1$
+            appendSeveritySection(sb, "Info", infoGroups, includeDebug); //$NON-NLS-1$
 
             if (checkDetails != null && !checkDetails.isEmpty()) {
                 sb.append("\n## Check details\n\n"); //$NON-NLS-1$
@@ -276,16 +284,37 @@ public class EdtDiagnosticsCollector {
         }
 
         /**
+         * Appends a per-severity section ({@code ### Errors|Warnings|Info}) with
+         * its groups. Singletons render in detail (no severity prefix — the
+         * header carries it); repeats collapse to one grouped line. No-op when
+         * the section is empty.
+         */
+        private static void appendSeveritySection(
+                StringBuilder sb, String title, List<List<EdtDiagnostic>> groups, boolean includeDebug) {
+            if (groups.isEmpty()) {
+                return;
+            }
+            sb.append("### ").append(title).append("\n"); //$NON-NLS-1$ //$NON-NLS-2$
+            for (List<EdtDiagnostic> group : groups) {
+                if (group.size() == 1) {
+                    sb.append(group.get(0).formatForLlm(includeDebug, false)).append("\n"); //$NON-NLS-1$
+                } else {
+                    sb.append(formatGroup(group)).append("\n"); //$NON-NLS-1$
+                }
+            }
+            sb.append("\n"); //$NON-NLS-1$
+        }
+
+        /**
          * Renders a collapsed group of same-rule diagnostics as one compact
-         * line: {@code - **SEV** <rule-or-message> ×N — lines: a, b, c}.
-         * Line numbers are deduplicated and sorted; entries with no precise
-         * line are simply omitted from the list.
+         * line: {@code - <rule-or-message> ×N — lines: a, b, c} (severity comes
+         * from the section header). Line numbers are deduplicated and sorted;
+         * entries with no precise line are omitted from the list.
          */
         private static String formatGroup(List<EdtDiagnostic> group) {
             EdtDiagnostic head = group.get(0);
             StringBuilder sb = new StringBuilder();
-            sb.append("- **").append(head.severity().name()).append("** "); //$NON-NLS-1$ //$NON-NLS-2$
-            sb.append(head.groupLabel()).append(" ×").append(group.size()); //$NON-NLS-1$
+            sb.append("- ").append(head.groupLabel()).append(" ×").append(group.size()); //$NON-NLS-1$ //$NON-NLS-2$
 
             List<Integer> lines = new ArrayList<>();
             for (EdtDiagnostic d : group) {

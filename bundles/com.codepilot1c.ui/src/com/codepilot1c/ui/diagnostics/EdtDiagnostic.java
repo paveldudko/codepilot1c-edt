@@ -184,6 +184,11 @@ public record EdtDiagnostic(
         return formatForLlm(false);
     }
 
+    /** Back-compat: single diagnostic with its severity prefix. */
+    public String formatForLlm(boolean includeDebug) {
+        return formatForLlm(includeDebug, true);
+    }
+
     /**
      * Formats a single diagnostic for LLM output. Used for groups of size 1;
      * repeated diagnostics that share a rule are collapsed by
@@ -192,18 +197,24 @@ public record EdtDiagnostic(
      * @param includeDebug when {@code true}, append debug-only {@code source} /
      *        {@code source_type} lines for inspecting marker provenance. Gated
      *        behind the diagnostics-verbose toggle to avoid token noise.
+     * @param includeSeverity when {@code true}, prefix the line with the
+     *        {@code **SEVERITY**} tag. Pass {@code false} when the caller already
+     *        groups diagnostics under a per-severity section header.
      */
-    public String formatForLlm(boolean includeDebug) {
+    public String formatForLlm(boolean includeDebug, boolean includeSeverity) {
         StringBuilder sb = new StringBuilder();
-        sb.append("- **").append(severity.name()).append("** line ").append(lineNumber); //$NON-NLS-1$ //$NON-NLS-2$
-        if (lineNumber < 0) {
-            sb.setLength(0);
-            sb.append("- **").append(severity.name()).append("**"); //$NON-NLS-1$ //$NON-NLS-2$
+        sb.append("- "); //$NON-NLS-1$
+        if (includeSeverity) {
+            sb.append("**").append(severity.name()).append("** "); //$NON-NLS-1$ //$NON-NLS-2$
         }
-        if (charStart >= 0 && charEnd >= 0 && lineNumber >= 0) {
-            sb.append(" (pos ").append(charStart).append("-").append(charEnd).append(")"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        if (lineNumber >= 0) {
+            sb.append("line ").append(lineNumber); //$NON-NLS-1$
+            if (charStart >= 0 && charEnd >= 0) {
+                sb.append(" (pos ").append(charStart).append("-").append(charEnd).append(")"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            }
+            sb.append(": "); //$NON-NLS-1$
         }
-        sb.append(": ").append(message); //$NON-NLS-1$
+        sb.append(message); //$NON-NLS-1$
         // Stable kebab rule code as a trailing tag, e.g. [export-procedure-missing-comment].
         if (checkId != null && !checkId.isBlank()) {
             sb.append("  [").append(checkId).append("]"); //$NON-NLS-1$ //$NON-NLS-2$
