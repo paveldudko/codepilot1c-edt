@@ -305,40 +305,55 @@ public class EdtDiagnosticsCollector {
             sb.append("\n"); //$NON-NLS-1$
         }
 
+        /** Caps the representative-message sample shown for a collapsed group. */
+        private static final int GROUP_SAMPLE_MAX = 160;
+
         /**
-         * Renders a collapsed group of same-rule diagnostics as one compact
-         * line: {@code - <rule-or-message> ×N — lines: a, b, c} (severity comes
-         * from the section header). Line numbers are deduplicated and sorted;
-         * entries with no precise line are omitted from the list.
+         * Renders a collapsed group of same-rule diagnostics:
+         * <pre>- &lt;rule&gt; ×N — lines: 41(×2), 3376, 3917
+         *     &lt;one representative message&gt;</pre>
+         * Severity comes from the section header. Each line carries its own
+         * occurrence count {@code (×k)} when more than one diagnostic of the
+         * rule sits on it, so the total {@code ×N} always reconciles with the
+         * list. A sample message gives the human-readable nature of the rule
+         * (one of the group's messages — exact per-line specifics are at the
+         * listed lines).
          */
         private static String formatGroup(List<EdtDiagnostic> group) {
             EdtDiagnostic head = group.get(0);
             StringBuilder sb = new StringBuilder();
             sb.append("- ").append(head.groupLabel()).append(" ×").append(group.size()); //$NON-NLS-1$ //$NON-NLS-2$
 
-            List<Integer> lines = new ArrayList<>();
+            // line -> occurrences on that line (sorted by line number)
+            java.util.TreeMap<Integer, Integer> lineCounts = new java.util.TreeMap<>();
             for (EdtDiagnostic d : group) {
                 int ln = d.lineNumber();
-                if (ln > 0 && !lines.contains(ln)) {
-                    lines.add(ln);
+                if (ln > 0) {
+                    lineCounts.merge(ln, 1, Integer::sum);
                 }
             }
-            lines.sort(Comparator.naturalOrder());
-            if (!lines.isEmpty()) {
-                // When several diagnostics of the rule sit on the same line the
-                // distinct-line count is below the occurrence count — spell it
-                // out so "×25" next to 14 lines doesn't read as a bug.
-                if (lines.size() == group.size()) {
-                    sb.append(" — lines: "); //$NON-NLS-1$
-                } else {
-                    sb.append(" (").append(lines.size()).append(" lines): "); //$NON-NLS-1$ //$NON-NLS-2$
-                }
-                for (int i = 0; i < lines.size(); i++) {
-                    if (i > 0) {
+            if (!lineCounts.isEmpty()) {
+                sb.append(" — lines: "); //$NON-NLS-1$
+                boolean first = true;
+                for (Map.Entry<Integer, Integer> e : lineCounts.entrySet()) {
+                    if (!first) {
                         sb.append(", "); //$NON-NLS-1$
                     }
-                    sb.append(lines.get(i));
+                    first = false;
+                    sb.append(e.getKey());
+                    if (e.getValue() > 1) {
+                        sb.append("(×").append(e.getValue()).append(")"); //$NON-NLS-1$ //$NON-NLS-2$
+                    }
                 }
+            }
+
+            String msg = head.message();
+            if (msg != null && !msg.isBlank()) {
+                String sample = msg.strip();
+                if (sample.length() > GROUP_SAMPLE_MAX) {
+                    sample = sample.substring(0, GROUP_SAMPLE_MAX - 1) + "…"; //$NON-NLS-1$
+                }
+                sb.append("\n    ").append(sample); //$NON-NLS-1$
             }
             return sb.toString();
         }
