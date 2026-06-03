@@ -63,7 +63,7 @@ public class GetDiagnosticsTool implements ITool {
                     },
                     "wait_ms": {
                         "type": "integer",
-                        "description": "Time to wait for diagnostics to be recalculated, in ms (0-2000). Default: 0"
+                        "description": "Time to wait for diagnostics to be recalculated before reading, in ms (0-5000, values above are clamped to 5000). Default: 0. Use ~3000 right after a metadata/code mutation so EDT/BSL-LS markers catch up, or when a previous call returned a suspiciously empty/partial snapshot."
                     },
                     "include_runtime_markers": {
                         "type": "boolean",
@@ -101,12 +101,17 @@ public class GetDiagnosticsTool implements ITool {
         return "Returns live EDT diagnostics from the UI workbench for a project, file, or the active editor. "  //$NON-NLS-1$
                 + "TOKEN-SAVING TIP: on large modules pass line_from/line_to to get diagnostics for just the method/fragment " //$NON-NLS-1$
                 + "you care about instead of the whole file; also filter with severity/max_items. " //$NON-NLS-1$
-                + "Each diagnostic is tagged with its stable rule code in brackets (e.g. [export-procedure-missing-comment], " //$NON-NLS-1$
-                + "the same id used at v8std.ru); repeated diagnostics of the same rule are collapsed into one line with a count " //$NON-NLS-1$
-                + "and the list of lines, so big modules stay compact. " //$NON-NLS-1$
+                + "Output is grouped into per-severity sections (### Errors/Warnings/Info). Each diagnostic carries its stable " //$NON-NLS-1$
+                + "rule code in brackets (e.g. [export-procedure-missing-comment], the same id used at v8std.ru). Repeated " //$NON-NLS-1$
+                + "diagnostics of the same rule collapse into a block: '<rule> ×N — lines: 41(×2), 88, …' (per-line counts) " //$NON-NLS-1$
+                + "plus up to 3 distinct sample messages and '(+K more variants)'; singletons stay as '<line>: <message> [rule]' " //$NON-NLS-1$
+                + "with a code snippet. Line numbers are 1-based; there are no byte offsets. " //$NON-NLS-1$
                 + "When you intend to FIX or explain diagnostics, set include_check_help=true: it appends the official " //$NON-NLS-1$
                 + "rule explanation + fix per unique rule (deduplicated) — the authoritative way to learn how to resolve a diagnostic. " //$NON-NLS-1$
                 + "Example — review and fix one module: get_diagnostics(scope=file, path=\"/Proj/src/CommonModules/X/Module.bsl\", include_check_help=true). " //$NON-NLS-1$
+                + "CAUTION: a sudden drop to 0 diagnostics on a file you expected to be dirty usually means EDT is still " //$NON-NLS-1$
+                + "recalculating markers (cold start, or right after an edit/save) — it does NOT prove the file is clean. " //$NON-NLS-1$
+                + "Re-run after a few seconds, or pass wait_ms (up to 5000) to let the recompute settle. " //$NON-NLS-1$
                 + "For .dcs (scope=file) it additionally checks a curated set of elements invalid in the DCS schema " //$NON-NLS-1$
                 + "(e.g. <editFormat>) that the EDT importer silently drops together with the data set. This is a targeted " //$NON-NLS-1$
                 + "check, NOT full schema validation: .dcs is a platform format parsed by EDT's lenient BM importer, " //$NON-NLS-1$
@@ -149,7 +154,7 @@ public class GetDiagnosticsTool implements ITool {
         // Validate parameters
         if (maxItems < 0) maxItems = 0;
         if (waitMs < 0) waitMs = 0;
-        if (waitMs > 2000) waitMs = 2000;
+        if (waitMs > 5000) waitMs = 5000;
         int[] range = com.codepilot1c.core.diagnostics.DiagnosticsLineFilter.normalize(lineFrom, lineTo);
         lineFrom = range[0];
         lineTo = range[1];
