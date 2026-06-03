@@ -195,6 +195,12 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             } catch (EdtToolException e) {
                 return ToolResult.failure(pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage())));
             } catch (Exception e) {
+                if (isBlockedByHttpClients(e)) {
+                    JsonObject error = errorPayload(opId, projectName, workspaceRoot,
+                            EdtToolErrorCode.UPDATE_BLOCKED_BY_HTTP_CLIENTS, e.getMessage());
+                    error.addProperty("hint", HTTP_CLIENTS_HINT); //$NON-NLS-1$
+                    return ToolResult.failure(pretty(error));
+                }
                 return ToolResult.failure(pretty(errorPayload(opId, projectName, workspaceRoot,
                         EdtToolErrorCode.UPDATE_FAILED, e.getMessage())));
             }
@@ -239,10 +245,46 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         } catch (EdtToolException e) {
             return pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage()));
         } catch (Exception e) {
+            if (isBlockedByHttpClients(e)) {
+                JsonObject error = errorPayload(opId, projectName, workspaceRoot,
+                        EdtToolErrorCode.UPDATE_BLOCKED_BY_HTTP_CLIENTS, e.getMessage());
+                error.addProperty("hint", HTTP_CLIENTS_HINT); //$NON-NLS-1$
+                return pretty(error);
+            }
             return pretty(errorPayload(opId, projectName, workspaceRoot,
                     EdtToolErrorCode.UPDATE_FAILED, e.getMessage()));
         }
     }
+
+    /**
+     * Detects the platform's "Cannot perform dynamic database update because clients that run
+     * over HTTP are connected" failure (wsap publication sessions hold a file infobase). Matched
+     * across the cause chain and in both EN/RU platform locales. Feedback
+     * {@code 2026-06-04-web-publication-tool-input.md}: agents previously got an opaque EDT
+     * exception and had to know to stop Apache manually.
+     */
+    private static boolean isBlockedByHttpClients(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            String message = current.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase(java.util.Locale.ROOT);
+                boolean mentionsHttp = lower.contains("http"); //$NON-NLS-1$
+                boolean mentionsClients = lower.contains("client") || lower.contains("клиент"); //$NON-NLS-1$ //$NON-NLS-2$
+                if (mentionsHttp && mentionsClients) {
+                    return true;
+                }
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    private static final String HTTP_CLIENTS_HINT =
+            "Web-publication (wsap) sessions hold this infobase. Stop the web server " //$NON-NLS-1$
+                    + "(web_publication action=restart restarts it; or stop httpd), rerun " //$NON-NLS-1$
+                    + "edt_update_infobase, then restart the publication and re-probe it."; //$NON-NLS-1$
 
     /**
      * Applies the optional runtime pin and reports the platform installation EDT will use.
