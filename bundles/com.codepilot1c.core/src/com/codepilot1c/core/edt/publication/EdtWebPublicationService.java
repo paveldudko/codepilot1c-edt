@@ -160,10 +160,33 @@ public class EdtWebPublicationService {
     public Publication getPublication(String serverName, String name) {
         WebServer server = requireServer(serverName);
         try {
-            return gateway.getPublicationManager().get(server, name);
+            return findPublication(server, name);
         } catch (WebServerAccessException e) {
             throw accessFailed("read publication '" + name + "'", serverName, e); //$NON-NLS-1$ //$NON-NLS-2$
         }
+    }
+
+    /**
+     * Resolves a publication by name tolerating a trailing slash on either side. EDT stores the
+     * Apache publication name with a trailing slash (e.g. {@code agent-current/}, the form
+     * {@code list} returns), but the schema documents the bare alias — so a direct
+     * {@code manager.get(server, "agent-current")} misses it. The fast exact match is tried first;
+     * on a miss we scan {@code getAll} comparing slash-stripped names. Returns {@code null} when no
+     * publication matches.
+     */
+    private Publication findPublication(WebServer server, String name) throws WebServerAccessException {
+        IPublicationManager manager = gateway.getPublicationManager();
+        Publication exact = manager.get(server, name);
+        if (exact != null) {
+            return exact;
+        }
+        String wanted = stripTrailingSlash(name);
+        for (Publication candidate : manager.getAll(server)) {
+            if (wanted.equals(stripTrailingSlash(candidate.getName()))) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     public Optional<URL> getPublicationUrl(String serverName, String name) {
@@ -212,8 +235,21 @@ public class EdtWebPublicationService {
                     "Cannot create publication directory " + effectiveLocation + ": " + e.getMessage(), e); //$NON-NLS-1$ //$NON-NLS-2$
         }
 
+        // Re-point idempotency: when a publication already exists for this name (slash-tolerant),
+        // reuse its exact stored name so the delegate updates that alias's blocks in place instead
+        // of writing a second, differently-named publication next to it.
+        String effectiveName = name;
+        try {
+            Publication existing = findPublication(server, name);
+            if (existing != null && existing.getName() != null) {
+                effectiveName = existing.getName();
+            }
+        } catch (WebServerAccessException e) {
+            throw accessFailed("inspect existing publication '" + name + "'", serverName, e); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+
         InfobasePublication publication = ModelFactory.eINSTANCE.createInfobasePublication();
-        publication.setName(name);
+        publication.setName(effectiveName);
         publication.setLocation(effectiveLocation.toString());
         publication.setInfobaseConnection(infobaseConnection);
         publication.setEnable(true);
@@ -242,7 +278,7 @@ public class EdtWebPublicationService {
         WebServer server = requireServer(serverName);
         IPublicationManager manager = gateway.getPublicationManager();
         try {
-            Publication publication = manager.get(server, name);
+            Publication publication = findPublication(server, name);
             if (publication == null) {
                 throw new EdtToolException(EdtToolErrorCode.PUBLICATION_NOT_FOUND,
                         "Publication '" + name + "' not found on web server '" + serverName + "'"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
@@ -358,14 +394,25 @@ public class EdtWebPublicationService {
         return stopped;
     }
 
-    /** Simple HTTP GET reachability probe for a freshly (re)published endpoint. */
-    public ProbeOutcome probe(String url, int timeoutMs) {
+    /**
+     * HTTP GET reachability probe for a freshly (re)published endpoint. When {@code user} is set,
+     * sends HTTP Basic auth — 1C HTTP/web services with mandatory authentication answer 401
+     * without it, so an unauthenticated probe is useless as a success gate (a live, auth-required
+     * endpoint and a down one both look like failure).
+     */
+    public ProbeOutcome probe(String url, int timeoutMs, String user, String password) {
         long start = System.currentTimeMillis();
         try {
             HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
             connection.setConnectTimeout(timeoutMs);
             connection.setReadTimeout(timeoutMs);
             connection.setRequestMethod("GET"); //$NON-NLS-1$
+            if (user != null && !user.isBlank()) {
+                String credentials = user + ":" + (password == null ? "" : password); //$NON-NLS-1$ //$NON-NLS-2$
+                String token = java.util.Base64.getEncoder().encodeToString(
+                        credentials.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                connection.setRequestProperty("Authorization", "Basic " + token); //$NON-NLS-1$ //$NON-NLS-2$
+            }
             int status = connection.getResponseCode();
             connection.disconnect();
             return new ProbeOutcome(status, System.currentTimeMillis() - start);
@@ -438,6 +485,17 @@ public class EdtWebPublicationService {
             throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
                     "Unsupported Apache version '" + apacheVersion + "' (expected 2.0, 2.2 or 2.4)"); //$NON-NLS-1$ //$NON-NLS-2$
         }
+    }
+
+    private static String stripTrailingSlash(String name) {
+        if (name == null) {
+            return ""; //$NON-NLS-1$
+        }
+        String trimmed = name.trim();
+        while (trimmed.endsWith("/") || trimmed.endsWith("\\")) { //$NON-NLS-1$ //$NON-NLS-2$
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
+        }
+        return trimmed;
     }
 
     private static boolean samePath(Path left, Path right) {

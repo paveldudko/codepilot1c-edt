@@ -56,7 +56,7 @@ public class WebPublicationTool extends AbstractTool {
                 },
                 "name": {
                   "type": "string",
-                  "description": "Имя публикации (alias без слешей, напр. 'agent-current'). Для get/publish/remove."
+                  "description": "Имя публикации/alias, напр. 'agent-current' (трейлинг-слеш игнорируется — принимается и 'agent-current', и 'agent-current/'). Для get/publish/remove."
                 },
                 "install_location": {
                   "type": "string",
@@ -93,6 +93,14 @@ public class WebPublicationTool extends AbstractTool {
                 "probe_url": {
                   "type": "string",
                   "description": "publish/restart/probe: URL для HTTP GET проверки после операции (ожидается 200)."
+                },
+                "probe_user": {
+                  "type": "string",
+                  "description": "probe: логин HTTP Basic — нужен для сервисов с обязательной аутентификацией (иначе 401, probe непригоден как success-gate). Требует probe_password."
+                },
+                "probe_password": {
+                  "type": "string",
+                  "description": "probe: пароль к probe_user (в результате не возвращается)."
                 },
                 "timeout_s": {
                   "type": "integer",
@@ -257,15 +265,7 @@ public class WebPublicationTool extends AbstractTool {
 
     private void doProbe(Map<String, Object> parameters, JsonObject result) {
         String url = requireString(parameters, "probe_url"); //$NON-NLS-1$
-        int timeoutS = asInt(get(parameters, "timeout_s"), DEFAULT_PROBE_TIMEOUT_S); //$NON-NLS-1$
-        EdtWebPublicationService.ProbeOutcome outcome = publicationService.probe(url, timeoutS * 1000);
-        result.addProperty("probe_url", url); //$NON-NLS-1$
-        result.addProperty("probe_status", outcome.statusCode()); //$NON-NLS-1$
-        result.addProperty("probe_elapsed_ms", outcome.elapsedMs()); //$NON-NLS-1$
-        if (outcome.statusCode() >= 400) {
-            throw new EdtToolException(EdtToolErrorCode.PROBE_FAILED,
-                    "Probe of " + url + " returned HTTP " + outcome.statusCode()); //$NON-NLS-1$ //$NON-NLS-2$
-        }
+        runProbe(parameters, url, result);
     }
 
     private void maybeRestart(Map<String, Object> parameters, String serverName, JsonObject result) {
@@ -282,14 +282,24 @@ public class WebPublicationTool extends AbstractTool {
         if (probeUrl == null) {
             return;
         }
+        runProbe(parameters, probeUrl, result);
+    }
+
+    private void runProbe(Map<String, Object> parameters, String url, JsonObject result) {
         int timeoutS = asInt(get(parameters, "timeout_s"), DEFAULT_PROBE_TIMEOUT_S); //$NON-NLS-1$
-        EdtWebPublicationService.ProbeOutcome outcome = publicationService.probe(probeUrl, timeoutS * 1000);
-        result.addProperty("probe_url", probeUrl); //$NON-NLS-1$
+        String user = asString(get(parameters, "probe_user")); //$NON-NLS-1$
+        String password = asString(get(parameters, "probe_password")); //$NON-NLS-1$
+        EdtWebPublicationService.ProbeOutcome outcome =
+                publicationService.probe(url, timeoutS * 1000, user, password);
+        result.addProperty("probe_url", url); //$NON-NLS-1$
         result.addProperty("probe_status", outcome.statusCode()); //$NON-NLS-1$
         result.addProperty("probe_elapsed_ms", outcome.elapsedMs()); //$NON-NLS-1$
+        result.addProperty("probe_authenticated", user != null); //$NON-NLS-1$
         if (outcome.statusCode() >= 400) {
             throw new EdtToolException(EdtToolErrorCode.PROBE_FAILED,
-                    "Probe of " + probeUrl + " returned HTTP " + outcome.statusCode()); //$NON-NLS-1$ //$NON-NLS-2$
+                    "Probe of " + url + " returned HTTP " + outcome.statusCode() //$NON-NLS-1$ //$NON-NLS-2$
+                            + (outcome.statusCode() == 401 && user == null
+                                    ? " — endpoint requires auth; pass probe_user/probe_password" : "")); //$NON-NLS-1$ //$NON-NLS-2$
         }
     }
 

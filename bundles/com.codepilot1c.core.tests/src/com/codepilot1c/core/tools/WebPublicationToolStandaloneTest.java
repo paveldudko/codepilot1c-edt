@@ -121,6 +121,41 @@ public class WebPublicationToolStandaloneTest {
     }
 
     @Test
+    public void probePassesCredentialsToService() {
+        StubPublicationService service = new StubPublicationService();
+        service.probeStatus = 200;
+        WebPublicationTool tool = new WebPublicationTool(service, new EdtRuntimeService());
+
+        ToolResult result = tool.execute(Map.of(
+                "action", "probe", //$NON-NLS-1$ //$NON-NLS-2$
+                "probe_url", "http://localhost:8090/agent-current/hs/bsl-analyzer/version", //$NON-NLS-1$ //$NON-NLS-2$
+                "probe_user", "agent", //$NON-NLS-1$ //$NON-NLS-2$
+                "probe_password", "secret")).join(); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue("authenticated 200 probe must succeed", result.isSuccess()); //$NON-NLS-1$
+        assertEquals("agent", service.lastProbeUser); //$NON-NLS-1$
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        assertTrue(json.get("probe_authenticated").getAsBoolean()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void probe401WithoutCredentialsHintsAuth() {
+        StubPublicationService service = new StubPublicationService();
+        service.probeStatus = 401;
+        WebPublicationTool tool = new WebPublicationTool(service, new EdtRuntimeService());
+
+        ToolResult result = tool.execute(Map.of(
+                "action", "probe", //$NON-NLS-1$ //$NON-NLS-2$
+                "probe_url", "http://localhost:8090/agent-current/hs/bsl-analyzer/version")).join(); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertFalse("401 probe must fail", result.isSuccess()); //$NON-NLS-1$
+        JsonObject json = JsonParser.parseString(result.getErrorMessage()).getAsJsonObject();
+        assertEquals(EdtToolErrorCode.PROBE_FAILED.name(), json.get("error_code").getAsString()); //$NON-NLS-1$
+        assertTrue("401-without-creds message must hint probe_user/probe_password", //$NON-NLS-1$
+                json.get("message").getAsString().contains("probe_user")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
     public void registerServerValidatesLocationsBeforeTouchingEdt() {
         EdtWebPublicationService service = new EdtWebPublicationService();
         try {
@@ -187,8 +222,11 @@ public class WebPublicationToolStandaloneTest {
             return new RestartOutcome("kill_start", List.of(123L), 456L, "httpd -d ... -f ..."); //$NON-NLS-1$ //$NON-NLS-2$
         }
 
+        String lastProbeUser;
+
         @Override
-        public ProbeOutcome probe(String url, int timeoutMs) {
+        public ProbeOutcome probe(String url, int timeoutMs, String user, String password) {
+            lastProbeUser = user;
             return new ProbeOutcome(probeStatus, 5L);
         }
     }
