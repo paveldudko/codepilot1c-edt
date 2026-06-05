@@ -90,6 +90,7 @@ import com._1c.g5.v8.dt.form.service.FormItemInformationService;
 import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.form.model.Form;
 import com._1c.g5.v8.dt.form.model.FormAttribute;
+import com._1c.g5.v8.dt.form.model.FormAttributeColumn;
 import com._1c.g5.v8.dt.form.model.FormCommand;
 import com._1c.g5.v8.dt.form.model.FormCommandHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormFactory;
@@ -3578,6 +3579,10 @@ public class EdtMetadataService {
                     applyFormAttributeType(created, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
                 }
                 applyFormAttributePatch(created, patch.patch);
+                if (patch.columnsValue != null) {
+                    applyFormAttributeColumns(
+                            formModel, created, patch.columnsValue, transaction, preResolvedTypes, txConfiguration);
+                }
                 stats.created++;
                 byId.put(created.getId(), created);
                 if (created.getName() != null) {
@@ -3596,6 +3601,10 @@ public class EdtMetadataService {
                 applyFormAttributeType(existing, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
             }
             applyFormAttributePatch(existing, patch.patch);
+            if (patch.columnsValue != null) {
+                applyFormAttributeColumns(
+                        formModel, existing, patch.columnsValue, transaction, preResolvedTypes, txConfiguration);
+            }
             stats.updated++;
         }
 
@@ -3643,6 +3652,16 @@ public class EdtMetadataService {
             typeValue = setType != null ? setType : propsType;
         }
 
+        // Columns belong to ValueTable / ValueTree form attributes and are handled by a
+        // dedicated child-attribute applier — hoist them out of the generic property set so
+        // they do not reach applyFormPropertySet (which would reject the containment ref).
+        Object columnsValue = removeMapValueIgnoreCase(patch, "columns"); //$NON-NLS-1$
+        Object setColumns = removeMapValueIgnoreCase(set, "columns"); //$NON-NLS-1$
+        Object propsColumns = removeMapValueIgnoreCase(props, "columns"); //$NON-NLS-1$
+        if (columnsValue == null) {
+            columnsValue = setColumns != null ? setColumns : propsColumns;
+        }
+
         if (!set.isEmpty()) {
             patch.put("set", set); //$NON-NLS-1$
         } else {
@@ -3653,11 +3672,11 @@ public class EdtMetadataService {
         } else {
             patch.remove("properties"); //$NON-NLS-1$
         }
-        return new FormAttributePatch(patch, typeValue);
+        return new FormAttributePatch(patch, typeValue, columnsValue);
     }
 
     private void applyFormAttributeType(
-            FormAttribute attribute,
+            AbstractFormAttribute attribute,
             Object typeValue,
             IBmPlatformTransaction transaction,
             Map<String, TypeItem> preResolvedTypes,
@@ -3847,6 +3866,121 @@ public class EdtMetadataService {
         return maxId + 1;
     }
 
+    /**
+     * Next free id across the whole form-attribute tree — top-level attributes AND their
+     * columns share one id space, so a {@link FormAttributeColumn} must not collide with any
+     * existing attribute or column id.
+     */
+    private int nextFormMemberId(Form formModel) {
+        int maxId = 0;
+        if (formModel != null) {
+            for (FormAttribute attribute : formModel.getAttributes()) {
+                if (attribute == null) {
+                    continue;
+                }
+                maxId = Math.max(maxId, attribute.getId());
+                for (FormAttributeColumn column : attribute.getColumns()) {
+                    if (column != null) {
+                        maxId = Math.max(maxId, column.getId());
+                    }
+                }
+            }
+        }
+        return maxId + 1;
+    }
+
+    /**
+     * Applies {@code columns} descriptors to a ValueTable/ValueTree form attribute, creating
+     * (or updating/removing) {@link FormAttributeColumn} children with their own name and
+     * resolved valueType. Each descriptor is {@code {name, type[, action]}}; type resolution
+     * reuses {@link #applyFormAttributeType} (so column types go through the same
+     * pre-resolution → BM/namespace → TypeProviderService → configuration-scan chain as
+     * top-level attributes).
+     */
+    private void applyFormAttributeColumns(
+            Form formModel,
+            FormAttribute parent,
+            Object columnsValue,
+            IBmPlatformTransaction transaction,
+            Map<String, TypeItem> preResolvedTypes,
+            Configuration txConfiguration
+    ) {
+        List<Map<String, Object>> columnDescriptors = normalizeColumnDescriptors(columnsValue);
+        if (columnDescriptors.isEmpty()) {
+            return;
+        }
+        Map<String, FormAttributeColumn> byName = new HashMap<>();
+        for (FormAttributeColumn column : parent.getColumns()) {
+            if (column != null && column.getName() != null && !column.getName().isBlank()) {
+                byName.put(normalizeToken(column.getName()), column);
+            }
+        }
+        for (Map<String, Object> descriptor : columnDescriptors) {
+            if (descriptor == null || descriptor.isEmpty()) {
+                continue;
+            }
+            String action = resolveFormAttributeAction(descriptor);
+            String name = asString(getMapValueIgnoreCase(descriptor, "name")); //$NON-NLS-1$
+            if (name == null) {
+                name = asString(getMapValueIgnoreCase(descriptor, "column")); //$NON-NLS-1$
+            }
+            FormAttributeColumn existing = name == null ? null : byName.get(normalizeToken(name));
+
+            if ("remove".equals(action)) { //$NON-NLS-1$
+                if (existing != null) {
+                    parent.getColumns().remove(existing);
+                    if (existing.getName() != null) {
+                        byName.remove(normalizeToken(existing.getName()));
+                    }
+                }
+                continue;
+            }
+
+            FormAttributePatch patch = normalizeFormAttributePatch(descriptor);
+            FormAttributeColumn target = existing;
+            if (target == null) {
+                if (!MetadataNameValidator.isValidName(name)) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.INVALID_METADATA_NAME,
+                            "Invalid form attribute column name: " + name, false); //$NON-NLS-1$
+                }
+                target = FormFactory.eINSTANCE.createFormAttributeColumn();
+                target.setId(nextFormMemberId(formModel));
+                target.setName(name);
+                parent.getColumns().add(target);
+                byName.put(normalizeToken(name), target);
+            }
+            if (patch.typeValue != null) {
+                applyFormAttributeType(target, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
+            }
+        }
+    }
+
+    private List<Map<String, Object>> normalizeColumnDescriptors(Object value) {
+        if (value == null) {
+            return List.of();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (value instanceof List<?> list) {
+            for (Object entry : list) {
+                Map<String, Object> map = asMap(entry);
+                if (!map.isEmpty()) {
+                    result.add(new LinkedHashMap<>(map));
+                }
+            }
+        } else if (value instanceof Map<?, ?>) {
+            Map<String, Object> single = asMap(value);
+            if (!single.isEmpty()) {
+                result.add(new LinkedHashMap<>(single));
+            }
+        } else {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "columns must be a list of {name, type} descriptors", false); //$NON-NLS-1$
+        }
+        return result;
+    }
+
     private Map<String, TypeItem> preResolveFormAttributeTypes(
             IProject project,
             List<Map<String, Object>> attributes
@@ -3917,8 +4051,44 @@ public class EdtMetadataService {
             if (typeQuery != null && !typeQuery.isBlank()) {
                 typeStrings.add(typeQuery);
             }
+            collectColumnTypeStrings(descriptor, typeStrings);
         }
         return typeStrings;
+    }
+
+    /** Adds the valueType query of each {@code columns} descriptor to {@code typeStrings}. */
+    private void collectColumnTypeStrings(Map<String, Object> descriptor, Set<String> typeStrings) {
+        Object columns = getMapValueIgnoreCase(descriptor, "columns"); //$NON-NLS-1$
+        if (columns == null) {
+            columns = getMapValueIgnoreCase(asMap(descriptor.get("set")), "columns"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (columns == null) {
+            columns = getMapValueIgnoreCase(asMap(descriptor.get("properties")), "columns"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (!(columns instanceof List<?> columnList)) {
+            return;
+        }
+        for (Object entry : columnList) {
+            Map<String, Object> column = asMap(entry);
+            if (column.isEmpty()) {
+                continue;
+            }
+            Object columnType = getMapValueIgnoreCase(column, "type"); //$NON-NLS-1$
+            if (columnType == null) {
+                columnType = getMapValueIgnoreCase(column, "field_type"); //$NON-NLS-1$
+            }
+            if (columnType == null) {
+                columnType = getMapValueIgnoreCase(column, "fieldType"); //$NON-NLS-1$
+            }
+            if (columnType == null) {
+                continue;
+            }
+            TypeSpec spec = normalizeTypeSpec(columnType);
+            String typeQuery = spec == null ? null : spec.typeQuery();
+            if (typeQuery != null && !typeQuery.isBlank()) {
+                typeStrings.add(typeQuery);
+            }
+        }
     }
 
     private DataPath toDataPath(Object value, String fieldName) {
@@ -12093,7 +12263,7 @@ public class EdtMetadataService {
         }
     }
 
-    private record FormAttributePatch(Map<String, Object> patch, Object typeValue) {
+    private record FormAttributePatch(Map<String, Object> patch, Object typeValue, Object columnsValue) {
     }
 
     private record FormRecipeApplyResult(FormAttributeRecipeStats stats, List<String> layoutSummaries) {
