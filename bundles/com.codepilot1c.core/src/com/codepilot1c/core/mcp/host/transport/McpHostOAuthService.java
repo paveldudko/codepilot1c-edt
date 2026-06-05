@@ -22,6 +22,7 @@ import com.google.gson.JsonSyntaxException;
 
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.settings.SecureStorageUtil;
+import com.codepilot1c.core.settings.WorkspaceScope;
 
 /**
  * Minimal OAuth 2.1 authorization server for MCP Host HTTP transport.
@@ -61,6 +62,8 @@ public class McpHostOAuthService {
     private final String registrationEndpoint;
     private final String staticBearerToken;
 
+    private final String oauthStateKey = OAUTH_STATE_SECURE_KEY;
+    private final String legacyScopedStateKey = WorkspaceScope.scopedKey(OAUTH_STATE_SECURE_KEY);
     private final SecureRandom secureRandom = new SecureRandom();
     private final Gson gson = new Gson();
     private final Object stateLock = new Object();
@@ -587,7 +590,16 @@ public class McpHostOAuthService {
         if (!SecureStorageUtil.isAvailable()) {
             return;
         }
-        String json = SecureStorageUtil.retrieveSecurely(OAUTH_STATE_SECURE_KEY, ""); //$NON-NLS-1$
+        String json = SecureStorageUtil.retrieveWorkspaceSecurely(oauthStateKey, ""); //$NON-NLS-1$
+        if (json == null || json.isBlank()) {
+            // One-time migration from the previously shared default store so an upgraded
+            // setup keeps its registered clients / refresh tokens. Try the workspace-scoped
+            // key first (prior key-scoping fix), then the legacy unscoped key.
+            json = SecureStorageUtil.retrieveSecurely(legacyScopedStateKey, ""); //$NON-NLS-1$
+            if (json == null || json.isBlank()) {
+                json = SecureStorageUtil.retrieveSecurely(OAUTH_STATE_SECURE_KEY, ""); //$NON-NLS-1$
+            }
+        }
         if (json == null || json.isBlank()) {
             return;
         }
@@ -659,7 +671,7 @@ public class McpHostOAuthService {
             }
             state.usedRefreshTokens = new LinkedHashMap<>(usedRefreshTokens);
             state.revokedRefreshFamilies = new LinkedHashMap<>(revokedRefreshFamilies);
-            SecureStorageUtil.storeSecurely(OAUTH_STATE_SECURE_KEY, gson.toJson(state));
+            SecureStorageUtil.storeWorkspaceSecurely(oauthStateKey, gson.toJson(state));
         }
     }
 

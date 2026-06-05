@@ -7,6 +7,7 @@ import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.settings.SecureStorageUtil;
 import com.codepilot1c.core.settings.VibePreferenceConstants;
+import com.codepilot1c.core.settings.WorkspaceScope;
 
 /**
  * Preference-backed config store for MCP host.
@@ -40,10 +41,23 @@ public class McpHostConfigStore {
             VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS,
             cfg.getExposedToolsFilter()));
 
-        String token = SecureStorageUtil.retrieveSecurely(TOKEN_SECURE_KEY, ""); //$NON-NLS-1$
+        String token = SecureStorageUtil.retrieveWorkspaceSecurely(TOKEN_SECURE_KEY, ""); //$NON-NLS-1$
+        if (token.isBlank()) {
+            // Migrate a token from the previously shared default store so an existing setup
+            // keeps the bearer token its MCP client is configured with. Try the workspace-scoped
+            // key first (written by the prior key-scoping fix), then the legacy unscoped key.
+            String legacy = SecureStorageUtil.retrieveSecurely(WorkspaceScope.scopedKey(TOKEN_SECURE_KEY), ""); //$NON-NLS-1$
+            if (legacy.isBlank()) {
+                legacy = SecureStorageUtil.retrieveSecurely(TOKEN_SECURE_KEY, ""); //$NON-NLS-1$
+            }
+            if (!legacy.isBlank()) {
+                token = legacy;
+                SecureStorageUtil.storeWorkspaceSecurely(TOKEN_SECURE_KEY, token);
+            }
+        }
         if (token.isBlank()) {
             token = McpHostConfig.generateToken();
-            SecureStorageUtil.storeSecurely(TOKEN_SECURE_KEY, token);
+            SecureStorageUtil.storeWorkspaceSecurely(TOKEN_SECURE_KEY, token);
         }
         cfg.setBearerToken(token);
 
@@ -112,7 +126,7 @@ public class McpHostConfigStore {
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_AUTH_MODE, cfg.getAuthMode().name());
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION, cfg.getMutationPolicy().name());
         prefs.put(VibePreferenceConstants.PREF_MCP_HOST_POLICY_EXPOSED_TOOLS, cfg.getExposedToolsFilter());
-        SecureStorageUtil.storeSecurely(TOKEN_SECURE_KEY, cfg.getBearerToken());
+        SecureStorageUtil.storeWorkspaceSecurely(TOKEN_SECURE_KEY, cfg.getBearerToken());
 
         try {
             prefs.flush();
