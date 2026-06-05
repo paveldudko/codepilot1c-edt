@@ -3716,18 +3716,15 @@ public class EdtMetadataService {
             if (canonicalBuiltIn != null) {
                 throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                        canonicalBuiltIn + " is a platform built-in type that is not yet referenced" //$NON-NLS-1$
-                                + " by any attribute in this project, so the configuration-scan" //$NON-NLS-1$
-                                + " fallback could not locate a matching TypeItem. The proper" //$NON-NLS-1$
-                                + " fix routes through TypeProviderService (xtext scoping)," //$NON-NLS-1$
-                                + " which is a larger change. Workaround for first-time use:" //$NON-NLS-1$
-                                + " create one form attribute of this type via direct .form XML" //$NON-NLS-1$
-                                + " edit (Edit/Write tools) using a sibling form's <attributes>" //$NON-NLS-1$
-                                + " <valueType><types>" + canonicalBuiltIn + "</types></valueType>" //$NON-NLS-1$ //$NON-NLS-2$
-                                + " block as a template; subsequent apply_form_recipe calls" //$NON-NLS-1$
-                                + " referencing " + canonicalBuiltIn + " will find the existing" //$NON-NLS-1$ //$NON-NLS-2$
-                                + " TypeItem and succeed. See playbook §21.6.4a for the" //$NON-NLS-1$
-                                + " tabular-section end-to-end pattern.", //$NON-NLS-1$
+                        canonicalBuiltIn + " (platform built-in type) could not be resolved for this" //$NON-NLS-1$
+                                + " form attribute via TypeProviderService (xtext scoping), the" //$NON-NLS-1$
+                                + " BM/namespace probes, or the configuration scan. This is" //$NON-NLS-1$
+                                + " unexpected for a built-in type and usually means the form is" //$NON-NLS-1$
+                                + " not yet fully indexed by EDT — reopen/rebuild the project and" //$NON-NLS-1$
+                                + " retry. Fallback workaround: create one form attribute of this" //$NON-NLS-1$
+                                + " type via direct .form XML edit (Edit/Write tools) using a" //$NON-NLS-1$
+                                + " sibling form's <attributes><valueType><types>" + canonicalBuiltIn //$NON-NLS-1$
+                                + "</types></valueType> block as a template.", //$NON-NLS-1$
                         false);
             }
             throw new MetadataOperationException(
