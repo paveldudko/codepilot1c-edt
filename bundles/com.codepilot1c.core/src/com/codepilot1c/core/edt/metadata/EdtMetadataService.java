@@ -93,6 +93,7 @@ import com._1c.g5.v8.dt.form.model.FormAttribute;
 import com._1c.g5.v8.dt.form.model.FormCommand;
 import com._1c.g5.v8.dt.form.model.FormCommandHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormFactory;
+import com._1c.g5.v8.dt.form.model.FormPackage;
 import com._1c.g5.v8.dt.form.model.FieldExtInfo;
 import com._1c.g5.v8.dt.form.model.FormField;
 import com._1c.g5.v8.dt.form.model.CheckBoxFieldExtInfo;
@@ -3566,12 +3567,17 @@ public class EdtMetadataService {
                 FormAttribute created = FormFactory.eINSTANCE.createFormAttribute();
                 created.setId(nextFormAttributeId(formModel));
                 created.setName(name);
+                // Attach to the form before resolving the type so TypeProviderService
+                // (xtext scoping) sees the real form/configuration context — required for
+                // platform built-in types (ValueTable, Array, …) not yet referenced
+                // elsewhere in the configuration. On any failure below the enclosing
+                // write transaction aborts, so a half-built attribute is never persisted.
+                formModel.getAttributes().add(created);
                 FormAttributePatch patch = normalizeFormAttributePatch(descriptor);
                 if (patch.typeValue != null) {
                     applyFormAttributeType(created, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
                 }
                 applyFormAttributePatch(created, patch.patch);
-                formModel.getAttributes().add(created);
                 stats.created++;
                 byId.put(created.getId(), created);
                 if (created.getName() != null) {
@@ -3697,6 +3703,13 @@ public class EdtMetadataService {
                     txTypeItem = simple;
                 }
             }
+        }
+        if (txTypeItem == null) {
+            // Platform built-in types (ValueTable, Array, Structure, …) that are not yet
+            // referenced anywhere in the configuration are invisible to the BM/namespace and
+            // configuration-scan probes above. Resolve them through TypeProviderService, the
+            // same xtext-scoping route the form editor uses for an attribute's valueType.
+            txTypeItem = resolveFormAttributeTypeViaTypeProvider(attribute, txConfiguration, typeQuery, transaction);
         }
         if (txTypeItem == null) {
             String canonicalBuiltIn = canonicalPlatformBuiltInTypeName(typeQuery);
@@ -8833,25 +8846,75 @@ public class EdtMetadataService {
     }
 
     private TypeItem resolveTypeItemFromTypeProvider(BasicFeature feature, EObject context, String typeQuery) {
-        if (feature == null || typeQuery == null || typeQuery.isBlank()) {
+        if (feature == null) {
             return null;
         }
         EReference typeReference = resolveTypeReference(feature);
         if (typeReference == null) {
             return null;
         }
+        return resolveTypeItemViaTypeProvider(feature, typeReference, context, typeQuery);
+    }
+
+    /**
+     * Resolves a form attribute's {@code valueType} through TypeProviderService — the xtext
+     * scoping route that knows platform built-in types (ValueTable, Array, Structure, Map,
+     * ValueList, …) even when no attribute in the configuration references them yet. This is
+     * the path the BM/namespace and configuration-scan probes in {@link #applyFormAttributeType}
+     * cannot reach for first-use built-ins. The attribute must already be attached to its form
+     * so scoping has the surrounding form/configuration context.
+     */
+    private TypeItem resolveFormAttributeTypeViaTypeProvider(
+            AbstractFormAttribute attribute,
+            EObject context,
+            String typeQuery,
+            IBmPlatformTransaction transaction
+    ) {
+        if (attribute == null) {
+            return null;
+        }
+        TypeItem resolved = resolveTypeItemViaTypeProvider(
+                attribute,
+                FormPackage.eINSTANCE.getAbstractFormAttribute_ValueType(),
+                context,
+                typeQuery);
+        if (resolved == null) {
+            return null;
+        }
+        try {
+            TypeItem txTypeItem = transaction.toTransactionObject(resolved);
+            if (txTypeItem != null) {
+                return txTypeItem;
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("resolveFormAttributeTypeViaTypeProvider: toTransactionObject failed for type=%s: %s", //$NON-NLS-1$
+                    typeQuery,
+                    e.getMessage());
+        }
+        return resolved;
+    }
+
+    private TypeItem resolveTypeItemViaTypeProvider(
+            EObject object,
+            EReference typeReference,
+            EObject context,
+            String typeQuery
+    ) {
+        if (object == null || typeReference == null || typeQuery == null || typeQuery.isBlank()) {
+            return null;
+        }
         Set<String> queries = expandTypeQueries(typeQuery);
         try {
             TypeDescriptionInfoWithTypeInfo info = TypeProviderService.INSTANCE
-                    .getTypeDescriptionInfoWithTypeInfo(feature, typeReference, null);
+                    .getTypeDescriptionInfoWithTypeInfo(object, typeReference, null);
             TypeItem direct = findTypeItemInTypeInfo(info, queries);
             if (direct != null) {
                 return direct;
             }
         } catch (RuntimeException e) {
-            LOG.debug("TypeProviderService resolve failed for type=%s feature=%s: %s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService resolve failed for type=%s object=%s: %s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
+                    object.eClass().getName(),
                     e.getMessage());
         }
         if (context == null) {
@@ -8859,20 +8922,20 @@ public class EdtMetadataService {
         }
         try {
             TypeDescriptionInfoWithTypeInfo contextualInfo = TypeProviderService.INSTANCE
-                    .getTypeDescriptionInfoWithTypeInfo(feature, context, typeReference, null);
+                    .getTypeDescriptionInfoWithTypeInfo(object, context, typeReference, null);
             TypeItem contextual = findTypeItemInTypeInfo(contextualInfo, queries);
             if (contextual != null) {
                 return contextual;
             }
-            LOG.debug("TypeProviderService returned no matching types for type=%s feature=%s context=%s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService returned no matching types for type=%s object=%s context=%s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
+                    object.eClass().getName(),
                     context.eClass().getName());
             return null;
         } catch (RuntimeException e) {
-            LOG.debug("TypeProviderService contextual resolve failed for type=%s feature=%s context=%s: %s", //$NON-NLS-1$
+            LOG.debug("TypeProviderService contextual resolve failed for type=%s object=%s context=%s: %s", //$NON-NLS-1$
                     typeQuery,
-                    feature.eClass().getName(),
+                    object.eClass().getName(),
                     context.eClass().getName(),
                     e.getMessage());
             return null;
