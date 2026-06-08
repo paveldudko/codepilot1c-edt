@@ -1156,11 +1156,12 @@ public class EdtMetadataService {
                             index,
                             itemManagementService);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title"); //$NON-NLS-1$ //$NON-NLS-2$
+                    ensureFormFieldExtInfo(field);
+                    applyInputFieldExtInfoProperties(field, effectiveSet);
                     if (!effectiveSet.isEmpty()) {
                         applyFormPropertySet(field, effectiveSet, configuration);
                     }
                     applyDefaultVisibility(field, effectiveSet);
-                    ensureFormFieldExtInfo(field);
                     summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
                             + safeItemId(field)); //$NON-NLS-1$
                 }
@@ -1230,6 +1231,9 @@ public class EdtMetadataService {
                     applyGroupKindMutation(item, set);
                     if (item instanceof FormGroup formGroup) {
                         applyUsualGroupLayoutProperties(formGroup, set);
+                    }
+                    if (item instanceof FormField field) {
+                        applyInputFieldExtInfoProperties(field, set);
                     }
                     applyFormPropertySet(item, set, configuration);
                     summaries.add("set_item[" + operationIndex + "]: id=" + item.getId()); //$NON-NLS-1$ //$NON-NLS-2$
@@ -2450,6 +2454,71 @@ public class EdtMetadataService {
     }
 
     /**
+     * Hoists layout/sizing properties that live on {@link InputFieldExtInfo}
+     * ({@code height}, {@code autoMaxWidth}, {@code horizontalStretch},
+     * {@code verticalStretch}, {@code maxWidth}, {@code maxHeight}, {@code autoMaxHeight})
+     * out of {@code set} before the generic feature resolver runs.
+     *
+     * <p>These properties are NOT on FormField directly — they reside on the nested
+     * {@code InputFieldExtInfo}. {@link #applyFormPropertySet} would otherwise reject them
+     * as unknown. Recognized keys are removed from {@code set} so the downstream pass
+     * does not retry them.</p>
+     *
+     * <p>No-op when the field carries a non-InputFieldExtInfo (CheckBox, RadioButtons, Label).</p>
+     */
+    private void applyInputFieldExtInfoProperties(FormField field, Map<String, Object> set) {
+        if (field == null || set == null || set.isEmpty()) {
+            return;
+        }
+        if (!(field.getExtInfo() instanceof InputFieldExtInfo extInfo)) {
+            return;
+        }
+        Object height = removeMapValueIgnoreCase(set, "height"); //$NON-NLS-1$
+        if (height != null) {
+            Integer parsed = parseInteger(height);
+            if (parsed != null) {
+                extInfo.setHeight(parsed.intValue());
+            }
+        }
+        Object autoMaxWidth = removeMapValueIgnoreCase(set, "autoMaxWidth", "auto_max_width"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (autoMaxWidth != null) {
+            Boolean parsed = parseBoolean(autoMaxWidth);
+            if (parsed != null) {
+                extInfo.setAutoMaxWidth(parsed.booleanValue());
+            }
+        }
+        Object horizontalStretch = removeMapValueIgnoreCase(set, "horizontalStretch", "horizontal_stretch"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (horizontalStretch != null) {
+            extInfo.setHorizontalStretch(parseBoolean(horizontalStretch));
+        }
+        Object verticalStretch = removeMapValueIgnoreCase(set, "verticalStretch", "vertical_stretch"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (verticalStretch != null) {
+            extInfo.setVerticalStretch(parseBoolean(verticalStretch));
+        }
+        Object maxWidth = removeMapValueIgnoreCase(set, "maxWidth", "max_width"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (maxWidth != null) {
+            Integer parsed = parseInteger(maxWidth);
+            if (parsed != null) {
+                extInfo.setMaxWidth(parsed.intValue());
+            }
+        }
+        Object maxHeight = removeMapValueIgnoreCase(set, "maxHeight", "max_height"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (maxHeight != null) {
+            Integer parsed = parseInteger(maxHeight);
+            if (parsed != null) {
+                extInfo.setMaxHeight(parsed.intValue());
+            }
+        }
+        Object autoMaxHeight = removeMapValueIgnoreCase(set, "autoMaxHeight", "auto_max_height"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (autoMaxHeight != null) {
+            Boolean parsed = parseBoolean(autoMaxHeight);
+            if (parsed != null) {
+                extInfo.setAutoMaxHeight(parsed.booleanValue());
+            }
+        }
+    }
+
+    /**
      * Apply {@code set_item set:{handlers:[{event,name}, ...]}} on any EventHandlerContainer.
      *
      * <p>For each requested entry, the Event-name is resolved through
@@ -3479,7 +3548,7 @@ public class EdtMetadataService {
      * <p>Consumes recognized keys from {@code set} in place so they are not retried by
      * the downstream applyFormPropertySet pass.</p>
      */
-    private void applyFormAttributeTypeQualifiers(FormAttribute attribute, Map<String, Object> set) {
+    private void applyFormAttributeTypeQualifiers(AbstractFormAttribute attribute, Map<String, Object> set) {
         if (attribute == null || set == null || set.isEmpty()) {
             return;
         }
@@ -4170,6 +4239,11 @@ public class EdtMetadataService {
             }
             if (patch.typeValue != null) {
                 applyFormAttributeType(target, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
+            }
+            // Apply qualifier keys (length, precision, scale, fixed, etc.) from the column
+            // descriptor's remaining patch fields — same set-qualifier logic as top-level attrs.
+            if (!patch.patch.isEmpty()) {
+                applyFormAttributeTypeQualifiers(target, patch.patch);
             }
         }
     }
