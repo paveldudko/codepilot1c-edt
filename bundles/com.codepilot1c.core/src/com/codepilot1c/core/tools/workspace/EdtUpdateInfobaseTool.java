@@ -195,7 +195,14 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             } catch (EdtToolException e) {
                 return ToolResult.failure(pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage())));
             } catch (Exception e) {
-                if (isBlockedByHttpClients(e)) {
+                if (isBlockedByLockedIB(e)) {
+                    JsonObject payload = errorPayload(opId, projectName, workspaceRoot,
+                            EdtToolErrorCode.IB_LOCKED,
+                            "Infobase is locked by another process (Apache wsap publication, Designer session, or another client holds exclusive access). Stop the blocking process, then retry update_infobase."); //$NON-NLS-1$
+                    payload.addProperty("hint", //$NON-NLS-1$
+                            "Stop all processes holding the infobase open (httpd/wsap, running thin clients, Designer agents), then retry. Use Stop-PhantomDesigner if a Designer agent is stuck."); //$NON-NLS-1$
+                    return ToolResult.failure(pretty(payload));
+                } else if (isBlockedByHttpClients(e)) {
                     JsonObject error = errorPayload(opId, projectName, workspaceRoot,
                             EdtToolErrorCode.UPDATE_BLOCKED_BY_HTTP_CLIENTS, e.getMessage());
                     error.addProperty("hint", HTTP_CLIENTS_HINT); //$NON-NLS-1$
@@ -245,7 +252,14 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         } catch (EdtToolException e) {
             return pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage()));
         } catch (Exception e) {
-            if (isBlockedByHttpClients(e)) {
+            if (isBlockedByLockedIB(e)) {
+                JsonObject payload = errorPayload(opId, projectName, workspaceRoot,
+                        EdtToolErrorCode.IB_LOCKED,
+                        "Infobase is locked by another process (Apache wsap publication, Designer session, or another client holds exclusive access). Stop the blocking process, then retry update_infobase."); //$NON-NLS-1$
+                payload.addProperty("hint", //$NON-NLS-1$
+                        "Stop all processes holding the infobase open (httpd/wsap, running thin clients, Designer agents), then retry. Use Stop-PhantomDesigner if a Designer agent is stuck."); //$NON-NLS-1$
+                return pretty(payload);
+            } else if (isBlockedByHttpClients(e)) {
                 JsonObject error = errorPayload(opId, projectName, workspaceRoot,
                         EdtToolErrorCode.UPDATE_BLOCKED_BY_HTTP_CLIENTS, e.getMessage());
                 error.addProperty("hint", HTTP_CLIENTS_HINT); //$NON-NLS-1$
@@ -450,5 +464,25 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             return false;
         }
         return defaultValue;
+    }
+
+    /**
+     * Returns {@code true} when the exception chain contains a message that
+     * indicates the infobase is locked by an external process. The platform's
+     * config-export step fails with a "file not found" for a temp xml.zip when
+     * it cannot obtain exclusive access to the infobase (e.g. Apache wsap
+     * holds the file open). "xml.zip" in the message is the reliable
+     * discriminator for this class of failure.
+     */
+    private static boolean isBlockedByLockedIB(Throwable error) {
+        Throwable t = error;
+        while (t != null) {
+            String msg = t.getMessage();
+            if (msg != null && msg.contains("xml.zip")) { //$NON-NLS-1$
+                return true;
+            }
+            t = t.getCause();
+        }
+        return false;
     }
 }
