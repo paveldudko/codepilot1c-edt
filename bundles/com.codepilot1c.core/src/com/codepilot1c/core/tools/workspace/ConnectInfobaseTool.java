@@ -17,6 +17,7 @@ import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolResult;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
+import java.util.concurrent.Callable;
 
 /**
  * Binds an infobase (file- or standalone-server-based) to an EDT project without user interaction.
@@ -82,6 +83,10 @@ public class ConnectInfobaseTool extends AbstractTool {
                 "infobase_name": {
                   "type": "string",
                   "description": "Optional display name for the infobase in EDT's registry. Defaults to the folder name. Pass a distinct name when the folder name collides with an existing infobase (e.g. a same-named server infobase) — otherwise the call fails with NAME_COLLISION."
+                },
+                "async": {
+                  "type": "boolean",
+                  "description": "Run the bind in the background and return a job_id immediately. Use when the bind may take longer than the MCP HTTP timeout (~60s). Poll the result with connect_infobase_status(job_id=...)."
                 }
               },
               "required": ["project_name", "kind"]
@@ -145,8 +150,39 @@ public class ConnectInfobaseTool extends AbstractTool {
                 String srvr = asString(parameters.get("srvr")); //$NON-NLS-1$
                 String ref = asString(parameters.get("ref")); //$NON-NLS-1$
 
+                boolean isAsync = Boolean.TRUE.equals(parameters.get("async")) //$NON-NLS-1$
+                        || "true".equalsIgnoreCase(asString(parameters.get("async"))); //$NON-NLS-1$
+
                 ConnectRequest request = new ConnectRequest(projectName, databasePath, kind, login,
                         password, setPrimary, serverPort, runtimeVersion, force, infobaseName, srvr, ref);
+
+                if (isAsync) {
+                    Callable<String> work = () -> {
+                        try {
+                            ConnectResult asyncResult = connectService.connect(request);
+                            return pretty(successPayload(opId, projectName, asyncResult));
+                        } catch (EdtToolException e) {
+                            return pretty(errorPayload(opId, projectName, e.getCode(), e.getMessage()));
+                        } catch (IllegalStateException e) {
+                            return pretty(errorPayload(opId, projectName,
+                                    EdtToolErrorCode.EDT_NOT_READY, detailFor(e)));
+                        } catch (Exception e) {
+                            return pretty(errorPayload(opId, projectName,
+                                    EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE, detailFor(e)));
+                        }
+                    };
+                    String jobId = BackgroundJobRegistry.getInstance().startJob("connect_infobase", work); //$NON-NLS-1$
+                    LOG.info("[%s] connect_infobase async started, job_id=%s", opId, jobId); //$NON-NLS-1$
+                    JsonObject asyncPayload = new JsonObject();
+                    asyncPayload.addProperty("op_id", opId); //$NON-NLS-1$
+                    asyncPayload.addProperty("project", projectName); //$NON-NLS-1$
+                    asyncPayload.addProperty("async", true); //$NON-NLS-1$
+                    asyncPayload.addProperty("state", "RUNNING"); //$NON-NLS-1$ //$NON-NLS-2$
+                    asyncPayload.addProperty("job_id", jobId); //$NON-NLS-1$
+                    asyncPayload.addProperty("hint", "Poll with connect_infobase_status(job_id=...) to get the final result."); //$NON-NLS-1$
+                    return ToolResult.success(pretty(asyncPayload), ToolResult.ToolResultType.CODE);
+                }
+
                 ConnectResult result = connectService.connect(request);
                 JsonObject payload = successPayload(opId, projectName, result);
                 return ToolResult.success(pretty(payload), ToolResult.ToolResultType.CODE);

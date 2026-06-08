@@ -402,6 +402,38 @@ public class EdtUpdateInfobaseToolTest {
         }
     }
 
+    @Test
+    public void ibLocked_xmlZipMessage_returnsIbLockedErrorCode() throws Exception {
+        // Regression guard: EdtUpdateInfobaseTool must classify the platform's config-export
+        // "File not found '...xml.zip'" failure as IB_LOCKED, not the generic UPDATE_FAILED.
+        // Root cause (feedback 2026-06-05): when Apache wsap holds the file IB open, EDT cannot
+        // acquire exclusive access; its export step tears down the temp xml.zip and surfaces a
+        // misleading "file not found" error instead of "clients connected over HTTP".
+        File workspaceRoot = Files.createTempDirectory("edt-update-tool-ibLocked").toFile(); //$NON-NLS-1$
+        EdtUpdateInfobaseTool tool = new TestEdtUpdateInfobaseTool(
+                new StubProjectResolver(),
+                new LockedIBRuntimeService(),
+                workspaceRoot);
+
+        ToolResult result = tool.execute(Map.of("project_name", "Demo")).join(); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertFalse(result.isSuccess());
+        JsonObject json = JsonParser.parseString(result.getErrorMessage()).getAsJsonObject();
+        assertEquals("IB_LOCKED", json.get("error_code").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("IB_LOCKED must carry a 'hint' for the operator", json.has("hint")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private static class LockedIBRuntimeService extends EdtRuntimeService {
+        @Override
+        public UpdateInfobaseStatus updateInfobaseWithStatus(String projectName, boolean keepConnected,
+                org.eclipse.core.runtime.IProgressMonitor monitor) {
+            // Platform wraps the exclusive-access failure: the config-export temp xml.zip
+            // is cleaned up first, then the outer layer surfaces "file not found xml.zip".
+            throw new RuntimeException("Update failed", //$NON-NLS-1$
+                    new java.io.IOException("File not found 'C:\\\\Temp\\\\1cedt\\\\0\\\\xml.zip'")); //$NON-NLS-1$
+        }
+    }
+
     private static class StubProjectResolver extends EdtProjectResolver {
         @Override
         public InfobaseReference resolveInfobase(String projectName, File workspaceRoot) {
