@@ -7684,7 +7684,13 @@ public class EdtMetadataService {
             return;
         }
         Object requestedTypeValue = properties == null ? null : getMapValueIgnoreCase(properties, "type"); //$NON-NLS-1$
-        TypeSpec requestedSpec = requestedTypeValue == null ? null : normalizeTypeSpec(requestedTypeValue);
+        TypeSpec requestedSpec = null;
+        if (requestedTypeValue != null && properties != null && !properties.isEmpty()) {
+            // Pass entire properties map so normalizeTypeSpec can pick up length/precision/scale siblings
+            requestedSpec = normalizeTypeSpec(properties);
+        } else if (requestedTypeValue != null) {
+            requestedSpec = normalizeTypeSpec(requestedTypeValue);
+        }
         String requestedType = requestedSpec == null ? null : requestedSpec.typeQuery();
         String typeToApply = requestedType != null ? requestedType
                 : (isKindWithRequiredType(kind) ? DEFAULT_BASIC_FEATURE_TYPE : null);
@@ -9706,6 +9712,7 @@ public class EdtMetadataService {
                 getMapValueIgnoreCase(stringQualifiers, "length"), //$NON-NLS-1$
                 getMapValueIgnoreCase(root, "stringLength"), //$NON-NLS-1$
                 getMapValueIgnoreCase(nestedTypeMap, "stringLength"), //$NON-NLS-1$
+                getMapValueIgnoreCase(root, "length"), //$NON-NLS-1$ user-facing "length" key for String types
                 inline == null ? null : inline.stringLength());
         Boolean stringFixed = firstParsedBoolean(
                 getMapValueIgnoreCase(stringQualifiers, "fixed"), //$NON-NLS-1$
