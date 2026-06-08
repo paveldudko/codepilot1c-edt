@@ -21,6 +21,8 @@ import com.codepilot1c.core.edt.dcs.DcsUpsertCalculatedFieldRequest;
 import com.codepilot1c.core.edt.dcs.DcsUpsertParameterRequest;
 import com.codepilot1c.core.edt.dcs.DcsUpsertQueryDatasetRequest;
 import com.codepilot1c.core.edt.metadata.AddMetadataChildRequest;
+import com.codepilot1c.core.edt.metadata.CreateEventSubscriptionRequest;
+import com.codepilot1c.core.edt.metadata.CreateInformationRegisterRequest;
 import com.codepilot1c.core.edt.metadata.CreateMetadataRequest;
 import com.codepilot1c.core.edt.metadata.DeleteMetadataRequest;
 import com.codepilot1c.core.edt.metadata.EdtMetadataGateway;
@@ -692,6 +694,72 @@ public class MetadataRequestValidationService {
         return payload;
     }
 
+    public Map<String, Object> normalizeCreateEventSubscriptionPayload(
+            String projectName,
+            String name,
+            String synonym,
+            String comment,
+            List<String> sourceTypes,
+            String event,
+            String handler
+    ) {
+        CreateEventSubscriptionRequest request = new CreateEventSubscriptionRequest(
+                projectName, name, synonym, comment, sourceTypes, event, handler);
+        request.validate();
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("project", projectName); //$NON-NLS-1$
+        payload.put("name", name); //$NON-NLS-1$
+        if (synonym != null && !synonym.isBlank()) {
+            payload.put("synonym", synonym); //$NON-NLS-1$
+        }
+        if (comment != null && !comment.isBlank()) {
+            payload.put("comment", comment); //$NON-NLS-1$
+        }
+        if (sourceTypes != null && !sourceTypes.isEmpty()) {
+            payload.put("source_types", new ArrayList<>(sourceTypes)); //$NON-NLS-1$
+        }
+        if (event != null && !event.isBlank()) {
+            payload.put("event", event); //$NON-NLS-1$
+        }
+        payload.put("handler", handler); //$NON-NLS-1$
+        return payload;
+    }
+
+    public Map<String, Object> normalizeCreateInformationRegisterPayload(
+            String projectName,
+            String name,
+            String synonym,
+            String comment,
+            String periodicity,
+            List<Map<String, Object>> dimensions,
+            List<Map<String, Object>> resources
+    ) {
+        CreateInformationRegisterRequest request = new CreateInformationRegisterRequest(
+                projectName, name, synonym, comment, periodicity, dimensions, resources);
+        request.validate();
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("project", projectName); //$NON-NLS-1$
+        payload.put("name", name); //$NON-NLS-1$
+        if (synonym != null && !synonym.isBlank()) {
+            payload.put("synonym", synonym); //$NON-NLS-1$
+        }
+        if (comment != null && !comment.isBlank()) {
+            payload.put("comment", comment); //$NON-NLS-1$
+        }
+        if (periodicity != null && !periodicity.isBlank()) {
+            payload.put("periodicity", periodicity); //$NON-NLS-1$
+        }
+        if (dimensions != null && !dimensions.isEmpty()) {
+            payload.put("dimensions", new ArrayList<>(dimensions)); //$NON-NLS-1$
+        }
+        if (resources != null && !resources.isEmpty()) {
+            payload.put("resources", new ArrayList<>(resources)); //$NON-NLS-1$
+        }
+        return payload;
+    }
+
     public Map<String, Object> normalizeApplyFormRecipePayload(
             String projectName,
             String mode,
@@ -1145,6 +1213,30 @@ public class MetadataRequestValidationService {
                 checks.add("Операция render_template валидирована по обязательным полям."); //$NON-NLS-1$
                 yield payload;
             }
+            case CREATE_EVENT_SUBSCRIPTION -> {
+                Map<String, Object> payload = normalizeCreateEventSubscriptionPayload(
+                        coalesceProject(request.projectName(), request.payload()),
+                        asString(request.payload().get("name")), //$NON-NLS-1$
+                        asOptionalString(request.payload().get("synonym")), //$NON-NLS-1$
+                        asOptionalString(request.payload().get("comment")), //$NON-NLS-1$
+                        asStringList(request.payload().get("source_types")), //$NON-NLS-1$
+                        asOptionalString(request.payload().get("event")), //$NON-NLS-1$
+                        asString(request.payload().get("handler"))); //$NON-NLS-1$
+                checks.add("Операция create_event_subscription валидирована по обязательным полям."); //$NON-NLS-1$
+                yield payload;
+            }
+            case CREATE_INFORMATION_REGISTER -> {
+                Map<String, Object> payload = normalizeCreateInformationRegisterPayload(
+                        coalesceProject(request.projectName(), request.payload()),
+                        asString(request.payload().get("name")), //$NON-NLS-1$
+                        asOptionalString(request.payload().get("synonym")), //$NON-NLS-1$
+                        asOptionalString(request.payload().get("comment")), //$NON-NLS-1$
+                        asOptionalString(request.payload().get("periodicity")), //$NON-NLS-1$
+                        asListOfMaps(request.payload().get("dimensions")), //$NON-NLS-1$
+                        asListOfMaps(request.payload().get("resources"))); //$NON-NLS-1$
+                checks.add("Операция create_information_register валидирована по обязательным полям."); //$NON-NLS-1$
+                yield payload;
+            }
         };
     }
 
@@ -1349,5 +1441,28 @@ public class MetadataRequestValidationService {
             }
         }
         return null;
+    }
+
+    private List<String> asStringList(Object value) {
+        List<String> result = new ArrayList<>();
+        if (value == null) {
+            return result;
+        }
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                if (item != null) {
+                    String str = String.valueOf(item).trim();
+                    if (!str.isBlank()) {
+                        result.add(str);
+                    }
+                }
+            }
+            return result;
+        }
+        String str = String.valueOf(value).trim();
+        if (!str.isBlank()) {
+            result.add(str);
+        }
+        return result;
     }
 }

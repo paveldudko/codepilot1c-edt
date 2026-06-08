@@ -121,6 +121,8 @@ public class ToolRegistry {
         register(new BslObjectContextTool());
         register(new EdtValidateRequestTool());
         register(new CreateMetadataTool());
+        register(new com.codepilot1c.core.tools.metadata.CreateEventSubscriptionTool());
+        register(new com.codepilot1c.core.tools.metadata.CreateInformationRegisterTool());
         register(new CreateFormTool());
         register(new ApplyFormRecipeTool());
         register(new InspectFormLayoutTool());

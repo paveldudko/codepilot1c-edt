@@ -139,6 +139,8 @@ import com._1c.g5.v8.dt.mcore.util.McoreUtil;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicFeature;
 import com._1c.g5.v8.dt.metadata.common.ApplicationUsePurpose;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicForm;
+import com._1c.g5.v8.dt.metadata.mdclass.EventSubscription;
+import com._1c.g5.v8.dt.metadata.mdclass.InformationRegisterPeriodicity;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicTemplate;
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
 import com._1c.g5.v8.dt.metadata.mdclass.Language;
@@ -357,6 +359,222 @@ public class EdtMetadataService {
                 request.name(),
                 fqn,
                 "Metadata object created successfully"); //$NON-NLS-1$
+    }
+
+    public MetadataOperationResult createEventSubscription(CreateEventSubscriptionRequest request) {
+        String opId = LogSanitizer.newId("edt-evtsub"); //$NON-NLS-1$
+        long startedAt = System.currentTimeMillis();
+        LOG.info("[%s] createEventSubscription START project=%s name=%s handler=%s", // $NON-NLS-1$
+                opId, request.projectName(), request.name(), request.handler());
+        request.validate();
+        gateway.ensureMutationRuntimeAvailable();
+        IProject project = requireProject(request.projectName());
+        readinessChecker.ensureReady(project);
+        repairConfigurationMissingUuids(project, opId);
+
+        IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
+        Configuration configuration = configurationProvider.getConfiguration(project);
+        if (configuration == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
+                    "Cannot resolve project configuration", false); //$NON-NLS-1$
+        }
+
+        String fqn = MetadataKind.EVENT_SUBSCRIPTION.getFqnPrefix() + "." + request.name(); //$NON-NLS-1$
+        EolGuard eolGuard = beginEolGuard(project, fqn, opId);
+
+        executeWrite(project, transaction -> {
+            Configuration txConfiguration = transaction.toTransactionObject(configuration);
+            if (txConfiguration == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.EDT_TRANSACTION_FAILED,
+                        "Cannot access configuration in BM transaction", false); //$NON-NLS-1$
+            }
+            if (existsTopLevel(txConfiguration, MetadataKind.EVENT_SUBSCRIPTION, request.name())) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                        "EventSubscription already exists: " + fqn, false); //$NON-NLS-1$
+            }
+
+            MdObject base = MdClassFactory.eINSTANCE.createEventSubscription();
+            setCommonProperties(base, request.name(), request.synonym(), request.comment(), txConfiguration);
+
+            // Set string attributes before attaching to BM
+            EventSubscription evtSub = (EventSubscription) base;
+            if (request.handler() != null && !request.handler().isBlank()) {
+                evtSub.setHandler(request.handler().trim());
+            }
+            if (request.event() != null && !request.event().isBlank()) {
+                evtSub.setEvent(request.event().trim());
+            }
+
+            MdObject txObject = attachTopLevelObject(transaction, project, base, fqn);
+            ensureUuidsRecursively(txObject, opId, fqn);
+            addTopLevelObject(txConfiguration, MetadataKind.EVENT_SUBSCRIPTION, txObject);
+
+            // Set source TypeDescription after attaching (needs transaction context for TypeItems)
+            if (request.sourceTypes() != null && !request.sourceTypes().isEmpty()) {
+                EventSubscription txEvtSub = (EventSubscription) txObject;
+                TypeDescription sourceDesc = McoreFactory.eINSTANCE.createTypeDescription();
+                for (String sourceType : request.sourceTypes()) {
+                    if (sourceType == null || sourceType.isBlank()) {
+                        continue;
+                    }
+                    TypeItem typeItem = resolveSimpleTypeItemFromConfiguration(txConfiguration, sourceType);
+                    if (typeItem == null && transaction instanceof com._1c.g5.v8.bm.core.IBmTransaction plainTx) {
+                        typeItem = findTypeItemInTransaction(plainTx, expandTypeQueries(sourceType));
+                    }
+                    if (typeItem == null) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                                "Source type not found in project: " + sourceType //$NON-NLS-1$
+                                + ". Ensure the referenced catalog/document exists.", false); //$NON-NLS-1$
+                    }
+                    TypeItem txTypeItem = null;
+                    try {
+                        txTypeItem = transaction.toTransactionObject(typeItem);
+                    } catch (RuntimeException e) {
+                        LOG.debug("[%s] toTransactionObject failed for source type=%s: %s", opId, sourceType, e.getMessage()); //$NON-NLS-1$
+                        txTypeItem = typeItem;
+                    }
+                    if (txTypeItem != null) {
+                        sourceDesc.getTypes().add(txTypeItem);
+                    }
+                }
+                if (!sourceDesc.getTypes().isEmpty()) {
+                    txEvtSub.setSource(sourceDesc);
+                }
+            }
+            return null;
+        });
+
+        rebindTopLevelIntoConfiguration(project, MetadataKind.EVENT_SUBSCRIPTION, request.name(), fqn, opId);
+        forceExportTopLevelObject(project, fqn, opId);
+        verifyTopLevelPersisted(project, fqn, opId);
+        verifyConfigurationEntryPersisted(project, MetadataKind.EVENT_SUBSCRIPTION, fqn, opId);
+        eolGuard.restore();
+        refreshProjectSafely(project);
+        LOG.info("[%s] createEventSubscription SUCCESS in %s fqn=%s", opId, // $NON-NLS-1$
+                LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt), fqn);
+
+        String summary = buildEventSubscriptionSummary(request);
+        return new MetadataOperationResult(
+                true,
+                request.projectName(),
+                MetadataKind.EVENT_SUBSCRIPTION.name(),
+                request.name(),
+                fqn,
+                summary);
+    }
+
+    private String buildEventSubscriptionSummary(CreateEventSubscriptionRequest request) {
+        StringBuilder sb = new StringBuilder("EventSubscription created: "); //$NON-NLS-1$
+        sb.append(MetadataKind.EVENT_SUBSCRIPTION.getFqnPrefix()).append('.').append(request.name());
+        if (request.handler() != null && !request.handler().isBlank()) {
+            sb.append(", handler=").append(request.handler()); //$NON-NLS-1$
+        }
+        if (request.sourceTypes() != null && !request.sourceTypes().isEmpty()) {
+            sb.append(", source=").append(request.sourceTypes()); //$NON-NLS-1$
+        }
+        return sb.toString();
+    }
+
+    public MetadataOperationResult createInformationRegister(CreateInformationRegisterRequest request) {
+        String opId = LogSanitizer.newId("edt-inforeg"); //$NON-NLS-1$
+        long startedAt = System.currentTimeMillis();
+        LOG.info("[%s] createInformationRegister START project=%s name=%s", opId, request.projectName(), request.name()); //$NON-NLS-1$
+        request.validate();
+
+        // Step 1: create the base InformationRegister object
+        java.util.Map<String, Object> baseProps = new java.util.LinkedHashMap<>();
+        if (request.periodicity() != null && !request.periodicity().isBlank()) {
+            baseProps.put("informationRegisterPeriodicity", request.periodicity()); //$NON-NLS-1$
+        }
+        CreateMetadataRequest baseRequest = new CreateMetadataRequest(
+                request.projectName(),
+                MetadataKind.INFORMATION_REGISTER,
+                request.name(),
+                request.synonym(),
+                request.comment(),
+                baseProps);
+        MetadataOperationResult createResult = createMetadata(baseRequest);
+        LOG.info("[%s] createInformationRegister: base object created fqn=%s", opId, createResult.fqn()); //$NON-NLS-1$
+
+        String registerFqn = createResult.fqn();
+        List<String> created = new ArrayList<>();
+        created.add("InformationRegister " + registerFqn); //$NON-NLS-1$
+
+        // Step 2: add dimensions
+        if (request.dimensions() != null) {
+            for (java.util.Map<String, Object> dim : request.dimensions()) {
+                if (dim == null) {
+                    continue;
+                }
+                String dimName = asMapString(dim, "name"); //$NON-NLS-1$
+                if (dimName == null || dimName.isBlank()) {
+                    continue;
+                }
+                java.util.Map<String, Object> dimProps = buildFieldProperties(dim);
+                AddMetadataChildRequest dimRequest = new AddMetadataChildRequest(
+                        request.projectName(), registerFqn, MetadataChildKind.DIMENSION,
+                        dimName, asMapString(dim, "synonym"), asMapString(dim, "comment"), dimProps); //$NON-NLS-1$ //$NON-NLS-2$
+                addMetadataChild(dimRequest);
+                created.add("Dimension " + dimName); //$NON-NLS-1$
+                LOG.info("[%s] createInformationRegister: added Dimension %s", opId, dimName); //$NON-NLS-1$
+            }
+        }
+
+        // Step 3: add resources
+        if (request.resources() != null) {
+            for (java.util.Map<String, Object> res : request.resources()) {
+                if (res == null) {
+                    continue;
+                }
+                String resName = asMapString(res, "name"); //$NON-NLS-1$
+                if (resName == null || resName.isBlank()) {
+                    continue;
+                }
+                java.util.Map<String, Object> resProps = buildFieldProperties(res);
+                AddMetadataChildRequest resRequest = new AddMetadataChildRequest(
+                        request.projectName(), registerFqn, MetadataChildKind.RESOURCE,
+                        resName, asMapString(res, "synonym"), asMapString(res, "comment"), resProps); //$NON-NLS-1$ //$NON-NLS-2$
+                addMetadataChild(resRequest);
+                created.add("Resource " + resName); //$NON-NLS-1$
+                LOG.info("[%s] createInformationRegister: added Resource %s", opId, resName); //$NON-NLS-1$
+            }
+        }
+
+        LOG.info("[%s] createInformationRegister SUCCESS in %s fqn=%s created=%s", opId, // $NON-NLS-1$
+                LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
+                registerFqn,
+                created);
+        return new MetadataOperationResult(
+                true,
+                request.projectName(),
+                MetadataKind.INFORMATION_REGISTER.name(),
+                request.name(),
+                registerFqn,
+                "InformationRegister created: " + String.join(", ", created)); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private java.util.Map<String, Object> buildFieldProperties(java.util.Map<String, Object> fieldSpec) {
+        java.util.Map<String, Object> props = new java.util.LinkedHashMap<>();
+        for (String key : new String[]{"type", "length", "precision", "scale", "multiLine", "fillChecking"}) { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+            Object val = fieldSpec.get(key);
+            if (val != null) {
+                props.put(key, val);
+            }
+        }
+        return props;
+    }
+
+    private String asMapString(java.util.Map<String, Object> map, String key) {
+        Object val = map == null ? null : map.get(key);
+        if (val == null) {
+            return null;
+        }
+        String str = String.valueOf(val).trim();
+        return str.isBlank() ? null : str;
     }
 
     public CreateFormResult createForm(CreateFormRequest request) {
