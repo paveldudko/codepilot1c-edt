@@ -5,10 +5,13 @@ import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.AbstractTool;
 
 import java.io.File;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -26,6 +29,7 @@ import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 /**
@@ -201,6 +205,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                             "Infobase is locked by another process (Apache wsap publication, Designer session, or another client holds exclusive access). Stop the blocking process, then retry update_infobase."); //$NON-NLS-1$
                     payload.addProperty("hint", //$NON-NLS-1$
                             "Stop all processes holding the infobase open (httpd/wsap, running thin clients, Designer agents), then retry. Use Stop-PhantomDesigner if a Designer agent is stuck."); //$NON-NLS-1$
+                    JsonArray locking = scanLockingProcesses();
+                    if (locking.size() > 0) {
+                        payload.add("locking_processes", locking); //$NON-NLS-1$
+                    }
                     return ToolResult.failure(pretty(payload));
                 } else if (isBlockedByHttpClients(e)) {
                     JsonObject error = errorPayload(opId, projectName, workspaceRoot,
@@ -258,6 +266,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                         "Infobase is locked by another process (Apache wsap publication, Designer session, or another client holds exclusive access). Stop the blocking process, then retry update_infobase."); //$NON-NLS-1$
                 payload.addProperty("hint", //$NON-NLS-1$
                         "Stop all processes holding the infobase open (httpd/wsap, running thin clients, Designer agents), then retry. Use Stop-PhantomDesigner if a Designer agent is stuck."); //$NON-NLS-1$
+                JsonArray locking = scanLockingProcesses();
+                if (locking.size() > 0) {
+                    payload.add("locking_processes", locking); //$NON-NLS-1$
+                }
                 return pretty(payload);
             } else if (isBlockedByHttpClients(e)) {
                 JsonObject error = errorPayload(opId, projectName, workspaceRoot,
@@ -484,5 +496,36 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             t = t.getCause();
         }
         return false;
+    }
+
+    /**
+     * Scans OS processes for known 1C/Apache names that typically hold an infobase lock.
+     * Returns a JSON array with {pid, command} entries (may be empty).
+     */
+    private static JsonArray scanLockingProcesses() {
+        JsonArray arr = new JsonArray();
+        try {
+            List<ProcessHandle> suspects = ProcessHandle.allProcesses()
+                    .filter(ph -> {
+                        var cmd = ph.info().command();
+                        if (cmd.isEmpty()) {
+                            return false;
+                        }
+                        String lower = cmd.get().toLowerCase(Locale.ROOT);
+                        return lower.contains("1cv8") //$NON-NLS-1$
+                                || lower.contains("httpd") //$NON-NLS-1$
+                                || lower.contains("wsap"); //$NON-NLS-1$
+                    })
+                    .collect(Collectors.toList());
+            for (ProcessHandle ph : suspects) {
+                JsonObject entry = new JsonObject();
+                entry.addProperty("pid", ph.pid()); //$NON-NLS-1$
+                ph.info().command().ifPresent(cmd -> entry.addProperty("command", cmd)); //$NON-NLS-1$
+                arr.add(entry);
+            }
+        } catch (RuntimeException e) {
+            // process scan is best-effort; don't let it mask the original error
+        }
+        return arr;
     }
 }

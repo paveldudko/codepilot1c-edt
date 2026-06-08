@@ -58,11 +58,11 @@ public class ConnectInfobaseTool extends AbstractTool {
                 },
                 "login": {
                   "type": "string",
-                  "description": "Optional infobase login (empty string means OS authentication)"
+                  "description": "Optional infobase login for EDT binding — must have sufficient rights for update_infobase (admin-level). These credentials are PERSISTED by EDT as the project's IB access credentials. Do NOT pass test-only credentials here (e.g. AutotestDataInput) — test credentials belong in yaxunit_run's login/password parameters. Empty string means OS authentication."
                 },
                 "password": {
                   "type": "string",
-                  "description": "Optional infobase password (never echoed back in the result)"
+                  "description": "Optional infobase password for EDT binding (see login). Never echoed back in the result."
                 },
                 "set_primary": {
                   "type": "boolean",
@@ -105,7 +105,9 @@ public class ConnectInfobaseTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Подключает файловую или standalone-инфобазу к EDT проекту и, по желанию, делает её основной."; //$NON-NLS-1$
+        return "Подключает файловую или standalone-инфобазу к EDT проекту и, по желанию, делает её основной. " //$NON-NLS-1$
+                + "ВАЖНО: login/password — это admin-credentials для EDT (сохраняются EDT как credentials проекта); " //$NON-NLS-1$
+                + "test-credentials (например AutotestDataInput) передавайте отдельно в yaxunit_run, а не сюда."; //$NON-NLS-1$
     }
 
     @Override
