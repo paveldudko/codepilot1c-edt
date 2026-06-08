@@ -160,7 +160,14 @@ public class McpHostRequestRouter {
 
         ToolResult toolResult;
         try {
-            int timeoutSeconds = ("qa_run".equals(toolName) || "yaxunit_run".equals(toolName)) ? 3600 : 120; //$NON-NLS-1$ //$NON-NLS-2$
+            int timeoutSeconds;
+            if ("qa_run".equals(toolName) || "yaxunit_run".equals(toolName)) { //$NON-NLS-1$ //$NON-NLS-2$
+                timeoutSeconds = 3600;
+            } else if ("connect_infobase".equals(toolName)) { //$NON-NLS-1$
+                timeoutSeconds = 300;
+            } else {
+                timeoutSeconds = 120;
+            }
             toolResult = tool.execute(arguments)
                 .orTimeout(timeoutSeconds, TimeUnit.SECONDS)
                 .join();

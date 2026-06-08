@@ -1,4 +1,4 @@
-package com.codepilot1c.core.edt.runtime;
+﻿package com.codepilot1c.core.edt.runtime;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
@@ -273,7 +273,7 @@ public class EdtInfobaseConnectService {
         if (reference.getName() != null && !reference.getName().isBlank()) {
             infobaseName = reference.getName();
         }
-        persistReference(reference);
+        persistReference(reference, request.force());
         storeAccessSettings(reference, request.login(), request.password());
         boolean primary = associate(project, reference, request.setPrimary());
 
@@ -332,7 +332,7 @@ public class EdtInfobaseConnectService {
         if (reference.getName() != null && !reference.getName().isBlank()) {
             infobaseName = reference.getName();
         }
-        persistReference(reference);
+        persistReference(reference, request.force());
         storeAccessSettings(reference, request.login(), request.password());
         boolean primary = associate(project, reference, request.setPrimary());
 
@@ -554,7 +554,7 @@ public class EdtInfobaseConnectService {
 
     // -- EDT write-side operations --------------------------------------------------------------
 
-    protected void persistReference(InfobaseReference reference) {
+    protected void persistReference(InfobaseReference reference, boolean force) {
         IInfobaseManager manager;
         try {
             manager = gateway.getInfobaseManager();
@@ -591,18 +591,42 @@ public class EdtInfobaseConnectService {
             }
             return;
         }
-        // findExisting() returned empty, so no registered infobase shares our identity. If one
-        // nonetheless shares our NAME, it is a genuine collision (e.g. an auto-provisioned server
-        // infobase named like the file-infobase folder). EDT enforces unique names, so a bare
-        // manager.add() would throw an opaque "already connected" and, as observed, can disturb the
-        // project's current association. Fail BEFORE any mutation, with an actionable code.
+        // No exact match found (case-sensitive identity check missed it). Check for name collision
+        // before attempting manager.add() to provide a clear error or idempotent reuse.
         String referenceName = reference.getName();
-        if (referenceName != null && !referenceName.isBlank()
-                && !findCandidatesByName(manager, referenceName).isEmpty()) {
-            throw new EdtToolException(EdtToolErrorCode.NAME_COLLISION,
-                    "name_collision: an infobase named '" + referenceName //$NON-NLS-1$
-                            + "' already exists with a different connection. " //$NON-NLS-1$
-                            + "Pass a distinct infobase_name to connect this one."); //$NON-NLS-1$
+        if (referenceName != null && !referenceName.isBlank()) {
+            List<InfobaseReference> nameCandidates = findCandidatesByName(manager, referenceName);
+            if (!nameCandidates.isEmpty()) {
+                if (force) {
+                    // force=true: check if any candidate points to the same physical path
+                    // (case-insensitive comparison to handle Windows drive-letter casing).
+                    String newIdentity = infobaseIdentity(reference);
+                    if (newIdentity != null) {
+                        for (InfobaseReference candidate : nameCandidates) {
+                            String candidateIdentity = infobaseIdentity(candidate);
+                            if (newIdentity.equalsIgnoreCase(candidateIdentity)) {
+                                // Same physical path — adopt the existing entry's UUID (idempotent reuse).
+                                UUID candidateUuid = candidate.getUuid();
+                                if (candidateUuid != null) {
+                                    reference.setUuid(candidateUuid);
+                                } else if (reference.getUuid() == null) {
+                                    reference.setUuid(UUID.randomUUID());
+                                }
+                                LOG.info("connect_infobase: idempotent reuse of existing reference '%s' (case-insensitive path match)", //$NON-NLS-1$
+                                        referenceName);
+                                return;
+                            }
+                        }
+                    }
+                }
+                // Either force=false, or force=true but no same-path candidate was found.
+                throw new EdtToolException(EdtToolErrorCode.NAME_COLLISION,
+                        "name_collision: an infobase named '" + referenceName //$NON-NLS-1$
+                                + "' is already registered with a different connection string. " //$NON-NLS-1$
+                                + "Rename the infobase or remove the conflicting entry. " //$NON-NLS-1$
+                                + "If this is a re-bind to the same path (e.g. after a git branch-switch), " //$NON-NLS-1$
+                                + "the path comparison may have failed due to case mismatch — try force=true."); //$NON-NLS-1$
+            }
         }
         try {
             manager.add(reference, null);

@@ -419,7 +419,7 @@ public class ConnectInfobaseToolTest {
     }
 
     @Test
-    public void persistReferenceThrowsNameCollisionWhenNameTakenByDifferentInfobase() {
+    public void persistReferenceThrowsNameCollisionWhenNameMatchesButPathDiffers() {
         StubInfobaseManager manager = new StubInfobaseManager(true);
         UUID existingUuid = UUID.randomUUID();
         manager.findByNames = List.of(
@@ -436,11 +436,11 @@ public class ConnectInfobaseToolTest {
 
         try {
             service.invokePersistReference(reference);
-            fail("expected NAME_COLLISION"); //$NON-NLS-1$
+            fail("expected NAME_COLLISION when name matches but connection strings differ"); //$NON-NLS-1$
         } catch (EdtToolException e) {
             assertEquals(EdtToolErrorCode.NAME_COLLISION, e.getCode());
         }
-        assertTrue("manager.add must NOT be called on a name collision", //$NON-NLS-1$
+        assertTrue("manager.add must NOT be called when NAME_COLLISION is detected", //$NON-NLS-1$
                 manager.addCalls.isEmpty());
     }
 
@@ -470,6 +470,26 @@ public class ConnectInfobaseToolTest {
         }
         assertTrue("manager.add must NOT be called when the collision is only visible via getAll()", //$NON-NLS-1$
                 manager.addCalls.isEmpty());
+    }
+
+    @Test
+    public void persistReferenceIdempotentReuseOnCaseInsensitivePathMatchWithForce() {
+        StubInfobaseManager manager = new StubInfobaseManager(true);
+        UUID existingUuid = UUID.randomUUID();
+        // existing entry registered with lowercase drive letter
+        manager.findByNames = List.of(
+                stubReferenceWithState(existingUuid, "myib", "File=\"c:\\\\data\\\\myib\"")); //$NON-NLS-1$ //$NON-NLS-2$
+        StubGateway gateway = new StubGateway(manager, noopAccessManager());
+        TestableConnectService service = new TestableConnectService(gateway);
+
+        // new reference has uppercase drive letter — same physical path on Windows
+        InfobaseReference reference = stubReferenceWithState(null, "myib", "File=\"C:\\\\data\\\\myib\""); //$NON-NLS-1$ //$NON-NLS-2$
+
+        service.invokePersistReference(reference, true);
+
+        assertTrue("manager.add must NOT be called on idempotent same-path reuse", //$NON-NLS-1$
+                manager.addCalls.isEmpty());
+        assertEquals("existing UUID must be adopted onto the reference", existingUuid, reference.getUuid()); //$NON-NLS-1$
     }
 
     @Test
@@ -773,7 +793,11 @@ public class ConnectInfobaseToolTest {
         }
 
         void invokePersistReference(InfobaseReference reference) {
-            persistReference(reference);
+            persistReference(reference, false);
+        }
+
+        void invokePersistReference(InfobaseReference reference, boolean force) {
+            persistReference(reference, force);
         }
 
         void invokeStoreAccessSettings(InfobaseReference reference, String login, String password) {
