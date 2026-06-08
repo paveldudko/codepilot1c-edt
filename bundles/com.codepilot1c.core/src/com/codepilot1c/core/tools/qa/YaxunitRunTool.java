@@ -217,6 +217,13 @@ public class YaxunitRunTool extends AbstractTool {
                     return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE, result);
                 }
 
+                List<String> preflightWarnings = checkStaledClientProcesses(opId, timeoutSeconds);
+                if (!preflightWarnings.isEmpty()) {
+                    JsonArray arr = new JsonArray();
+                    preflightWarnings.forEach(arr::add);
+                    result.add("preflight_warnings", arr); //$NON-NLS-1$
+                }
+
                 RunOutcome outcome = runAndAwait(processBuilder, opId, projectName, timeoutSeconds,
                         exitCodeFile, junitFile, launchLog);
 
@@ -503,6 +510,40 @@ public class YaxunitRunTool extends AbstractTool {
     }
 
     // ---- small helpers ----------------------------------------------------------------------
+
+    /**
+     * Returns a list of human-readable warnings about already-running 1cv8c processes.
+     *
+     * <p>A stuck thin-client process holding the named pipe is the most common silent cause of a
+     * 300-second timeout (lesson from BF-12678 Phase 4). Probing upfront costs nothing and gives
+     * the caller a chance to act before the full timeout burns.</p>
+     */
+    private static List<String> checkStaledClientProcesses(String opId, int timeoutSeconds) {
+        List<String> warnings = new ArrayList<>();
+        try {
+            List<ProcessHandle> running = ProcessHandle.allProcesses()
+                    .filter(ph -> {
+                        var cmd = ph.info().command();
+                        return cmd.isPresent()
+                                && cmd.get().toLowerCase(Locale.ROOT).contains("1cv8c"); //$NON-NLS-1$
+                    })
+                    .collect(Collectors.toList());
+            if (!running.isEmpty()) {
+                String pids = running.stream()
+                        .map(ph -> String.valueOf(ph.pid()))
+                        .collect(Collectors.joining(", ")); //$NON-NLS-1$
+                String msg = "PREFLIGHT WARNING: " + running.size() + " 1cv8c process(es) already running " //$NON-NLS-1$ //$NON-NLS-2$
+                        + "(PIDs: " + pids + "). If any of them hold the named pipe for this project, " //$NON-NLS-1$ //$NON-NLS-2$
+                        + "yaxunit_run will time out silently after " + timeoutSeconds + "s. " //$NON-NLS-1$ //$NON-NLS-2$
+                        + "Kill stale 1cv8c processes before running tests."; //$NON-NLS-1$
+                warnings.add(msg);
+                LOG.warn("[%s] %s", opId, msg); //$NON-NLS-1$
+            }
+        } catch (RuntimeException e) {
+            LOG.warn("[%s] yaxunit_run preflight process scan failed: %s", opId, e.getMessage()); //$NON-NLS-1$
+        }
+        return warnings;
+    }
 
     static Integer readExitCode(File exitCodeFile) {
         if (exitCodeFile == null || !exitCodeFile.isFile()) {
