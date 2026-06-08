@@ -254,7 +254,10 @@ public class ConnectInfobaseTool extends AbstractTool {
             case NAME_COLLISION -> {
                 json.addProperty("error", "name_collision"); //$NON-NLS-1$ //$NON-NLS-2$
                 json.addProperty("hint", //$NON-NLS-1$
-                        "an infobase with this name already exists; pass a distinct infobase_name"); //$NON-NLS-1$
+                        "an infobase with this name already exists with a different connection. " //$NON-NLS-1$
+                        + "For a new branch/context, use a distinct infobase_name. " //$NON-NLS-1$
+                        + "For a re-bind to the same path (e.g. after a git branch-switch), " //$NON-NLS-1$
+                        + "pass force=true to adopt the existing entry."); //$NON-NLS-1$
             }
             case PATH_ALREADY_ASSOCIATED_AS -> {
                 json.addProperty("error", "path_already_associated_as"); //$NON-NLS-1$ //$NON-NLS-2$

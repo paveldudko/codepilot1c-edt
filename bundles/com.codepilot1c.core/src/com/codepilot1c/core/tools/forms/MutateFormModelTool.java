@@ -53,7 +53,7 @@ public class MutateFormModelTool extends AbstractTool {
                     "required": ["op"],
                     "additionalProperties": true
                   },
-                  "description": "Список операций: set_form_props/add_group/add_field/add_command/add_button/set_item/remove_item/move_item. add_command: name+action (handler). add_button: name+command_name+parent_item_id. set_item visibility: set:{visible|enabled:bool}; per-role userVisible via set:{uservisible:{common:bool, for:[{role:\\\"RoleName\\\", value:bool}]}} (blacklist: common true + value false; whitelist: common false + value true)."
+                  "description": "Список операций: set_form_props/add_group/add_field/add_command/add_button/set_item/remove_item/move_item. add_command: name+action (handler). add_button: name+command_name+parent_item_id. set_item: ALWAYS prefer this over direct .form XML editing — BM API applies designer defaults (e.g. showInHeader=true) that raw XML edits skip. The 'set' map accepts ANY scalar property of the form element, not just visible/enabled/userVisible. Examples: showInHeader (bool), headerHorizontalAlign (HorizontalAlign enum string), showInFooter (bool), footerHorizontalAlign, titleLocation (FormItemTitleLocation enum string), width, minWidth, maxWidth, enabled, readOnly, userVisible (bool or per-role map). Column header and footer properties must be set via set_item, not by hand-editing .form."
                 },
                 "validation_token": {
                   "type": "string",
