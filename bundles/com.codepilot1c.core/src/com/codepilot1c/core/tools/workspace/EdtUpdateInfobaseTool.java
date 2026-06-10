@@ -11,7 +11,6 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
 
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
@@ -68,6 +67,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 "async": {
                   "type": "boolean",
                   "description": "Fire-and-forget; returns jobId to poll via update_infobase_status (default: false)"
+                },
+                "kill_agent_mode": {
+                  "type": "boolean",
+                  "description": "Перед взятием эксклюзивного lock убить phantom-Designer'ы (1cv8 DESIGNER /AgentMode), которые EDT авто-респавнит на primary-ИБ — только привязанные К ЭТОЙ ИБ. Используйте, когда update_infobase упорно падает с IB_LOCKED при открытом EDT workspace. Алиас: auto_kill_phantoms (default: false)."
                 }
               },
               "required": ["project_name"]
@@ -119,6 +122,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         boolean keepConnected = asBoolean(parameters == null ? null : parameters.get("keep_connected"), true); //$NON-NLS-1$
         boolean dryRun = asBoolean(parameters == null ? null : parameters.get("dry_run"), false); //$NON-NLS-1$
         boolean async = asBoolean(parameters == null ? null : parameters.get("async"), false); //$NON-NLS-1$
+        boolean killAgentMode = asBoolean(parameters == null ? null : parameters.get("kill_agent_mode"), false) //$NON-NLS-1$
+                || asBoolean(parameters == null ? null : parameters.get("auto_kill_phantoms"), false); //$NON-NLS-1$
         String runtimeVersionRaw = asString(parameters == null ? null : parameters.get("runtime_version")); //$NON-NLS-1$
         String runtimeVersion = runtimeVersionRaw == null || runtimeVersionRaw.isBlank() ? null : runtimeVersionRaw;
 
@@ -132,7 +137,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 String jobId = BackgroundJobRegistry.getInstance().startJob(
                         "edt_update_infobase", //$NON-NLS-1$
                         () -> runUpdateAndRenderResult(opId, projectName, keepConnected, workspaceRoot,
-                                runtimeVersion));
+                                runtimeVersion, killAgentMode));
                 LOG.info("[%s] edt_update_infobase scheduled async job=%s", opId, jobId); //$NON-NLS-1$
                 JsonObject accepted = basePayload(opId, "scheduled", projectName, false, workspaceRoot); //$NON-NLS-1$
                 accepted.addProperty("async", true); //$NON-NLS-1$
@@ -158,8 +163,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
 
         return CompletableFuture.supplyAsync(() -> {
             LOG.info("[%s] START edt_update_infobase", opId); //$NON-NLS-1$
+            String ibPath = null;
             try {
                 InfobaseReference infobase = projectResolver.resolveInfobase(projectName, workspaceRoot);
+                ibPath = fileIbPath(infobase);
                 JsonObject result = basePayload(opId, dryRun ? "dry_run" : "updated", projectName, dryRun, //$NON-NLS-1$ //$NON-NLS-2$
                         workspaceRoot);
                 if (asyncIgnored) {
@@ -178,9 +185,11 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                     result.addProperty("updated", false); //$NON-NLS-1$
                     return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
                 }
+                killPhantomsIfRequested(result, killAgentMode, ibPath);
                 EdtRuntimeService.UpdateInfobaseStatus status =
                         runUpdateWithGuiProgress(projectName, keepConnected);
                 result.addProperty("updated", status.updated()); //$NON-NLS-1$
+                annotateWebserverConsistency(result, ibPath, status);
                 if (status.dynamicOnly()) {
                     // EDT could not acquire an exclusive lock (existing client/test sessions hold
                     // the infobase). The platform fell back to a dynamic-mode update, which does
@@ -200,16 +209,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 return ToolResult.failure(pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage())));
             } catch (Exception e) {
                 if (isBlockedByLockedIB(e)) {
-                    JsonObject payload = errorPayload(opId, projectName, workspaceRoot,
-                            EdtToolErrorCode.IB_LOCKED,
-                            "Infobase is locked by another process (Apache wsap publication, Designer session, or another client holds exclusive access). Stop the blocking process, then retry update_infobase."); //$NON-NLS-1$
-                    payload.addProperty("hint", //$NON-NLS-1$
-                            "Stop all processes holding the infobase open (httpd/wsap, running thin clients, Designer agents), then retry. Use Stop-PhantomDesigner if a Designer agent is stuck."); //$NON-NLS-1$
-                    JsonArray locking = scanLockingProcesses();
-                    if (locking.size() > 0) {
-                        payload.add("locking_processes", locking); //$NON-NLS-1$
-                    }
-                    return ToolResult.failure(pretty(payload));
+                    return ToolResult.failure(pretty(lockedIbPayload(opId, projectName, workspaceRoot, ibPath)));
                 } else if (isBlockedByHttpClients(e)) {
                     JsonObject error = errorPayload(opId, projectName, workspaceRoot,
                             EdtToolErrorCode.UPDATE_BLOCKED_BY_HTTP_CLIENTS, e.getMessage());
@@ -228,10 +228,12 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
      * synchronous output.
      */
     private String runUpdateAndRenderResult(String opId, String projectName, boolean keepConnected,
-            File workspaceRoot, String runtimeVersion) {
+            File workspaceRoot, String runtimeVersion, boolean killAgentMode) {
         LOG.info("[%s] START edt_update_infobase (async)", opId); //$NON-NLS-1$
+        String ibPath = null;
         try {
             InfobaseReference infobase = projectResolver.resolveInfobase(projectName, workspaceRoot);
+            ibPath = fileIbPath(infobase);
             JsonObject result = basePayload(opId, "updated", projectName, false, workspaceRoot); //$NON-NLS-1$
             JsonObject details = new JsonObject();
             if (infobase != null && infobase.getConnectionString() != null) {
@@ -240,10 +242,12 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             }
             result.add("details", details); //$NON-NLS-1$
             applyRuntimeControls(result, projectName, runtimeVersion, false);
+            killPhantomsIfRequested(result, killAgentMode, ibPath);
             EdtRuntimeService.UpdateInfobaseStatus status =
                     runUpdateWithGuiProgress(projectName, keepConnected);
             boolean updated = status.updated();
             result.addProperty("updated", updated); //$NON-NLS-1$
+            annotateWebserverConsistency(result, ibPath, status);
             if (status.dynamicOnly()) {
                 result.addProperty("dynamic_only", true); //$NON-NLS-1$
                 result.addProperty("dynamic_only_reason", //$NON-NLS-1$
@@ -261,16 +265,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             return pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage()));
         } catch (Exception e) {
             if (isBlockedByLockedIB(e)) {
-                JsonObject payload = errorPayload(opId, projectName, workspaceRoot,
-                        EdtToolErrorCode.IB_LOCKED,
-                        "Infobase is locked by another process (Apache wsap publication, Designer session, or another client holds exclusive access). Stop the blocking process, then retry update_infobase."); //$NON-NLS-1$
-                payload.addProperty("hint", //$NON-NLS-1$
-                        "Stop all processes holding the infobase open (httpd/wsap, running thin clients, Designer agents), then retry. Use Stop-PhantomDesigner if a Designer agent is stuck."); //$NON-NLS-1$
-                JsonArray locking = scanLockingProcesses();
-                if (locking.size() > 0) {
-                    payload.add("locking_processes", locking); //$NON-NLS-1$
-                }
-                return pretty(payload);
+                return pretty(lockedIbPayload(opId, projectName, workspaceRoot, ibPath));
             } else if (isBlockedByHttpClients(e)) {
                 JsonObject error = errorPayload(opId, projectName, workspaceRoot,
                         EdtToolErrorCode.UPDATE_BLOCKED_BY_HTTP_CLIENTS, e.getMessage());
@@ -498,33 +493,104 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         return false;
     }
 
+    /** Extracts the file-infobase path from a resolved reference, or {@code null}. */
+    private static String fileIbPath(InfobaseReference infobase) {
+        if (infobase == null || infobase.getConnectionString() == null) {
+            return null;
+        }
+        return InfobaseProcessScanner.fileIbPath(infobase.getConnectionString().asConnectionString());
+    }
+
     /**
-     * Scans OS processes for known 1C/Apache names that typically hold an infobase lock.
-     * Returns a JSON array with {pid, command} entries (may be empty).
+     * When {@code killAgentMode} is set, terminates phantom {@code /AgentMode} Designer agents
+     * bound to {@code ibPath} right before the exclusive lock is taken (the closest we can get to
+     * winning EDT's respawn race) and records the outcome on {@code result}. No-op otherwise.
+     * Feedback {@code 2026-06-10-bf11104-update-infobase-ib-locked-phantom-respawn.md}.
      */
-    private static JsonArray scanLockingProcesses() {
+    private static void killPhantomsIfRequested(JsonObject result, boolean killAgentMode, String ibPath) {
+        if (!killAgentMode) {
+            return;
+        }
+        result.addProperty("kill_agent_mode", true); //$NON-NLS-1$
+        List<Long> killed = InfobaseProcessScanner.killPhantomDesigners(ibPath);
         JsonArray arr = new JsonArray();
-        try {
-            List<ProcessHandle> suspects = ProcessHandle.allProcesses()
-                    .filter(ph -> {
-                        var cmd = ph.info().command();
-                        if (cmd.isEmpty()) {
-                            return false;
-                        }
-                        String lower = cmd.get().toLowerCase(Locale.ROOT);
-                        return lower.contains("1cv8") //$NON-NLS-1$
-                                || lower.contains("httpd") //$NON-NLS-1$
-                                || lower.contains("wsap"); //$NON-NLS-1$
-                    })
-                    .collect(Collectors.toList());
-            for (ProcessHandle ph : suspects) {
-                JsonObject entry = new JsonObject();
-                entry.addProperty("pid", ph.pid()); //$NON-NLS-1$
-                ph.info().command().ifPresent(cmd -> entry.addProperty("command", cmd)); //$NON-NLS-1$
-                arr.add(entry);
+        for (Long pid : killed) {
+            arr.add(pid);
+        }
+        result.add("killed_phantoms", arr); //$NON-NLS-1$
+        if (ibPath == null) {
+            result.addProperty("kill_agent_mode_note", //$NON-NLS-1$
+                    "infobase path unknown (server/standalone IB) — no phantom could be targeted"); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Adds a consistency advisory when a web server (Apache wsap/httpd) is running while a FILE
+     * infobase was updated. A successful EDT apply does NOT guarantee that live wsap-published
+     * sessions reload the changed modules — they may keep serving stale/partial state until the
+     * publication is restarted. Per-IB attribution from the process list is unreliable (httpd's
+     * command line carries no IB path; the binding lives in the .vrd), so this is an advisory,
+     * not a hard refusal. Feedback {@code 2026-06-10-phase6-correct-silence-deploy-tooling.md §1}.
+     */
+    private static void annotateWebserverConsistency(JsonObject result, String ibPath,
+            EdtRuntimeService.UpdateInfobaseStatus status) {
+        if (ibPath == null || status == null || !status.updated()) {
+            return;
+        }
+        if (InfobaseProcessScanner.anyWebserverRunning()) {
+            result.addProperty("webserver_running", true); //$NON-NLS-1$
+            result.addProperty("consistency_warning", //$NON-NLS-1$
+                    "A web server (Apache wsap/httpd) is running. If it publishes THIS file infobase, " //$NON-NLS-1$
+                            + "live sessions may keep serving stale/partial modules until the publication " //$NON-NLS-1$
+                            + "is restarted — updated=true means EDT applied the config, not that published " //$NON-NLS-1$
+                            + "sessions reloaded it. Restart the publication (web_publication action=restart) " //$NON-NLS-1$
+                            + "and re-verify at runtime."); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Builds the IB_LOCKED error payload, attaching a path-filtered, classified list of the
+     * processes that may hold the infobase ({@code is_target_ib} flags the ones bound to THIS IB)
+     * and an actionable hint — including the {@code kill_agent_mode} suggestion when a phantom
+     * {@code /AgentMode} Designer is detected on the target infobase.
+     */
+    private static JsonObject lockedIbPayload(String opId, String projectName, File workspaceRoot,
+            String ibPath) {
+        JsonObject payload = errorPayload(opId, projectName, workspaceRoot, EdtToolErrorCode.IB_LOCKED,
+                "Infobase is locked by another process (Apache wsap publication, Designer session, or another client holds exclusive access). Stop the blocking process, then retry update_infobase."); //$NON-NLS-1$
+        List<InfobaseProcessScanner.LockingProcess> processes = InfobaseProcessScanner.scan(ibPath);
+        boolean phantomOnTarget = processes.stream().anyMatch(
+                p -> p.kind() == InfobaseProcessScanner.LockKind.DESIGNER_AGENT && p.targetIb());
+        if (phantomOnTarget) {
+            payload.addProperty("hint", //$NON-NLS-1$
+                    "A phantom /AgentMode Designer agent is bound to this infobase and EDT respawns it " //$NON-NLS-1$
+                            + "within seconds. Retry with kill_agent_mode=true to terminate it right before " //$NON-NLS-1$
+                            + "the lock is taken."); //$NON-NLS-1$
+        } else {
+            payload.addProperty("hint", //$NON-NLS-1$
+                    "Stop all processes holding the infobase open (httpd/wsap, running thin clients, Designer agents), then retry. Use Stop-PhantomDesigner if a Designer agent is stuck."); //$NON-NLS-1$
+        }
+        JsonArray locking = renderLockingProcesses(processes);
+        if (locking.size() > 0) {
+            payload.add("locking_processes", locking); //$NON-NLS-1$
+        }
+        return payload;
+    }
+
+    private static JsonArray renderLockingProcesses(List<InfobaseProcessScanner.LockingProcess> processes) {
+        JsonArray arr = new JsonArray();
+        for (InfobaseProcessScanner.LockingProcess p : processes) {
+            JsonObject entry = new JsonObject();
+            entry.addProperty("pid", p.pid()); //$NON-NLS-1$
+            if (p.command() != null) {
+                entry.addProperty("command", p.command()); //$NON-NLS-1$
             }
-        } catch (RuntimeException e) {
-            // process scan is best-effort; don't let it mask the original error
+            if (p.commandLine() != null) {
+                entry.addProperty("command_line", p.commandLine()); //$NON-NLS-1$
+            }
+            entry.addProperty("kind", p.kind().name().toLowerCase(Locale.ROOT)); //$NON-NLS-1$
+            entry.addProperty("is_target_ib", p.targetIb()); //$NON-NLS-1$
+            arr.add(entry);
         }
         return arr;
     }

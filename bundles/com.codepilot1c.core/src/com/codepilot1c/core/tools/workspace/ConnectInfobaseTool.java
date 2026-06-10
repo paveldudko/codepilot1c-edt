@@ -16,7 +16,9 @@ import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolResult;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import java.util.List;
 import java.util.concurrent.Callable;
 
 /**
@@ -87,6 +89,10 @@ public class ConnectInfobaseTool extends AbstractTool {
                 "async": {
                   "type": "boolean",
                   "description": "Run the bind in the background and return a job_id immediately. Use when the bind may take longer than the MCP HTTP timeout (~60s). Poll the result with connect_infobase_status(job_id=...)."
+                },
+                "auto_stop_phantom": {
+                  "type": "boolean",
+                  "description": "После бинда убить phantom-Designer'ы (1cv8 DESIGNER /AgentMode), привязанные к этой ИБ (kind=file/standalone). EDT авто-респавнит такой агент на primary-ИБ; флаг чистит уже висящий. Best-effort — свежий агент может появиться после возврата; для надёжного апдейта используйте update_infobase(kill_agent_mode=true) (default: false)."
                 }
               },
               "required": ["project_name", "kind"]
@@ -151,6 +157,8 @@ public class ConnectInfobaseTool extends AbstractTool {
                 String infobaseName = asString(parameters.get("infobase_name")); //$NON-NLS-1$
                 String srvr = asString(parameters.get("srvr")); //$NON-NLS-1$
                 String ref = asString(parameters.get("ref")); //$NON-NLS-1$
+                boolean autoStopPhantom = Boolean.TRUE.equals(parameters.get("auto_stop_phantom")) //$NON-NLS-1$
+                        || "true".equalsIgnoreCase(asString(parameters.get("auto_stop_phantom"))); //$NON-NLS-1$
 
                 boolean isAsync = Boolean.TRUE.equals(parameters.get("async")) //$NON-NLS-1$
                         || "true".equalsIgnoreCase(asString(parameters.get("async"))); //$NON-NLS-1$
@@ -162,7 +170,9 @@ public class ConnectInfobaseTool extends AbstractTool {
                     Callable<String> work = () -> {
                         try {
                             ConnectResult asyncResult = connectService.connect(request);
-                            return pretty(successPayload(opId, projectName, asyncResult));
+                            JsonObject asyncSuccess = successPayload(opId, projectName, asyncResult);
+                            applyAutoStopPhantom(asyncSuccess, autoStopPhantom, asyncResult);
+                            return pretty(asyncSuccess);
                         } catch (EdtToolException e) {
                             return pretty(errorPayload(opId, projectName, e.getCode(), e.getMessage()));
                         } catch (IllegalStateException e) {
@@ -187,6 +197,7 @@ public class ConnectInfobaseTool extends AbstractTool {
 
                 ConnectResult result = connectService.connect(request);
                 JsonObject payload = successPayload(opId, projectName, result);
+                applyAutoStopPhantom(payload, autoStopPhantom, result);
                 return ToolResult.success(pretty(payload), ToolResult.ToolResultType.CODE);
             } catch (EdtToolException e) {
                 LOG.warn(String.format("[%s] connect_infobase project=%s failed with %s: %s", //$NON-NLS-1$
@@ -234,6 +245,26 @@ public class ConnectInfobaseTool extends AbstractTool {
         }
         StackTraceElement frame = stack[0];
         return frame.getClassName() + "." + frame.getMethodName() + ":" + frame.getLineNumber(); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
+     * Best-effort: when {@code auto_stop_phantom} is set, terminate phantom {@code /AgentMode}
+     * Designer agents EDT respawns on the just-bound infobase (kind=file/standalone) and record
+     * the PIDs killed. A freshly respawned agent may reappear after this returns; for a reliable
+     * update use {@code update_infobase(kill_agent_mode=true)}. Feedback
+     * {@code 2026-06-09-phase6-infra-tooling.md §1}.
+     */
+    private static void applyAutoStopPhantom(JsonObject payload, boolean autoStopPhantom, ConnectResult result) {
+        if (!autoStopPhantom || result == null) {
+            return;
+        }
+        payload.addProperty("auto_stop_phantom", true); //$NON-NLS-1$
+        List<Long> killed = InfobaseProcessScanner.killPhantomDesigners(result.resolvedPath());
+        JsonArray arr = new JsonArray();
+        for (Long pid : killed) {
+            arr.add(pid);
+        }
+        payload.add("killed_phantoms", arr); //$NON-NLS-1$
     }
 
     private static JsonObject successPayload(String opId, String projectName, ConnectResult result) {
