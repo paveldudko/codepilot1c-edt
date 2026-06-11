@@ -753,14 +753,14 @@ public class EdtInfobaseConnectService {
      * whose resolved path lacked the trailing backslash present on the registered entry was wrongly
      * flagged NAME_COLLISION even under force=true (live finding 2026-06-11).
      */
-    private static boolean connectionIdentitiesMatch(String a, String b) {
+    static boolean connectionIdentitiesMatch(String a, String b) {
         String ca = canonicalConnection(a);
         String cb = canonicalConnection(b);
         return ca != null && ca.equals(cb);
     }
 
     /** Canonical form of a connection string: file IBs by normalized path, others case/space-folded. */
-    private static String canonicalConnection(String connectionString) {
+    static String canonicalConnection(String connectionString) {
         if (connectionString == null) {
             return null;
         }
