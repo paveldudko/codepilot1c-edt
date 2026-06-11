@@ -750,6 +750,24 @@ public class EdtInfobaseConnectService {
                             + "(persistReference did not assign one)"); //$NON-NLS-1$
         }
         IInfobaseAccessManager accessManager = gateway.getInfobaseAccessManager();
+        // No credentials passed: do NOT clobber the stored access settings with OS-auth — reuse what
+        // EDT already persisted for this infobase. Overwriting with OS-auth when the IB actually
+        // needs infobase-auth is what made a re-bind pop EDT's interactive credential modal and hang
+        // the headless caller (live finding 2026-06-11). Only fall through to OS-auth when there is
+        // nothing stored to reuse. Passing an explicit login still updates the settings as before.
+        boolean noCredsPassed = (login == null || login.isBlank())
+                && (password == null || password.isBlank());
+        if (noCredsPassed) {
+            try {
+                IInfobaseAccessSettings existing = accessManager.resolveSettings(reference);
+                if (existing != null && existing != IInfobaseAccessSettings.NOT_DEFINED) {
+                    LOG.info("Reusing stored access settings for infobase (no credentials passed)"); //$NON-NLS-1$
+                    return;
+                }
+            } catch (Exception | NoSuchMethodError e) {
+                // resolution failed — fall through to the default OS-auth store (best-effort)
+            }
+        }
         InfobaseAccess access = (login != null && !login.isBlank())
                 ? InfobaseAccess.INFOBASE : InfobaseAccess.OS;
         InfobaseAccessSettings settings = new InfobaseAccessSettings(
