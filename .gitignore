@@ -5,6 +5,10 @@
 # Codex / agent artifacts
 .codex/
 .claude/
+# Local MCP config (contains a bearer token) + sandbox dev/redeploy scripts — never commit
+.mcp.json
+redeploy-sandbox.ps1
+recover-sandbox.ps1
 .runs/
 tools/__pycache__/
 .planning/local/
