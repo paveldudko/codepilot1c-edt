@@ -73,7 +73,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 },
                 "kill_agent_mode": {
                   "type": "boolean",
-                  "description": "Перед взятием эксклюзивного lock убить phantom-Designer'ы (1cv8 DESIGNER /AgentMode), которые EDT авто-респавнит на primary-ИБ — только привязанные К ЭТОЙ ИБ. Используйте, когда update_infobase упорно падает с IB_LOCKED при открытом EDT workspace. Алиас: auto_kill_phantoms (default: false)."
+                  "description": "Узкий случай: убить phantom-Designer'ы (1cv8 DESIGNER /AgentMode) этой ИБ перед взятием lock. ВАЖНО: чаще всего эксклюзив держит НЕ phantom, а веб-сервер (Apache wsap) — тогда это НЕ поможет; останавливайте Apache (см. allow_webserver_running / web_publication restart). Алиас auto_kill_phantoms (default: false)."
                 },
                 "allow_webserver_running": {
                   "type": "boolean",

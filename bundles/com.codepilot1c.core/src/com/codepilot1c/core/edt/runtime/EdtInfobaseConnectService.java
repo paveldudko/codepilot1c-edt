@@ -8,8 +8,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspaceRoot;
@@ -604,7 +607,7 @@ public class EdtInfobaseConnectService {
                     if (newIdentity != null) {
                         for (InfobaseReference candidate : nameCandidates) {
                             String candidateIdentity = infobaseIdentity(candidate);
-                            if (newIdentity.equalsIgnoreCase(candidateIdentity)) {
+                            if (connectionIdentitiesMatch(newIdentity, candidateIdentity)) {
                                 // Same physical path — adopt the existing entry's UUID (idempotent reuse).
                                 UUID candidateUuid = candidate.getUuid();
                                 if (candidateUuid != null) {
@@ -738,6 +741,42 @@ public class EdtInfobaseConnectService {
         } catch (RuntimeException e) {
             return null;
         }
+    }
+
+    private static final Pattern FILE_TOKEN = Pattern.compile(
+            "File\\s*=\\s*\"([^\"]*)\"|File\\s*=\\s*'([^']*)'", Pattern.CASE_INSENSITIVE); //$NON-NLS-1$
+
+    /**
+     * True when two infobase connection strings denote the SAME physical identity, tolerant of
+     * cosmetic differences EDT does not treat as meaningful: a trailing path separator, slash
+     * direction and drive-letter/path case on the {@code File="..."} token. Without this, a re-bind
+     * whose resolved path lacked the trailing backslash present on the registered entry was wrongly
+     * flagged NAME_COLLISION even under force=true (live finding 2026-06-11).
+     */
+    private static boolean connectionIdentitiesMatch(String a, String b) {
+        String ca = canonicalConnection(a);
+        String cb = canonicalConnection(b);
+        return ca != null && ca.equals(cb);
+    }
+
+    /** Canonical form of a connection string: file IBs by normalized path, others case/space-folded. */
+    private static String canonicalConnection(String connectionString) {
+        if (connectionString == null) {
+            return null;
+        }
+        Matcher m = FILE_TOKEN.matcher(connectionString);
+        if (m.find()) {
+            String path = m.group(1) != null ? m.group(1) : m.group(2);
+            if (path != null) {
+                String norm = path.trim().toLowerCase(Locale.ROOT).replace('\\', '/');
+                while (norm.endsWith("/")) { //$NON-NLS-1$
+                    norm = norm.substring(0, norm.length() - 1);
+                }
+                return "file:" + norm; //$NON-NLS-1$
+            }
+        }
+        // server/standalone: fold case and strip all whitespace so Srvr/Ref order/spacing is ignored
+        return connectionString.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", ""); //$NON-NLS-1$
     }
 
     protected void storeAccessSettings(InfobaseReference reference, String login, String password) {

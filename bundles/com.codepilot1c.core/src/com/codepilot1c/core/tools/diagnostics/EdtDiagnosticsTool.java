@@ -101,7 +101,7 @@ public class EdtDiagnosticsTool extends AbstractTool {
                 },
                 "kill_agent_mode": {
                   "type": "boolean",
-                  "description": "Только для update_infobase: перед взятием lock убить phantom-Designer'ы (1cv8 DESIGNER /AgentMode), привязанные к этой ИБ, которые EDT авто-респавнит на primary. Используйте при упорном IB_LOCKED с открытым EDT. Алиас auto_kill_phantoms. ДОЛЖЕН быть объявлен здесь — иначе MCP-клиент отбросит параметр на пути через диспетчер."
+                  "description": "Только для update_infobase, узкий случай: убить phantom-Designer'ы (1cv8 DESIGNER /AgentMode) этой ИБ. NB: чаще эксклюзив держит веб-сервер (Apache wsap), а не phantom — тогда не поможет, останавливайте Apache (allow_webserver_running). Алиас auto_kill_phantoms. Объявлен здесь для pass-through через диспетчер."
                 },
                 "allow_webserver_running": {
                   "type": "boolean",

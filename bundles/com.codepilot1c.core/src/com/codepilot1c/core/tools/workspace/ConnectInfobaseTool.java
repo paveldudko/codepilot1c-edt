@@ -20,6 +20,9 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Binds an infobase (file- or standalone-server-based) to an EDT project without user interaction.
@@ -32,6 +35,15 @@ import java.util.concurrent.Callable;
 public class ConnectInfobaseTool extends AbstractTool {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(ConnectInfobaseTool.class);
+
+    /**
+     * Cap on a single bind so an EDT interactive credential modal can't hang the caller. Legit
+     * file/standalone/server binds complete in seconds; exceeding this almost always means EDT is
+     * waiting on a credential dialog (no creds passed, none stored, IB needs auth) or an unreachable
+     * server. Kept under the connect_infobase MCP HTTP timeout (~60s) so the sync path returns a
+     * clean EDT_AUTH_REQUIRED rather than a raw transport timeout.
+     */
+    private static final long CONNECT_TIMEOUT_SECONDS = 50L;
 
     private static final String SCHEMA = """
             {
@@ -169,7 +181,7 @@ public class ConnectInfobaseTool extends AbstractTool {
                 if (isAsync) {
                     Callable<String> work = () -> {
                         try {
-                            ConnectResult asyncResult = connectService.connect(request);
+                            ConnectResult asyncResult = connectWithTimeout(request);
                             JsonObject asyncSuccess = successPayload(opId, projectName, asyncResult);
                             applyAutoStopPhantom(asyncSuccess, autoStopPhantom, asyncResult);
                             return pretty(asyncSuccess);
@@ -195,7 +207,7 @@ public class ConnectInfobaseTool extends AbstractTool {
                     return ToolResult.success(pretty(asyncPayload), ToolResult.ToolResultType.CODE);
                 }
 
-                ConnectResult result = connectService.connect(request);
+                ConnectResult result = connectWithTimeout(request);
                 JsonObject payload = successPayload(opId, projectName, result);
                 applyAutoStopPhantom(payload, autoStopPhantom, result);
                 return ToolResult.success(pretty(payload), ToolResult.ToolResultType.CODE);
@@ -216,6 +228,43 @@ public class ConnectInfobaseTool extends AbstractTool {
                         EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE, detailFor(e))));
             }
         });
+    }
+
+    /**
+     * Runs the bind with a hard timeout so an EDT interactive credential modal (or an unreachable
+     * server) can never hang the caller indefinitely. On timeout returns EDT_AUTH_REQUIRED with an
+     * actionable message. The underlying EDT call may keep running on its worker (a native modal
+     * cannot be interrupted), but the caller is freed. Live finding 2026-06-11.
+     */
+    private ConnectResult connectWithTimeout(ConnectRequest request) {
+        CompletableFuture<ConnectResult> future =
+                CompletableFuture.supplyAsync(() -> connectService.connect(request));
+        try {
+            return future.get(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            throw new EdtToolException(EdtToolErrorCode.EDT_AUTH_REQUIRED,
+                    "Bind did not complete within " + CONNECT_TIMEOUT_SECONDS + "s and was aborted. " //$NON-NLS-1$ //$NON-NLS-2$
+                            + "EDT is most likely waiting on an interactive credential prompt for this " //$NON-NLS-1$
+                            + "infobase — pass login/password (a headless bind cannot answer the dialog). " //$NON-NLS-1$
+                            + "For a client/server IB also verify srvr/ref are reachable."); //$NON-NLS-1$
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            future.cancel(true);
+            throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE, "Bind interrupted"); //$NON-NLS-1$
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof EdtToolException ete) {
+                throw ete;
+            }
+            if (cause instanceof RuntimeException re) {
+                throw re;
+            }
+            if (cause instanceof Error err) {
+                throw err;
+            }
+            throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE, detailFor(cause));
+        }
     }
 
     /**
