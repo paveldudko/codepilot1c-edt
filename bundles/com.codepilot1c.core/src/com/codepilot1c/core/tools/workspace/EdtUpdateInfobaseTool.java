@@ -44,6 +44,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtUpdateInfobaseTool.class);
 
+    /** Hard cap on the platform update so a held infobase / EDT modal can never hang the call forever. */
+    private static final long UPDATE_JOIN_TIMEOUT_MS = 300_000L;
+
     private static final String SCHEMA = """
             {
               "type": "object",
@@ -71,6 +74,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 "kill_agent_mode": {
                   "type": "boolean",
                   "description": "Перед взятием эксклюзивного lock убить phantom-Designer'ы (1cv8 DESIGNER /AgentMode), которые EDT авто-респавнит на primary-ИБ — только привязанные К ЭТОЙ ИБ. Используйте, когда update_infobase упорно падает с IB_LOCKED при открытом EDT workspace. Алиас: auto_kill_phantoms (default: false)."
+                },
+                "allow_webserver_running": {
+                  "type": "boolean",
+                  "description": "По умолчанию update_infobase для ФАЙЛОВОЙ ИБ отказывается работать, если запущен веб-сервер (Apache wsap/httpd): эксклюзивный (схемный) апдейт завис бы намертво на удержанной ИБ. Поставьте true, чтобы всё равно попробовать — безопасно для динамического BSL-апдейта или если веб-сервер публикует ДРУГУЮ ИБ (default: false → fail-fast с подсказкой остановить Apache)."
                 }
               },
               "required": ["project_name"]
@@ -124,6 +131,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         boolean async = asBoolean(parameters == null ? null : parameters.get("async"), false); //$NON-NLS-1$
         boolean killAgentMode = asBoolean(parameters == null ? null : parameters.get("kill_agent_mode"), false) //$NON-NLS-1$
                 || asBoolean(parameters == null ? null : parameters.get("auto_kill_phantoms"), false); //$NON-NLS-1$
+        boolean allowWebserverRunning = asBoolean(parameters == null ? null : parameters.get("allow_webserver_running"), false); //$NON-NLS-1$
         String runtimeVersionRaw = asString(parameters == null ? null : parameters.get("runtime_version")); //$NON-NLS-1$
         String runtimeVersion = runtimeVersionRaw == null || runtimeVersionRaw.isBlank() ? null : runtimeVersionRaw;
 
@@ -137,7 +145,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 String jobId = BackgroundJobRegistry.getInstance().startJob(
                         "edt_update_infobase", //$NON-NLS-1$
                         () -> runUpdateAndRenderResult(opId, projectName, keepConnected, workspaceRoot,
-                                runtimeVersion, killAgentMode));
+                                runtimeVersion, killAgentMode, allowWebserverRunning));
                 LOG.info("[%s] edt_update_infobase scheduled async job=%s", opId, jobId); //$NON-NLS-1$
                 JsonObject accepted = basePayload(opId, "scheduled", projectName, false, workspaceRoot); //$NON-NLS-1$
                 accepted.addProperty("async", true); //$NON-NLS-1$
@@ -185,6 +193,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                     result.addProperty("updated", false); //$NON-NLS-1$
                     return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
                 }
+                preflightWebserverGuard(allowWebserverRunning, ibPath);
                 killPhantomsIfRequested(result, killAgentMode, ibPath);
                 EdtRuntimeService.UpdateInfobaseStatus status =
                         runUpdateWithGuiProgress(projectName, keepConnected);
@@ -228,7 +237,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
      * synchronous output.
      */
     private String runUpdateAndRenderResult(String opId, String projectName, boolean keepConnected,
-            File workspaceRoot, String runtimeVersion, boolean killAgentMode) {
+            File workspaceRoot, String runtimeVersion, boolean killAgentMode, boolean allowWebserverRunning) {
         LOG.info("[%s] START edt_update_infobase (async)", opId); //$NON-NLS-1$
         String ibPath = null;
         try {
@@ -242,6 +251,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             }
             result.add("details", details); //$NON-NLS-1$
             applyRuntimeControls(result, projectName, runtimeVersion, false);
+            preflightWebserverGuard(allowWebserverRunning, ibPath);
             killPhantomsIfRequested(result, killAgentMode, ibPath);
             EdtRuntimeService.UpdateInfobaseStatus status =
                     runUpdateWithGuiProgress(projectName, keepConnected);
@@ -397,7 +407,19 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         job.setPriority(Job.LONG);
         job.schedule();
         try {
-            job.join();
+            // Bounded join: never block forever. A held infobase (web server / client) or an EDT
+            // modal can wedge the platform update; without a cap the caller just hangs until the
+            // MCP transport times out and the worker stays stuck. Abort with a clear error instead.
+            boolean completed = job.join(UPDATE_JOIN_TIMEOUT_MS, null);
+            if (!completed) {
+                job.cancel();
+                throw new EdtToolException(EdtToolErrorCode.PROCESS_TIMEOUT,
+                        "Infobase update did not complete within " //$NON-NLS-1$
+                                + (UPDATE_JOIN_TIMEOUT_MS / 1000L) + "s and was aborted. The infobase is " //$NON-NLS-1$
+                                + "likely held by another process (a running web server / wsap publication, " //$NON-NLS-1$
+                                + "or an open client/Designer). Stop the holder (web_publication " //$NON-NLS-1$
+                                + "action=restart, or close the client) and retry."); //$NON-NLS-1$
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             job.cancel();
@@ -521,6 +543,30 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         if (ibPath == null) {
             result.addProperty("kill_agent_mode_note", //$NON-NLS-1$
                     "infobase path unknown (server/standalone IB) — no phantom could be targeted"); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Fail-fast pre-flight: refuse the update (instead of hanging) when a web server is running and
+     * could hold this FILE infobase. An exclusive (schema) update would block indefinitely on the
+     * wsap lock / an EDT modal — the headless caller then just times out. We detect the condition
+     * and return a clear, actionable error. Opt out with {@code allow_webserver_running=true} for a
+     * dynamic BSL-only update (or when the web server publishes a different IB). Live finding
+     * 2026-06-11: a schema update with Apache up hung indefinitely (survived phantom-kill + httpd
+     * stop, needed an EDT restart). NB: server/standalone IBs (ibPath null) are not guarded.
+     */
+    private static void preflightWebserverGuard(boolean allowWebserverRunning, String ibPath) {
+        if (allowWebserverRunning || ibPath == null) {
+            return;
+        }
+        if (InfobaseProcessScanner.anyWebserverRunning()) {
+            throw new EdtToolException(EdtToolErrorCode.UPDATE_BLOCKED_BY_WEBSERVER,
+                    "A web server (Apache wsap/httpd) is running and may hold this file infobase " //$NON-NLS-1$
+                            + "exclusively. An exclusive (schema) update would block indefinitely, so it " //$NON-NLS-1$
+                            + "was refused up front rather than hung. Stop the web server (web_publication " //$NON-NLS-1$
+                            + "action=restart, or stop httpd), then retry. If this is a dynamic BSL-only " //$NON-NLS-1$
+                            + "update, or the web server publishes a DIFFERENT infobase, pass " //$NON-NLS-1$
+                            + "allow_webserver_running=true to attempt anyway."); //$NON-NLS-1$
         }
     }
 
