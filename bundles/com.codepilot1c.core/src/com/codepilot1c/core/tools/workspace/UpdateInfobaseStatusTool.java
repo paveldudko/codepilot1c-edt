@@ -41,11 +41,23 @@ public class UpdateInfobaseStatusTool extends AbstractTool {
                 "job_id": {
                   "type": "string",
                   "description": "Job id returned by edt_update_infobase when async=true"
+                },
+                "wait_for_completion": {
+                  "type": "boolean",
+                  "description": "Block server-side until the job reaches a terminal state (or timeout_seconds elapses), then return the final result — instead of returning the current state immediately. Avoids client-side poll loops (default: false)."
+                },
+                "timeout_seconds": {
+                  "type": "integer",
+                  "description": "Max seconds to wait when wait_for_completion=true (default 120, clamped to [1, 600]). On expiry the still-running state is returned with timed_out=true."
                 }
               },
               "required": ["job_id"]
             }
             """; //$NON-NLS-1$
+
+    private static final long POLL_INTERVAL_MS = 500L;
+    private static final int DEFAULT_TIMEOUT_SECONDS = 120;
+    private static final int MAX_TIMEOUT_SECONDS = 600;
 
     private final BackgroundJobRegistry registry;
 
@@ -85,12 +97,54 @@ public class UpdateInfobaseStatusTool extends AbstractTool {
             return CompletableFuture.completedFuture(
                     ToolResult.failure("job_id is required")); //$NON-NLS-1$
         }
+        boolean waitForCompletion = asBoolean(parameters == null ? null : parameters.get("wait_for_completion")); //$NON-NLS-1$
+        if (waitForCompletion) {
+            int timeoutSeconds = clampTimeout(asInt(parameters == null ? null : parameters.get("timeout_seconds"))); //$NON-NLS-1$
+            return CompletableFuture.supplyAsync(() -> waitAndRender(jobId, timeoutSeconds));
+        }
+        return CompletableFuture.completedFuture(renderLookup(jobId));
+    }
+
+    /** Polls the registry until the job is terminal or the timeout elapses, then renders. */
+    private ToolResult waitAndRender(String jobId, int timeoutSeconds) {
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(timeoutSeconds);
+        long startedAt = System.nanoTime();
+        while (true) {
+            BackgroundJobRegistry.JobLookup lookup = registry.lookupJob(jobId);
+            boolean present = lookup.getKind() == BackgroundJobRegistry.JobLookupKind.PRESENT;
+            boolean terminal = present && isTerminal(lookup.getStatus().getState());
+            if (!present || terminal || System.nanoTime() >= deadline) {
+                ToolResult result = renderLookup(jobId);
+                if (present && !terminal) {
+                    // Re-render with a timed_out marker so the caller knows the wait expired.
+                    JsonObject payload = render(registry.lookupJob(jobId).getStatus());
+                    payload.addProperty("timed_out", true); //$NON-NLS-1$
+                    payload.addProperty("waited_ms", //$NON-NLS-1$
+                            (System.nanoTime() - startedAt) / 1_000_000L);
+                    return ToolResult.success(pretty(payload), ToolResult.ToolResultType.CODE);
+                }
+                return result;
+            }
+            try {
+                Thread.sleep(POLL_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return renderLookup(jobId);
+            }
+        }
+    }
+
+    private static boolean isTerminal(BackgroundJobRegistry.JobState state) {
+        return state == BackgroundJobRegistry.JobState.DONE
+                || state == BackgroundJobRegistry.JobState.FAILED;
+    }
+
+    private ToolResult renderLookup(String jobId) {
         BackgroundJobRegistry.JobLookup lookup = registry.lookupJob(jobId);
         switch (lookup.getKind()) {
             case PRESENT: {
                 JsonObject payload = render(lookup.getStatus());
-                return CompletableFuture.completedFuture(
-                        ToolResult.success(pretty(payload), ToolResult.ToolResultType.CODE));
+                return ToolResult.success(pretty(payload), ToolResult.ToolResultType.CODE);
             }
             case EXPIRED: {
                 LOG.warn("update_infobase_status: expired job id %s", jobId); //$NON-NLS-1$
@@ -102,14 +156,12 @@ public class UpdateInfobaseStatusTool extends AbstractTool {
                 }
                 payload.addProperty("message", //$NON-NLS-1$
                         "Job result retention window has elapsed"); //$NON-NLS-1$
-                return CompletableFuture.completedFuture(
-                        ToolResult.failure(pretty(payload)));
+                return ToolResult.failure(pretty(payload));
             }
             case UNKNOWN:
             default: {
                 LOG.warn("update_infobase_status: unknown job id %s", jobId); //$NON-NLS-1$
-                return CompletableFuture.completedFuture(
-                        ToolResult.failure("Unknown job: " + jobId)); //$NON-NLS-1$
+                return ToolResult.failure("Unknown job: " + jobId); //$NON-NLS-1$
             }
         }
     }
@@ -143,5 +195,33 @@ public class UpdateInfobaseStatusTool extends AbstractTool {
 
     private static String asString(Object value) {
         return value == null ? null : String.valueOf(value).trim();
+    }
+
+    private static boolean asBoolean(Object value) {
+        if (value instanceof Boolean b) {
+            return b.booleanValue();
+        }
+        return value != null && "true".equalsIgnoreCase(String.valueOf(value).trim()); //$NON-NLS-1$
+    }
+
+    private static int asInt(Object value) {
+        if (value instanceof Number n) {
+            return n.intValue();
+        }
+        if (value == null) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private static int clampTimeout(int requested) {
+        if (requested <= 0) {
+            return DEFAULT_TIMEOUT_SECONDS;
+        }
+        return Math.min(requested, MAX_TIMEOUT_SECONDS);
     }
 }

@@ -50,7 +50,7 @@ public class GetDiagnosticsTool implements ITool {
                     },
                     "project_name": {
                         "type": "string",
-                        "description": "EDT project name for scope=project. If omitted, default project or workspace diagnostics are used."
+                        "description": "EDT project name for scope=project (if omitted, default project or workspace diagnostics are used). OPTIONAL for scope=file — the project is auto-resolved from the file path, so you can call get_diagnostics(scope=file, path=...) without project_name."
                     },
                     "severity": {
                         "type": "string",

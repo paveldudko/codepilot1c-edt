@@ -26,7 +26,7 @@ public class EdtMetadataDetailsTool extends AbstractTool {
             {
               "type": "object",
               "properties": {
-                "projectName": {"type": "string", "description": "EDT project name"},
+                "projectName": {"type": "string", "description": "EDT project name. REQUIRED — there is no cwd auto-resolve for this tool; pass it explicitly (e.g. \\"Accounting management\\"), otherwise the call fails with INVALID_ARGUMENT: projectName is required."},
                 "objectFqns": {
                   "type": "array",
                   "items": {"type": "string"},

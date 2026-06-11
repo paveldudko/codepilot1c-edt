@@ -98,6 +98,10 @@ public class EdtDiagnosticsTool extends AbstractTool {
                 "async": {
                   "type": "boolean",
                   "description": "Только для update_infobase: запустить обновление асинхронно."
+                },
+                "kill_agent_mode": {
+                  "type": "boolean",
+                  "description": "Только для update_infobase: перед взятием lock убить phantom-Designer'ы (1cv8 DESIGNER /AgentMode), привязанные к этой ИБ, которые EDT авто-респавнит на primary. Используйте при упорном IB_LOCKED с открытым EDT. Алиас auto_kill_phantoms. ДОЛЖЕН быть объявлен здесь — иначе MCP-клиент отбросит параметр на пути через диспетчер."
                 }
               },
               "required": ["command"],
