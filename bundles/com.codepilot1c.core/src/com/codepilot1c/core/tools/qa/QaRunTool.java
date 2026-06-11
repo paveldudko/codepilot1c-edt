@@ -20,9 +20,13 @@ import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+
+import com.codepilot1c.core.tools.workspace.BackgroundJobRegistry;
 import java.util.stream.Collectors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -111,6 +115,10 @@ public class QaRunTool extends AbstractTool {
                   "type": "boolean",
                   "description": "Пропустить обязательный qa_inspect(command=status) перед запуском; обычно оставляй false"
                 },
+                "async": {
+                  "type": "boolean",
+                  "description": "Fire-and-forget: запустить прогон в фоне и сразу вернуть job_id, не блокируя MCP-вызов. Используй, когда прогон может превысить MCP HTTP-таймаут (~2 мин) — Vanessa-раннер иногда висит после завершения тестов. Результат забери через update_infobase_status(job_id=..., wait_for_completion=true) (generic background-job poller). (default: false)"
+                },
                 "dry_run": {
                   "type": "boolean",
                   "description": "Проверить конфигурацию и вывести команду без запуска"
@@ -176,6 +184,41 @@ public class QaRunTool extends AbstractTool {
 
     @Override
     protected CompletableFuture<ToolResult> doExecute(ToolParameters params) {
+        Map<String, Object> raw = params.getRaw();
+        boolean async = raw != null && (Boolean.TRUE.equals(raw.get("async")) //$NON-NLS-1$
+                || "true".equalsIgnoreCase(String.valueOf(raw.get("async")))); //$NON-NLS-1$ //$NON-NLS-2$
+        if (async) {
+            // Run the (unchanged) synchronous flow inside a background job and return a job_id
+            // immediately, so a long/stuck Vanessa run can't blow the MCP HTTP timeout. The sync
+            // body below is reused verbatim by re-invoking doExecute with async stripped — zero
+            // change to the live-validated run/heartbeat/teardown logic. Feedback 2026-06-10
+            // phase6-qa-correctverify2 §4 (qa_run timeout vs ~20-30s actual).
+            String opId = LogSanitizer.newId("qa-run"); //$NON-NLS-1$
+            Map<String, Object> syncParams = new HashMap<>(raw);
+            syncParams.remove("async"); //$NON-NLS-1$
+            ToolParameters innerParams = new ToolParameters(syncParams);
+            try {
+                String jobId = BackgroundJobRegistry.getInstance().startJob("qa_run", () -> { //$NON-NLS-1$
+                    ToolResult r = doExecute(innerParams).join();
+                    return r.isSuccess() ? r.getContent() : r.getErrorMessage();
+                });
+                LOG.info("[%s] qa_run scheduled async job=%s", opId, jobId); //$NON-NLS-1$
+                JsonObject accepted = new JsonObject();
+                accepted.addProperty("op_id", opId); //$NON-NLS-1$
+                accepted.addProperty("async", true); //$NON-NLS-1$
+                accepted.addProperty("state", "RUNNING"); //$NON-NLS-1$ //$NON-NLS-2$
+                accepted.addProperty("job_id", jobId); //$NON-NLS-1$
+                accepted.addProperty("hint", //$NON-NLS-1$
+                        "Poll with update_infobase_status(job_id=..., wait_for_completion=true) " //$NON-NLS-1$
+                                + "— a generic background-job poller. Avoids the MCP timeout on long runs."); //$NON-NLS-1$
+                return CompletableFuture.completedFuture(ToolResult.success(
+                        new GsonBuilder().setPrettyPrinting().create().toJson(accepted),
+                        ToolResult.ToolResultType.CODE));
+            } catch (RejectedExecutionException e) {
+                return CompletableFuture.completedFuture(
+                        ToolResult.failure("QA_RUN_ERROR: background job queue full; retry later")); //$NON-NLS-1$
+            }
+        }
         return CompletableFuture.supplyAsync(() -> {
             Map<String, Object> parameters = params.getRaw();
             String opId = LogSanitizer.newId("qa-run"); //$NON-NLS-1$
