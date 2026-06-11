@@ -50,6 +50,7 @@ public class GetFormRenderingTool extends AbstractTool {
                 "form_fqn": {"type": "string", "description": "Form FQN, e.g. 'Document.SalesOrder.Form.DocumentForm'"},
                 "canvas_width": {"type": "integer", "description": "Render canvas width in pixels (default 1240, clamped to [200, 4000])"},
                 "return_png": {"type": "boolean", "description": "Include the rendered PNG as png_base64 in the response. Default true. Set to false when you only need the bbox geometry — it shaves the PNG encode + ~10-50 KB per response."},
+                "save_to": {"type": "string", "description": "Write the PNG to this absolute file path instead of inlining it (the response returns saved_to + png_saved). Use for non-trivial forms whose inline base64 overflows the tool-output token limit: save_to then Read the file (Read renders images). When save_to is set, png_base64 is omitted unless return_png=true is also passed explicitly."},
                 "highlight": {"type": "array", "items": {"type": "string"}, "description": "Item names to outline in red on the rendered PNG (and marked highlighted=true in items[])."}
               },
               "required": ["project_name", "form_fqn"]
@@ -82,13 +83,25 @@ public class GetFormRenderingTool extends AbstractTool {
             String projectName = params.requireString("project_name"); //$NON-NLS-1$
             String formFqn = params.requireString("form_fqn"); //$NON-NLS-1$
             int canvasWidth = clampCanvasWidth(params.optInt("canvas_width", 0)); //$NON-NLS-1$
+            String saveTo = params.optString("save_to", null); //$NON-NLS-1$
+            boolean wantFile = saveTo != null && !saveTo.isBlank();
+            boolean returnPngExplicit = params.getRaw().containsKey("return_png"); //$NON-NLS-1$
             boolean returnPng = params.optBoolean("return_png", true); //$NON-NLS-1$
+            // With save_to the PNG goes to a file; only inline it when return_png was explicitly
+            // requested (otherwise save_to would still overflow the response, defeating its point).
+            boolean includeInline = wantFile ? (returnPngExplicit && returnPng) : returnPng;
+            boolean renderPng = includeInline || wantFile; // need the bytes to write the file
             Set<String> highlightSet = readHighlightSet(params.getRaw());
 
             try {
                 FormRenderingResult result = service.renderForm(
-                        projectName, formFqn, canvasWidth, returnPng, highlightSet);
-                JsonObject payload = buildPayload(result, highlightSet);
+                        projectName, formFqn, canvasWidth, renderPng, highlightSet);
+                JsonObject payload = buildPayload(result, highlightSet, includeInline);
+                if (wantFile) {
+                    String savedPath = writePng(result.pngBase64(), saveTo);
+                    payload.addProperty("saved_to", savedPath); //$NON-NLS-1$
+                    payload.addProperty("png_saved", true); //$NON-NLS-1$
+                }
                 return ToolResult.success(GSON.toJson(payload), ToolResult.ToolResultType.SEARCH_RESULTS, payload);
             } catch (MetadataOperationException e) {
                 JsonObject err = new JsonObject();
@@ -123,7 +136,30 @@ public class GetFormRenderingTool extends AbstractTool {
         return Set.of();
     }
 
-    private JsonObject buildPayload(FormRenderingResult result, Set<String> highlightSet) {
+    /**
+     * Decodes the rendered PNG (base64) and writes it to {@code targetPath}, creating parent
+     * directories. Returns the absolute path written. Feedback 2026-06-10-get-form-rendering-file-output.
+     */
+    private static String writePng(String pngBase64, String targetPath) {
+        if (pngBase64 == null) {
+            throw new IllegalStateException("Renderer produced no PNG to save (form may be empty)"); //$NON-NLS-1$
+        }
+        try {
+            byte[] bytes = java.util.Base64.getMimeDecoder().decode(pngBase64);
+            java.nio.file.Path path = java.nio.file.Paths.get(targetPath).toAbsolutePath();
+            if (path.getParent() != null) {
+                java.nio.file.Files.createDirectories(path.getParent());
+            }
+            java.nio.file.Files.write(path, bytes);
+            return path.toString();
+        } catch (java.io.IOException | java.nio.file.InvalidPathException e) {
+            throw new IllegalStateException("Failed to write PNG to '" + targetPath + "': " //$NON-NLS-1$ //$NON-NLS-2$
+                    + e.getMessage(), e);
+        }
+    }
+
+    private JsonObject buildPayload(FormRenderingResult result, Set<String> highlightSet,
+            boolean includeInline) {
         JsonObject root = new JsonObject();
         root.addProperty("project_name", result.projectName()); //$NON-NLS-1$
         root.addProperty("form_fqn", result.formFqn()); //$NON-NLS-1$
@@ -139,7 +175,7 @@ public class GetFormRenderingTool extends AbstractTool {
         walkAndEmit(result.root(), result.bboxes(), highlightSet, items);
         root.add("items", items); //$NON-NLS-1$
 
-        if (result.pngBase64() != null) {
+        if (includeInline && result.pngBase64() != null) {
             root.addProperty("png_base64", result.pngBase64()); //$NON-NLS-1$
             root.addProperty("png_format", "image/png"); //$NON-NLS-1$ //$NON-NLS-2$
         }

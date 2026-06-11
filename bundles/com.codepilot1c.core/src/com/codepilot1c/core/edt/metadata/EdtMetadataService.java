@@ -74,6 +74,7 @@ import com._1c.g5.v8.dt.form.model.ManagedFormAdditionType;
 import com._1c.g5.v8.dt.form.model.Table;
 import com._1c.g5.v8.dt.form.model.AbstractFormAttribute;
 import com._1c.g5.v8.dt.form.model.Button;
+import com._1c.g5.v8.dt.form.model.CommandBarHolder;
 import com._1c.g5.v8.dt.form.model.CommandHandler;
 import com._1c.g5.v8.dt.form.model.DataPath;
 import com._1c.g5.v8.dt.form.model.Decoration;
@@ -122,6 +123,7 @@ import com._1c.g5.v8.dt.form.model.FormItem;
 import com._1c.g5.v8.dt.form.model.FormItemContainer;
 import com._1c.g5.v8.dt.form.model.Titled;
 import com._1c.g5.v8.dt.form.model.Visible;
+import com._1c.g5.v8.dt.mcore.ButtonRepresentation;
 import com._1c.g5.v8.dt.mcore.Command;
 import com._1c.g5.v8.dt.form.service.item.FormNewItemDescriptor;
 import com._1c.g5.v8.dt.form.service.item.IFormItemManagementService;
@@ -130,6 +132,8 @@ import com._1c.g5.v8.dt.mcore.DateFractions;
 import com._1c.g5.v8.dt.mcore.McoreFactory;
 import com._1c.g5.v8.dt.mcore.McorePackage;
 import com._1c.g5.v8.dt.mcore.NamedElement;
+import com._1c.g5.v8.dt.mcore.Picture;
+import com._1c.g5.v8.dt.mcore.PictureRef;
 import com._1c.g5.v8.dt.mcore.NumberQualifiers;
 import com._1c.g5.v8.dt.mcore.NumberValue;
 import com._1c.g5.v8.dt.mcore.StringQualifiers;
@@ -142,6 +146,7 @@ import com._1c.g5.v8.dt.metadata.mdclass.BasicForm;
 import com._1c.g5.v8.dt.metadata.mdclass.EventSubscription;
 import com._1c.g5.v8.dt.metadata.mdclass.InformationRegisterPeriodicity;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicTemplate;
+import com._1c.g5.v8.dt.metadata.mdclass.CommonPicture;
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
 import com._1c.g5.v8.dt.metadata.mdclass.Language;
 import com._1c.g5.v8.dt.metadata.mdclass.DataProcessor;
@@ -954,6 +959,7 @@ public class EdtMetadataService {
                     0,
                     request,
                     state);
+            nodes = applyNameFilter(nodes, request.filterNames());
             String mutationHint = buildFormMutationHint(request.formFqn());
             List<InspectFormLayoutResult.FormCommandNode> commandNodes = collectFormCommandNodes(formModel);
             return new InspectFormLayoutResult(
@@ -1282,6 +1288,12 @@ public class EdtMetadataService {
                         actionHandler = name; // Default handler name = command name
                     }
                     FormCommand formCommand = addCommandToForm(formModel, name, actionHandler, operation);
+                    Object commandPicture = firstNonNull(
+                            getMapValueIgnoreCase(operation, "picture"), //$NON-NLS-1$
+                            getMapValueIgnoreCase(extractOperationSet(operation), "picture")); //$NON-NLS-1$
+                    if (commandPicture != null) {
+                        applyPictureValue(formCommand, commandPicture, configuration);
+                    }
                     summaries.add("add_command[" + operationIndex + "]: name=" + formCommand.getName() //$NON-NLS-1$ //$NON-NLS-2$
                             + ", id=" + formCommand.getId() + ", action=" + actionHandler); //$NON-NLS-1$ //$NON-NLS-2$
                 }
@@ -3030,6 +3042,15 @@ public class EdtMetadataService {
                 }
             }
         }
+        // Descend into the command bar (Table/Form/Group autoCommandBar), whose Buttons live
+        // outside getItems() — otherwise set_item on an autoCommandBar button is METADATA_NOT_FOUND.
+        // Feedback 2026-06-10-mutate-form-picture-binding §2.
+        if (container instanceof CommandBarHolder holder && holder.getAutoCommandBar() != null) {
+            FormItem inBar = findFormItem(holder.getAutoCommandBar(), id, name);
+            if (inBar != null) {
+                return inBar;
+            }
+        }
         return null;
     }
 
@@ -3151,8 +3172,94 @@ public class EdtMetadataService {
                 applyDataPath(field, value);
                 continue;
             }
+            if ("picture".equals(normalized) && supportsPicture(target)) { //$NON-NLS-1$
+                applyPictureValue(target, value, configuration);
+                continue;
+            }
+            if ("representation".equals(normalized) && target instanceof Button button) { //$NON-NLS-1$
+                applyButtonRepresentation(button, value);
+                continue;
+            }
             applySimpleFeatureValue(target, key, value, configuration);
         }
+    }
+
+    /** True for form elements that expose a {@code picture} reference (FormCommand, Button). */
+    private static boolean supportsPicture(EObject target) {
+        return target instanceof FormCommand || target instanceof Button;
+    }
+
+    /**
+     * Binds a {@code CommonPicture.<Name>} reference to a FormCommand or Button via a PictureRef.
+     * The CommonPicture is resolved from the SAME BM configuration as the form so the cross-
+     * reference serializes correctly (as {@code <picture xsi:type="core:PictureRef"><picture>
+     * CommonPicture.Name</picture></picture>}). Feedback 2026-06-10-mutate-form-picture-binding.
+     */
+    private void applyPictureValue(EObject target, Object value, Configuration configuration) {
+        String pictureFqn = asString(value);
+        if (pictureFqn == null || pictureFqn.isBlank()) {
+            return;
+        }
+        Picture picture = resolveCommonPicture(configuration, pictureFqn);
+        PictureRef ref = McoreFactory.eINSTANCE.createPictureRef();
+        ref.setPicture(picture);
+        if (target instanceof FormCommand command) {
+            command.setPicture(ref);
+        } else if (target instanceof Button button) {
+            button.setPicture(ref);
+        }
+    }
+
+    /**
+     * Resolves a CommonPicture by name (or {@code CommonPicture.<Name>} FQN) from the configuration.
+     * Only CommonPictures are supported (the project's own pictures); standard library pictures
+     * would need a different ref shape and are rejected with an actionable error.
+     */
+    private Picture resolveCommonPicture(Configuration configuration, String pictureFqn) {
+        if (configuration == null) {
+            throw new MetadataOperationException(MetadataOperationCode.METADATA_NOT_FOUND,
+                    "Cannot resolve picture '" + pictureFqn + "': configuration unavailable", false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        String name = pictureFqn.trim();
+        int dot = name.indexOf('.');
+        if (dot >= 0) {
+            String prefix = normalizeToken(name.substring(0, dot));
+            if (!"commonpicture".equals(prefix) && !"общаякартинка".equals(prefix)) { //$NON-NLS-1$ //$NON-NLS-2$
+                throw new MetadataOperationException(MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Only CommonPicture.<Name> pictures are supported for form picture binding, got: " //$NON-NLS-1$
+                                + pictureFqn, false);
+            }
+            name = name.substring(dot + 1);
+        }
+        for (CommonPicture cp : configuration.getCommonPictures()) {
+            if (cp != null && name.equalsIgnoreCase(cp.getName())) {
+                return cp;
+            }
+        }
+        throw new MetadataOperationException(MetadataOperationCode.METADATA_NOT_FOUND,
+                "CommonPicture not found: " + name //$NON-NLS-1$
+                        + " — create it first (create_metadata kind=CommonPicture) or check the name.", false); //$NON-NLS-1$
+    }
+
+    /** Parses a Button {@code representation} literal (Auto/Text/Picture/PictureAndText). */
+    private void applyButtonRepresentation(Button button, Object value) {
+        String literal = asString(value);
+        if (literal == null || literal.isBlank()) {
+            return;
+        }
+        ButtonRepresentation rep = switch (normalizeToken(literal)) {
+            case "auto" -> ButtonRepresentation.AUTO; //$NON-NLS-1$
+            case "text" -> ButtonRepresentation.TEXT; //$NON-NLS-1$
+            case "picture" -> ButtonRepresentation.PICTURE; //$NON-NLS-1$
+            case "pictureandtext", "textandpicture" -> ButtonRepresentation.PICTURE_AND_TEXT; //$NON-NLS-1$ //$NON-NLS-2$
+            default -> null;
+        };
+        if (rep == null) {
+            throw new MetadataOperationException(MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Unknown button representation '" + literal //$NON-NLS-1$
+                            + "'. Allowed: Auto, Text, Picture, PictureAndText", false); //$NON-NLS-1$
+        }
+        button.setRepresentation(rep);
     }
 
     private void applyTitleValue(Titled titled, Object value) {
@@ -4640,6 +4747,46 @@ public class EdtMetadataService {
             result.put("properties", collectScalarProperties(formModel, includeTitles)); //$NON-NLS-1$
         }
         return result;
+    }
+
+    /**
+     * When {@code filterNames} is non-empty, flattens the node tree to just the nodes whose name
+     * matches (case-insensitive), each with its {@code path} preserved and {@code children} cleared
+     * — a targeted lookup instead of a full-tree dump. Feedback 2026-06-09-phase6-devfix-tooling §2.
+     */
+    private static List<InspectFormLayoutResult.FormItemNode> applyNameFilter(
+            List<InspectFormLayoutResult.FormItemNode> nodes, List<String> filterNames) {
+        if (filterNames == null || filterNames.isEmpty()) {
+            return nodes;
+        }
+        java.util.Set<String> wanted = new java.util.HashSet<>();
+        for (String n : filterNames) {
+            if (n != null && !n.isBlank()) {
+                wanted.add(n.trim().toLowerCase(Locale.ROOT));
+            }
+        }
+        if (wanted.isEmpty()) {
+            return nodes;
+        }
+        List<InspectFormLayoutResult.FormItemNode> out = new ArrayList<>();
+        collectMatchingNodes(nodes, wanted, out);
+        return out;
+    }
+
+    private static void collectMatchingNodes(List<InspectFormLayoutResult.FormItemNode> nodes,
+            java.util.Set<String> wanted, List<InspectFormLayoutResult.FormItemNode> out) {
+        if (nodes == null) {
+            return;
+        }
+        for (InspectFormLayoutResult.FormItemNode n : nodes) {
+            if (n.name() != null && wanted.contains(n.name().toLowerCase(Locale.ROOT))) {
+                out.add(new InspectFormLayoutResult.FormItemNode(
+                        n.id(), n.parentId(), n.indexInParent(), n.path(), n.name(), n.kind(),
+                        n.title(), n.visible(), n.enabled(), n.readOnly(), n.dataPath(),
+                        n.fieldType(), n.commandRef(), n.properties(), List.of()));
+            }
+            collectMatchingNodes(n.children(), wanted, out);
+        }
     }
 
     private List<InspectFormLayoutResult.FormItemNode> collectFormItemNodes(

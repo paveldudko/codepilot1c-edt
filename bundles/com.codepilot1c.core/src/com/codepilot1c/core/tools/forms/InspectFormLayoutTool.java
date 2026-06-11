@@ -55,6 +55,11 @@ public class InspectFormLayoutTool extends AbstractTool {
                 "max_items": {
                   "type": "integer",
                   "description": "Максимальное количество узлов формы в ответе (1..10000)"
+                },
+                "filter_names": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "description": "Целевой поиск: вернуть только узлы с этими именами (case-insensitive), плоским списком с сохранённым path — вместо дампа всего дерева. Удобно для проверки наличия/свойств нескольких конкретных элементов на большой форме."
                 }
               },
               "required": ["project", "form_fqn"]
@@ -96,6 +101,7 @@ public class InspectFormLayoutTool extends AbstractTool {
                 boolean includeInvisible = asBoolean(parameters.get("include_invisible"), true); //$NON-NLS-1$
                 int maxDepth = asInt(parameters.get("max_depth"), 12); //$NON-NLS-1$
                 int maxItems = asInt(parameters.get("max_items"), 2000); //$NON-NLS-1$
+                java.util.List<String> filterNames = asStringList(parameters.get("filter_names")); //$NON-NLS-1$
 
                 InspectFormLayoutRequest request = new InspectFormLayoutRequest(
                         project,
@@ -104,7 +110,8 @@ public class InspectFormLayoutTool extends AbstractTool {
                         includeTitles,
                         includeInvisible,
                         maxDepth,
-                        maxItems);
+                        maxItems,
+                        filterNames);
                 InspectFormLayoutResult result = formService.inspectFormLayout(request);
                 LOG.info("[%s] SUCCESS in %s form=%s items=%d truncated=%s", //$NON-NLS-1$
                         opId,
@@ -128,6 +135,22 @@ public class InspectFormLayoutTool extends AbstractTool {
 
     private String asString(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private java.util.List<String> asStringList(Object value) {
+        if (!(value instanceof Iterable<?> iter)) {
+            return java.util.List.of();
+        }
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (Object item : iter) {
+            if (item != null) {
+                String s = String.valueOf(item).trim();
+                if (!s.isEmpty()) {
+                    out.add(s);
+                }
+            }
+        }
+        return out;
     }
 
     private boolean asBoolean(Object value, boolean defaultValue) {

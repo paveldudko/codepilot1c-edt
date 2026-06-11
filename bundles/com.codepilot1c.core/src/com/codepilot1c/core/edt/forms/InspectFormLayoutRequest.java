@@ -1,5 +1,7 @@
 package com.codepilot1c.core.edt.forms;
 
+import java.util.List;
+
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 
@@ -13,8 +15,21 @@ public record InspectFormLayoutRequest(
         boolean includeTitles,
         boolean includeInvisible,
         int maxDepth,
-        int maxItems
+        int maxItems,
+        List<String> filterNames
 ) {
+    /** Backward-compat constructor without filterNames (returns the full tree). */
+    public InspectFormLayoutRequest(
+            String projectName,
+            String formFqn,
+            boolean includeProperties,
+            boolean includeTitles,
+            boolean includeInvisible,
+            int maxDepth,
+            int maxItems) {
+        this(projectName, formFqn, includeProperties, includeTitles, includeInvisible,
+                maxDepth, maxItems, List.of());
+    }
     private static final int DEFAULT_MAX_DEPTH = 12;
     private static final int DEFAULT_MAX_ITEMS = 2000;
     private static final int MIN_MAX_DEPTH = 1;
