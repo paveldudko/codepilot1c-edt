@@ -1,9 +1,16 @@
 package com.codepilot1c.core.tools.workspace;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -144,27 +151,88 @@ public final class InfobaseProcessScanner {
      */
     public static List<LockingProcess> scan(String ibPath) {
         String normIb = normalizePath(ibPath);
+        // On Windows, ProcessHandle.info().commandLine() is frequently EMPTY (the JVM does not read
+        // the target PEB), so /AgentMode and the IB path are invisible and a phantom is misclassified
+        // as OTHER_1C and never killed. WMI exposes the command line for same-user processes, so we
+        // overlay it. Live finding 2026-06-11 (sandbox): kill_agent_mode missed an EDT-child phantom
+        // because commandLine() came back empty.
+        Map<Long, String> wmiCmd = windowsCommandLines();
         List<LockingProcess> out = new ArrayList<>();
         try {
             List<ProcessHandle> all = ProcessHandle.allProcesses().collect(Collectors.toList());
             for (ProcessHandle ph : all) {
                 ProcessHandle.Info info = ph.info();
-                Optional<String> command = info.command();
-                if (command.isEmpty()) {
-                    continue;
+                String exe = info.command().orElse(null);
+                String wmi = wmiCmd.get(ph.pid());
+                String commandLine = wmi != null ? wmi : info.commandLine().orElse(exe);
+                if (commandLine == null && exe == null) {
+                    continue; // nothing readable about this process
                 }
-                String commandLine = info.commandLine().orElse(command.get());
-                String cmdLower = commandLine.toLowerCase(Locale.ROOT);
-                String exeLower = command.get().toLowerCase(Locale.ROOT);
+                String cmdLower = commandLine == null ? "" : commandLine.toLowerCase(Locale.ROOT); //$NON-NLS-1$
+                String exeLower = exe == null ? "" : exe.toLowerCase(Locale.ROOT); //$NON-NLS-1$
                 if (!isOneCOrWebProcess(exeLower) && !isOneCOrWebProcess(cmdLower)) {
                     continue;
                 }
-                LockKind kind = classify(cmdLower);
+                LockKind kind = classify(cmdLower.isEmpty() ? exeLower : cmdLower);
                 boolean target = normIb != null && matchesIb(cmdLower, normIb);
-                out.add(new LockingProcess(ph.pid(), command.get(), commandLine, kind, target));
+                out.add(new LockingProcess(ph.pid(), exe, commandLine, kind, target));
             }
         } catch (RuntimeException e) {
             // process scan is best-effort; don't let it mask the original error
+        }
+        return out;
+    }
+
+    /** {@code true} on Windows. */
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+    }
+
+    /**
+     * Returns a {@code pid -> command line} map for 1C/Apache processes via WMI (Windows only).
+     * Empty on non-Windows or on any failure — callers fall back to {@link ProcessHandle}. Needed
+     * because {@code ProcessHandle.info().commandLine()} is unreliable on Windows.
+     */
+    private static Map<Long, String> windowsCommandLines() {
+        Map<Long, String> out = new HashMap<>();
+        if (!isWindows()) {
+            return out;
+        }
+        try {
+            // Pass the script via -EncodedCommand (base64 UTF-16LE): ProcessBuilder mangles embedded
+            // double-quotes in a -Command argument on Windows, which silently broke the query and
+            // returned nothing (live finding 2026-06-11 — kill_agent_mode kept missing the phantom).
+            String psCmd = "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '1cv8|httpd|wsap|apache' }" //$NON-NLS-1$
+                    + " | ForEach-Object { ($_.ProcessId.ToString() + '|||' + $_.CommandLine) }"; //$NON-NLS-1$
+            String encoded = Base64.getEncoder().encodeToString(psCmd.getBytes(StandardCharsets.UTF_16LE));
+            ProcessBuilder pb = new ProcessBuilder("powershell.exe", "-NoProfile", "-NonInteractive", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    "-EncodedCommand", encoded); //$NON-NLS-1$
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    int sep = line.indexOf("|||"); //$NON-NLS-1$
+                    if (sep > 0) {
+                        try {
+                            long pid = Long.parseLong(line.substring(0, sep).trim());
+                            String cmd = line.substring(sep + 3);
+                            if (!cmd.isBlank()) {
+                                out.put(Long.valueOf(pid), cmd);
+                            }
+                        } catch (NumberFormatException ignore) {
+                            // skip malformed line
+                        }
+                    }
+                }
+            }
+            if (!p.waitFor(10, TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            // best-effort; fall back to ProcessHandle command lines
         }
         return out;
     }
