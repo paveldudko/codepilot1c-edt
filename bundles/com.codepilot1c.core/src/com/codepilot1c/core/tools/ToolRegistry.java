@@ -120,6 +120,7 @@ public class ToolRegistry {
         register(new BslModuleContextTool());
         register(new BslModuleExportsTool());
         register(new BslObjectContextTool());
+        register(new ValidateQueryTool());
         register(new EdtValidateRequestTool());
         register(new CreateMetadataTool());
         register(new com.codepilot1c.core.tools.metadata.CreateEventSubscriptionTool());
