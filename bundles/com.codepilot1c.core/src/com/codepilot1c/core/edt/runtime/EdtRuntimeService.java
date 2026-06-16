@@ -977,13 +977,12 @@ public class EdtRuntimeService {
                 loader);
         return Proxy.newProxyInstance(callbackInterface.getClassLoader(),
                 new Class<?>[] { callbackInterface },
-                (Object proxy, Method method, Object[] args) -> handleUpdateCallback(method, args,
+                (Object proxy, Method method, Object[] args) -> handleUpdateCallback(proxy, method, args,
                         exclusiveLockUnavailable));
     }
 
-    @SuppressWarnings("unchecked")
-    private static Object handleUpdateCallback(Method method, Object[] args,
-            AtomicBoolean exclusiveLockUnavailable) throws Exception {
+    private static Object handleUpdateCallback(Object proxy, Method method, Object[] args,
+            AtomicBoolean exclusiveLockUnavailable) {
         String name = method.getName();
         if ("onConfirm".equals(name)) { //$NON-NLS-1$
             // EDT calls onConfirm when it cannot acquire an exclusive lock and asks whether to
@@ -994,24 +993,33 @@ public class EdtRuntimeService {
             }
             return Boolean.TRUE;
         }
-        if ("onInfobaseChanges".equals(name)) { //$NON-NLS-1$
-            if (args == null || args.length < 7) {
-                return enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
+        // EDT 2025.2.x invokes IInfobaseChangesResolver.resolveInfobaseChanges (inherited into
+        // IInfobaseUpdateCallback); the older onInfobaseChanges name is kept as a legacy alias for
+        // other API versions. For a headless update the policy is "project overrides the infobase":
+        // return OVERRIDDEN (the same outcome the GUI callback produces under allowOverrideConflict)
+        // WITHOUT calling resolver.overrideConflict — that method needs an IUpdateInfobaseFlow which
+        // is absent from the resolveInfobaseChanges arguments. Returning null here is exactly what
+        // made EDT call InfobaseConflictResolutionResult.ordinal() on null -> NPE on any conflict.
+        if ("resolveInfobaseChanges".equals(name) || "onInfobaseChanges".equals(name)) { //$NON-NLS-1$ //$NON-NLS-2$
+            Object overridden = enumValue(method.getReturnType(), "OVERRIDDEN"); //$NON-NLS-1$
+            if (overridden != null) {
+                return overridden;
             }
-            Object conflictResolver = args[4];
-            if (conflictResolver == null) {
-                return enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
-            }
-            Method override = findMethod(conflictResolver.getClass(), "overrideConflict", 6); //$NON-NLS-1$
-            if (override != null) {
-                return override.invoke(conflictResolver, args[0], args[1], args[2], args[3], args[5], args[6]);
-            }
-            return enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
+            Object deferred = enumValue(method.getReturnType(), "DEFERRED"); //$NON-NLS-1$
+            return deferred != null ? deferred : defaultValue(method.getReturnType());
         }
-        if ("toString".equals(name)) { //$NON-NLS-1$
+        if ("toString".equals(name) && method.getParameterCount() == 0) { //$NON-NLS-1$
             return "AutoUpdateCallbackProxy"; //$NON-NLS-1$
         }
-        return null;
+        if ("hashCode".equals(name) && method.getParameterCount() == 0) { //$NON-NLS-1$
+            return Integer.valueOf(System.identityHashCode(proxy));
+        }
+        if ("equals".equals(name) && method.getParameterCount() == 1) { //$NON-NLS-1$
+            return Boolean.valueOf(args != null && args.length == 1 && proxy == args[0]);
+        }
+        // Never hand a bare null back to EDT for a callback method with a primitive return type;
+        // coerce to the type's default so an unmodelled callback can't trigger an NPE downstream.
+        return defaultValue(method.getReturnType());
     }
 
     private static Method findUpdateMethod(Class<?> managerClass) {
@@ -1030,7 +1038,48 @@ public class EdtRuntimeService {
     @SuppressWarnings("unchecked")
     private static Object enumValue(Class<?> type, String name) {
         if (type != null && type.isEnum()) {
-            return Enum.valueOf((Class<Enum>) type, name);
+            try {
+                return Enum.valueOf((Class<Enum>) type, name);
+            } catch (IllegalArgumentException e) {
+                // The enum does not declare a constant with this name on this EDT version.
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Returns a non-null default for a primitive return type so a dynamic-proxy callback never
+     * hands {@code null} back where the platform expects a primitive (which would NPE on unboxing).
+     * Reference and {@code void} return types yield {@code null}.
+     */
+    private static Object defaultValue(Class<?> type) {
+        if (type == null || type == Void.TYPE || !type.isPrimitive()) {
+            return null;
+        }
+        if (type == Boolean.TYPE) {
+            return Boolean.FALSE;
+        }
+        if (type == Character.TYPE) {
+            return Character.valueOf('\0');
+        }
+        if (type == Byte.TYPE) {
+            return Byte.valueOf((byte) 0);
+        }
+        if (type == Short.TYPE) {
+            return Short.valueOf((short) 0);
+        }
+        if (type == Integer.TYPE) {
+            return Integer.valueOf(0);
+        }
+        if (type == Long.TYPE) {
+            return Long.valueOf(0L);
+        }
+        if (type == Float.TYPE) {
+            return Float.valueOf(0F);
+        }
+        if (type == Double.TYPE) {
+            return Double.valueOf(0D);
         }
         return null;
     }
