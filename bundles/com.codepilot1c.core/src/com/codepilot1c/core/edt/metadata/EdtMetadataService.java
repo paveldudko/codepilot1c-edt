@@ -98,11 +98,8 @@ import com._1c.g5.v8.dt.form.model.FormFactory;
 import com._1c.g5.v8.dt.form.model.FormPackage;
 import com._1c.g5.v8.dt.form.model.FieldExtInfo;
 import com._1c.g5.v8.dt.form.model.FormField;
-import com._1c.g5.v8.dt.form.model.CheckBoxFieldExtInfo;
 import com._1c.g5.v8.dt.form.model.InputFieldExtInfo;
-import com._1c.g5.v8.dt.form.model.LabelFieldExtInfo;
 import com._1c.g5.v8.dt.form.model.ManagedFormFieldType;
-import com._1c.g5.v8.dt.form.model.RadioButtonsFieldExtInfo;
 import com._1c.g5.v8.dt.form.model.ButtonGroupExtInfo;
 import com._1c.g5.v8.dt.form.model.CommandBarExtInfo;
 import com._1c.g5.v8.dt.form.model.ColumnGroupExtInfo;
@@ -1242,6 +1239,11 @@ public class EdtMetadataService {
                         applyInputFieldExtInfoProperties(field, set);
                     }
                     applyFormPropertySet(item, set, configuration);
+                    if (item instanceof FormField field) {
+                        // Re-sync the extInfo companion after the property set: set_item may have
+                        // flipped the field type, which would otherwise leave a mismatched extInfo.
+                        ensureFormFieldExtInfo(field);
+                    }
                     summaries.add("set_item[" + operationIndex + "]: id=" + item.getId()); //$NON-NLS-1$ //$NON-NLS-2$
                 }
                 case "removeitem", "deleteitem" -> {
@@ -2889,38 +2891,39 @@ public class EdtMetadataService {
         if (type == null) {
             return;
         }
-        FieldExtInfo extInfo = field.getExtInfo();
-        // Map a known field type to its xsi:type companion. EDT's IFormItemManagementService
-        // produces InputFieldExtInfo by default; if the agent later flips the type to
-        // CheckBoxField / RadioButtonField / LabelField, the extInfo block stays as
-        // InputFieldExtInfo and the platform flags SU107 on the wrong xsi:type pairing.
-        switch (type) {
-            case CHECK_BOX_FIELD -> {
-                if (!(extInfo instanceof CheckBoxFieldExtInfo)) {
-                    field.setExtInfo(FormFactory.eINSTANCE.createCheckBoxFieldExtInfo());
-                }
-            }
-            case RADIO_BUTTON_FIELD -> {
-                if (!(extInfo instanceof RadioButtonsFieldExtInfo)) {
-                    field.setExtInfo(FormFactory.eINSTANCE.createRadioButtonsFieldExtInfo());
-                }
-            }
-            case LABEL_FIELD -> {
-                if (!(extInfo instanceof LabelFieldExtInfo)) {
-                    field.setExtInfo(FormFactory.eINSTANCE.createLabelFieldExtInfo());
-                }
-            }
-            case INPUT_FIELD -> {
-                if (!(extInfo instanceof InputFieldExtInfo)) {
-                    field.setExtInfo(FormFactory.eINSTANCE.createInputFieldExtInfo());
-                }
-            }
-            default -> {
-                // Other field types (CHART_FIELD, PROGRESS_BAR_FIELD, etc.) keep whatever
-                // extInfo IFormItemManagementService or applyFormPropertySet produced; this
-                // helper only rescues the common boolean/radio/label/input mismatch.
-            }
+        FieldExtInfo existing = field.getExtInfo();
+        // Map the field type to its xsi:type companion. EDT's IFormItemManagementService produces
+        // InputFieldExtInfo by default; once the type is flipped (e.g. to HTMLDocumentField,
+        // CheckBoxField, ...) the stale InputFieldExtInfo makes the platform render the wrong
+        // control (SU107 on the mismatched xsi:type pairing). Build the expected companion for the
+        // current type and swap only when the existing one is a different class — keeping a correct
+        // existing extInfo intact so its model data is not discarded.
+        FieldExtInfo created = switch (type) {
+            case LABEL_FIELD -> FormFactory.eINSTANCE.createLabelFieldExtInfo();
+            case CHECK_BOX_FIELD -> FormFactory.eINSTANCE.createCheckBoxFieldExtInfo();
+            case RADIO_BUTTON_FIELD -> FormFactory.eINSTANCE.createRadioButtonsFieldExtInfo();
+            case PICTURE_FIELD -> FormFactory.eINSTANCE.createImageFieldExtInfo();
+            case HTML_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createHtmlFieldExtInfo();
+            case TEXT_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createTextDocFieldExtInfo();
+            case SPREADSHEET_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createSpreadSheetDocFieldExtInfo();
+            case CHART_FIELD -> FormFactory.eINSTANCE.createChartFieldExtInfo();
+            case GANTT_CHART_FIELD -> FormFactory.eINSTANCE.createGanttChartFieldExtInfo();
+            case PROGRESS_BAR_FIELD -> FormFactory.eINSTANCE.createProgressBarFieldExtInfo();
+            case TRACK_BAR_FIELD -> FormFactory.eINSTANCE.createTrackBarFieldExtInfo();
+            case CALENDAR_FIELD -> FormFactory.eINSTANCE.createCalendarFieldExtInfo();
+            case PERIOD_FIELD -> FormFactory.eINSTANCE.createPeriodFieldExtInfo();
+            case FORMATTED_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createFormattedDocFieldExtInfo();
+            case PDF_DOCUMENT_FIELD -> FormFactory.eINSTANCE.createPDFDocumentFieldExtInfo();
+            case PLANNER_FIELD -> FormFactory.eINSTANCE.createPlannerFieldExtInfo();
+            case DENDROGRAM_FIELD -> FormFactory.eINSTANCE.createDendrogramFieldExtInfo();
+            case GEOGRAPHICAL_SCHEMA_FIELD -> FormFactory.eINSTANCE.createGeographicalMapFieldExtInfo();
+            case GRAPHICAL_SCHEMA_FIELD -> FormFactory.eINSTANCE.createFlowchartFieldExtInfo();
+            default -> FormFactory.eINSTANCE.createInputFieldExtInfo();
+        };
+        if (existing != null && existing.getClass() == created.getClass()) {
+            return;
         }
+        field.setExtInfo(created);
     }
 
     private FormItemContainer resolveTargetContainer(Form formModel, Map<String, Object> operation) {
