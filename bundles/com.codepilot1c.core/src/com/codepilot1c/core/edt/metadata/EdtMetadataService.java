@@ -1181,11 +1181,15 @@ public class EdtMetadataService {
                                 name,
                                 index,
                                 itemManagementService);
-                        ensureFormFieldExtInfo(field);
                         applyInputFieldExtInfoProperties(field, effectiveSet);
                         if (!effectiveSet.isEmpty()) {
                             applyFormPropertySet(field, effectiveSet, configuration);
                         }
+                        // Sync the extInfo companion AFTER the property set — addFieldItem leaves the
+                        // default InputFieldExtInfo and the field's real type arrives via field_type in
+                        // the property set, so an HTML/checkbox/etc. field would otherwise keep the
+                        // wrong InputFieldExtInfo and 1C would render the wrong control.
+                        ensureFormFieldExtInfo(field);
                         applyDefaultVisibility(field, effectiveSet);
                         summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
                                 + safeItemId(field)); //$NON-NLS-1$
