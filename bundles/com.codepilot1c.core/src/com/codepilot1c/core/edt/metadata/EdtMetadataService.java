@@ -1151,22 +1151,45 @@ public class EdtMetadataService {
                     rejectDecorationAsFieldType(operation, name);
                     Map<String, Object> set = extractAddFieldSet(operation);
                     Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
-                    FormField field = addFieldItem(
-                            formModel,
-                            parentContainer,
-                            operation,
-                            name,
-                            index,
-                            itemManagementService);
                     Map<String, Object> effectiveSet = stripMapKeysIgnoreCase(set, "name", "title"); //$NON-NLS-1$ //$NON-NLS-2$
-                    ensureFormFieldExtInfo(field);
-                    applyInputFieldExtInfoProperties(field, effectiveSet);
-                    if (!effectiveSet.isEmpty()) {
-                        applyFormPropertySet(field, effectiveSet, configuration);
+                    FormAttribute valueTableAttribute = findValueTableFormAttribute(formModel, name);
+                    if (valueTableAttribute != null && itemManagementService != null) {
+                        // A ValueTable attribute must be placed on the form as a Table item with
+                        // column fields, not a flat FormField (which 1C cannot display). Bind the
+                        // Table to the attribute's data path and materialize its columns from it.
+                        Table table = addTableItem(
+                                formModel, parentContainer, operation, name, index, itemManagementService);
+                        DataPath dataPath = toDataPath(name, "data_path"); //$NON-NLS-1$
+                        table.setDataPath(dataPath);
+                        FormNewItemDescriptor descriptor = buildFormNewItemDescriptor(operation, name);
+                        itemManagementService.addTableFieldsByDataPath(table, dataPath, formModel, descriptor);
+                        // data-path / field-type keys are not Table properties and would fail
+                        // applyFormPropertySet ("Unknown form property").
+                        Map<String, Object> tableSet = stripMapKeysIgnoreCase(effectiveSet,
+                                "data_path", "datapath", "path", "type", "field_type", "fieldType"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+                        if (!tableSet.isEmpty()) {
+                            applyFormPropertySet(table, tableSet, configuration);
+                        }
+                        applyDefaultVisibility(table, tableSet);
+                        summaries.add("add_field[" + operationIndex + "]: name=" + table.getName() //$NON-NLS-1$ //$NON-NLS-2$
+                                + ", id=" + safeItemId(table) + " (ValueTable -> Table)"); //$NON-NLS-1$ //$NON-NLS-2$
+                    } else {
+                        FormField field = addFieldItem(
+                                formModel,
+                                parentContainer,
+                                operation,
+                                name,
+                                index,
+                                itemManagementService);
+                        ensureFormFieldExtInfo(field);
+                        applyInputFieldExtInfoProperties(field, effectiveSet);
+                        if (!effectiveSet.isEmpty()) {
+                            applyFormPropertySet(field, effectiveSet, configuration);
+                        }
+                        applyDefaultVisibility(field, effectiveSet);
+                        summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
+                                + safeItemId(field)); //$NON-NLS-1$
                     }
-                    applyDefaultVisibility(field, effectiveSet);
-                    summaries.add("add_field[" + operationIndex + "]: name=" + field.getName() + ", id=" //$NON-NLS-1$ //$NON-NLS-2$
-                            + safeItemId(field)); //$NON-NLS-1$
                 }
                 case "addtable", "createtable" -> {
                     FormItemContainer parentContainer = resolveTargetContainer(formModel, operation);
@@ -1784,6 +1807,38 @@ public class EdtMetadataService {
         }
         assignSafeFormItemId(formModel, group);
         return group;
+    }
+
+    /**
+     * Finds a form attribute by name whose value type is the platform {@code ValueTable}
+     * type. Such an attribute must be placed on the form as a {@link Table} item (with column
+     * fields), not a flat {@link FormField} — 1C cannot display a ValueTable as a plain field.
+     */
+    private FormAttribute findValueTableFormAttribute(Form formModel, String attributeName) {
+        if (formModel == null || attributeName == null || attributeName.isBlank()) {
+            return null;
+        }
+        String token = normalizeToken(attributeName);
+        Set<String> valueTableQueries = Set.of("ValueTable", "ТаблицаЗначений"); //$NON-NLS-1$ //$NON-NLS-2$
+        for (FormAttribute attribute : formModel.getAttributes()) {
+            if (attribute == null || attribute.getName() == null) {
+                continue;
+            }
+            if (!normalizeToken(attribute.getName()).equals(token)) {
+                continue;
+            }
+            TypeDescription valueType = attribute.getValueType();
+            if (valueType == null) {
+                return null;
+            }
+            for (TypeItem typeItem : valueType.getTypes()) {
+                if (typeItem != null && matchesTypeRef(typeItem, valueTableQueries)) {
+                    return attribute;
+                }
+            }
+            return null;
+        }
+        return null;
     }
 
     private Table addTableItem(
