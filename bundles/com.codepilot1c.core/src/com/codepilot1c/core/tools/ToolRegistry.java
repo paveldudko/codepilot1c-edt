@@ -152,6 +152,7 @@ public class ToolRegistry {
         // AnalyzeToolErrorTool, EdtUpdateInfobaseTool, EdtLaunchAppTool
         // are now dispatched through EdtDiagnosticsTool
         register(new com.codepilot1c.core.tools.workspace.UpdateInfobaseStatusTool());
+        register(new com.codepilot1c.core.tools.workspace.EdtIndexStatusTool());
         register(new com.codepilot1c.core.tools.workspace.WebPublicationTool());
         register(new QaRunTool());
         register(new YaxunitRunTool());
