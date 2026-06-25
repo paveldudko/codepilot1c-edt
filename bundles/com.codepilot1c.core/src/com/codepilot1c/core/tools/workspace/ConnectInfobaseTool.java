@@ -179,9 +179,10 @@ public class ConnectInfobaseTool extends AbstractTool {
                         password, setPrimary, serverPort, runtimeVersion, force, infobaseName, srvr, ref);
 
                 if (isAsync) {
+                    boolean autoStopPhantomFinal = autoStopPhantom;
                     Callable<String> work = () -> {
                         try {
-                            ConnectResult asyncResult = connectWithTimeout(request);
+                            ConnectResult asyncResult = connectWithTimeout(request, autoStopPhantomFinal);
                             JsonObject asyncSuccess = successPayload(opId, projectName, asyncResult);
                             applyAutoStopPhantom(asyncSuccess, autoStopPhantom, asyncResult);
                             return pretty(asyncSuccess);
@@ -207,7 +208,7 @@ public class ConnectInfobaseTool extends AbstractTool {
                     return ToolResult.success(pretty(asyncPayload), ToolResult.ToolResultType.CODE);
                 }
 
-                ConnectResult result = connectWithTimeout(request);
+                ConnectResult result = connectWithTimeout(request, autoStopPhantom);
                 JsonObject payload = successPayload(opId, projectName, result);
                 applyAutoStopPhantom(payload, autoStopPhantom, result);
                 return ToolResult.success(pretty(payload), ToolResult.ToolResultType.CODE);
@@ -236,13 +237,40 @@ public class ConnectInfobaseTool extends AbstractTool {
      * actionable message. The underlying EDT call may keep running on its worker (a native modal
      * cannot be interrupted), but the caller is freed. Live finding 2026-06-11.
      */
-    private ConnectResult connectWithTimeout(ConnectRequest request) {
+    private ConnectResult connectWithTimeout(ConnectRequest request, boolean autoStopPhantom) {
+        return connectWithTimeout(request, autoStopPhantom, true);
+    }
+
+    private ConnectResult connectWithTimeout(ConnectRequest request, boolean autoStopPhantom, boolean allowKillRetry) {
         CompletableFuture<ConnectResult> future =
                 CompletableFuture.supplyAsync(() -> connectService.connect(request));
         try {
             return future.get(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (TimeoutException e) {
             future.cancel(true);
+            // A 50s timeout has two very different causes that must NOT be conflated:
+            //   (1) an interactive EDT credential dialog a headless bind can't answer, or
+            //   (2) a Designer agent (often a phantom /AgentMode) holding the infobase lock, which
+            //       makes the bind's own Designer agent disconnect ("Cannot lock … open in Designer").
+            // Feedback 2026-06-24: collapsing (2) into EDT_AUTH_REQUIRED sent the caller down a
+            // fruitless credential path. Probe the OS for a lock holder to tell them apart and, when
+            // auto_stop_phantom is set, clear a phantom and retry the bind once.
+            String lockHolder = describeInfobaseLockHolder(request);
+            if (lockHolder != null) {
+                if (autoStopPhantom && allowKillRetry) {
+                    List<Long> killed = InfobaseProcessScanner.killPhantomDesigners(request.databasePath());
+                    if (!killed.isEmpty()) {
+                        LOG.warn("connect_infobase: killed phantom Designer(s) %s holding the lock, retrying bind once", //$NON-NLS-1$
+                                killed);
+                        return connectWithTimeout(request, autoStopPhantom, false);
+                    }
+                }
+                throw new EdtToolException(EdtToolErrorCode.EDT_INFOBASE_LOCKED,
+                        "Bind did not complete within " + CONNECT_TIMEOUT_SECONDS + "s: the infobase is locked — " //$NON-NLS-1$ //$NON-NLS-2$
+                                + lockHolder + ". This is a LOCK conflict, NOT a credential prompt. Stop the process " //$NON-NLS-1$
+                                + "holding the lock (a phantom /AgentMode Designer: pass auto_stop_phantom=true here, " //$NON-NLS-1$
+                                + "or run update_infobase(kill_agent_mode=true)) and retry."); //$NON-NLS-1$
+            }
             throw new EdtToolException(EdtToolErrorCode.EDT_AUTH_REQUIRED,
                     "Bind did not complete within " + CONNECT_TIMEOUT_SECONDS + "s and was aborted. " //$NON-NLS-1$ //$NON-NLS-2$
                             + "EDT is most likely waiting on an interactive credential prompt for this " //$NON-NLS-1$
@@ -257,6 +285,16 @@ public class ConnectInfobaseTool extends AbstractTool {
             if (cause instanceof EdtToolException ete) {
                 throw ete;
             }
+            // The Designer-agent SSH session can disconnect with "Cannot lock the infobase because it
+            // is open in Designer" (SSH_MSG_DISCONNECT -33554432). Surface that as a distinct
+            // EDT_INFOBASE_LOCKED instead of a generic service error. Feedback 2026-06-24.
+            String lockMessage = findInfobaseLockMessage(cause);
+            if (lockMessage != null) {
+                throw new EdtToolException(EdtToolErrorCode.EDT_INFOBASE_LOCKED,
+                        "The infobase is locked: " + lockMessage + ". This is a LOCK conflict, NOT a credential " //$NON-NLS-1$ //$NON-NLS-2$
+                                + "prompt. Stop the Designer/agent holding the lock (auto_stop_phantom=true here, or " //$NON-NLS-1$
+                                + "update_infobase(kill_agent_mode=true)) and retry."); //$NON-NLS-1$
+            }
             if (cause instanceof RuntimeException re) {
                 throw re;
             }
@@ -265,6 +303,63 @@ public class ConnectInfobaseTool extends AbstractTool {
             }
             throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE, detailFor(cause));
         }
+    }
+
+    /**
+     * Best-effort: returns a human-readable description of a Designer process currently holding the
+     * lock on the request's (file/standalone) infobase path, or {@code null} when none is found, the
+     * path is unknown, or this is a server bind. Used to tell a Designer-lock timeout apart from a
+     * credential-prompt timeout. Never throws. Feedback 2026-06-24.
+     */
+    private static String describeInfobaseLockHolder(ConnectRequest request) {
+        if (request == null || request.kind() == ConnectionKind.SERVER) {
+            return null;
+        }
+        String path = request.databasePath();
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+        try {
+            for (InfobaseProcessScanner.LockingProcess p : InfobaseProcessScanner.scan(path)) {
+                if (!p.targetIb()) {
+                    continue;
+                }
+                if (p.kind() == InfobaseProcessScanner.LockKind.DESIGNER_AGENT) {
+                    return "held by a phantom /AgentMode Designer (PID " + p.pid() + ")"; //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                if (p.kind() == InfobaseProcessScanner.LockKind.DESIGNER) {
+                    return "held by an interactive Designer (PID " + p.pid() + ")"; //$NON-NLS-1$ //$NON-NLS-2$
+                }
+            }
+        } catch (RuntimeException ignore) {
+            // best-effort lock probe; never mask the original timeout
+        }
+        return null;
+    }
+
+    /**
+     * Walks the cause chain for the EDT/SSH "infobase is open in Designer" lock-disconnect signature
+     * and returns the first matching message, or {@code null}. Bounded against cause-chain cycles.
+     */
+    static String findInfobaseLockMessage(Throwable t) {
+        int guard = 0;
+        for (Throwable c = t; c != null && guard < 25; c = c.getCause(), guard++) {
+            if (isInfobaseLockMessage(c.getMessage())) {
+                return c.getMessage().trim();
+            }
+        }
+        return null;
+    }
+
+    /** True when an exception message is the EDT/SSH "infobase is open in Designer" lock signature. */
+    static boolean isInfobaseLockMessage(String message) {
+        if (message == null) {
+            return false;
+        }
+        String m = message.toLowerCase(java.util.Locale.ROOT);
+        return m.contains("cannot lock the infobase") //$NON-NLS-1$
+                || m.contains("open in designer") //$NON-NLS-1$
+                || m.contains("-33554432"); //$NON-NLS-1$
     }
 
     /**
@@ -369,6 +464,20 @@ public class ConnectInfobaseTool extends AbstractTool {
                         + "kind=standalone: path must be inside the workspace or home directory"); //$NON-NLS-1$
             }
             case EDT_NOT_READY -> json.addProperty("error", "edt_not_ready"); //$NON-NLS-1$ //$NON-NLS-2$
+            case EDT_INFOBASE_LOCKED -> {
+                json.addProperty("error", "infobase_locked"); //$NON-NLS-1$ //$NON-NLS-2$
+                json.addProperty("hint", //$NON-NLS-1$
+                        "a Designer agent holds the infobase lock (not a credential prompt). " //$NON-NLS-1$
+                        + "Retry with auto_stop_phantom=true, or run update_infobase(kill_agent_mode=true), " //$NON-NLS-1$
+                        + "then re-issue connect_infobase."); //$NON-NLS-1$
+            }
+            case EDT_AUTH_REQUIRED -> {
+                json.addProperty("error", "auth_required"); //$NON-NLS-1$ //$NON-NLS-2$
+                json.addProperty("hint", //$NON-NLS-1$
+                        "EDT could not bind without credentials — pass login/password " //$NON-NLS-1$
+                        + "(admin-level). If the path is also open in Designer you will get " //$NON-NLS-1$
+                        + "EDT_INFOBASE_LOCKED instead."); //$NON-NLS-1$
+            }
             case NAME_COLLISION -> {
                 json.addProperty("error", "name_collision"); //$NON-NLS-1$ //$NON-NLS-2$
                 json.addProperty("hint", //$NON-NLS-1$
