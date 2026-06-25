@@ -44,11 +44,11 @@ public class UpdateInfobaseStatusTool extends AbstractTool {
                 },
                 "wait_for_completion": {
                   "type": "boolean",
-                  "description": "Block server-side until the job reaches a terminal state (or timeout_seconds elapses), then return the final result — instead of returning the current state immediately. Avoids client-side poll loops (default: false)."
+                  "description": "Block server-side until the job reaches a terminal state (or timeout_seconds elapses), then return the final result — instead of returning the current state immediately. PREFER this over a client-side poll loop: it makes one call and never times out the transport (the host allows this tool up to 660s). Default false returns the last-known state immediately (cheap status read)."
                 },
                 "timeout_seconds": {
                   "type": "integer",
-                  "description": "Max seconds to wait when wait_for_completion=true (default 120, clamped to [1, 600]). On expiry the still-running state is returned with timed_out=true."
+                  "description": "Max seconds to wait when wait_for_completion=true (default 120, clamped to [1, 600]). Set it to match the expected op duration (e.g. 600 for a full config update) so the call returns the final result in one shot; on expiry the still-running state is returned with timed_out=true (re-call to keep waiting)."
                 }
               },
               "required": ["job_id"]

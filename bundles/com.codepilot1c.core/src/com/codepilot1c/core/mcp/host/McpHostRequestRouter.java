@@ -165,6 +165,13 @@ public class McpHostRequestRouter {
                 timeoutSeconds = 3600;
             } else if ("connect_infobase".equals(toolName)) { //$NON-NLS-1$
                 timeoutSeconds = 300;
+            } else if ("update_infobase_status".equals(toolName) //$NON-NLS-1$
+                    || "connect_infobase_status".equals(toolName)) { //$NON-NLS-1$
+                // The async-job pollers block server-side up to their own timeout_seconds (max 600s)
+                // when wait_for_completion=true. The client cap MUST exceed that, otherwise the
+                // server-side wait races the 120s client timeout and ~1 in 4 polls failed outright
+                // with "The operation timed out." Feedback 2026-06-19 (28/28 timeouts fleet-wide).
+                timeoutSeconds = 660;
             } else {
                 timeoutSeconds = 120;
             }
