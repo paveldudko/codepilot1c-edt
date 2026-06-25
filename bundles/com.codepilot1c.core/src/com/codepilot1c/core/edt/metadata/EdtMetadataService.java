@@ -2707,6 +2707,38 @@ public class EdtMetadataService {
     }
 
     /**
+     * True when {@code name} is a form event declared on {@code target} (either a top-level
+     * FormVisualEntity event such as {@code ChoiceProcessing} on a Form, or an event hosted by its
+     * {@code *FormExtInfo}). Lets {@link #applySimpleFeatureValue} recognise an event name passed as
+     * a bare property key and route it to the handler-binding path. Best-effort; never throws.
+     */
+    private boolean isAllowedFormEvent(EObject target, String name) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        FormItemInformationService infoService = resolveFormItemInformationService();
+        if (infoService == null) {
+            return false;
+        }
+        try {
+            if (target instanceof FormVisualEntity fve) {
+                if (findEventByName(nonNullList(infoService.getAllowedEvents(fve)), name) != null) {
+                    return true;
+                }
+                ExtInfo extInfo = infoService.getExtensionInfo(target);
+                return extInfo != null
+                        && findEventByName(nonNullList(infoService.getAllowedEvents(extInfo)), name) != null;
+            }
+            if (target instanceof ExtInfo extInfo) {
+                return findEventByName(nonNullList(infoService.getAllowedEvents(extInfo)), name) != null;
+            }
+        } catch (RuntimeException ignore) {
+            // event-name probe is best-effort; fall back to "Unknown form property"
+        }
+        return false;
+    }
+
+    /**
      * Remove any handler already bound to {@code event} on {@code containerToClean} so an
      * upsert can re-add it without duplicating the event. Matches by Event identity first,
      * then by case-insensitive event name as a fallback (the resolved Event and a previously
@@ -3108,7 +3140,21 @@ public class EdtMetadataService {
         // outside getItems() — otherwise set_item on an autoCommandBar button is METADATA_NOT_FOUND.
         // Feedback 2026-06-10-mutate-form-picture-binding §2.
         if (container instanceof CommandBarHolder holder && holder.getAutoCommandBar() != null) {
-            FormItem inBar = findFormItem(holder.getAutoCommandBar(), id, name);
+            AutoCommandBar bar = holder.getAutoCommandBar();
+            // The autoCommandBar is itself a FormItemContainer with its own id/name (e.g. a table's
+            // "<TableName>CommandBar") and is a valid add_button parent — match the bar node directly
+            // before descending into its Buttons. Feedback 2026-06-24 (BF-12684): targeting the bar
+            // as parent_item_id used to fail "Target parent item is not a container" because
+            // findFormItem only searched INSIDE the bar, never returning the bar, so
+            // resolveTargetContainer saw null.
+            if (id != null && bar.getId() == id.intValue()) {
+                return bar;
+            }
+            if (name != null && bar instanceof NamedElement barNamed
+                    && name.equalsIgnoreCase(barNamed.getName())) {
+                return bar;
+            }
+            FormItem inBar = findFormItem(bar, id, name);
             if (inBar != null) {
                 return inBar;
             }
@@ -5146,9 +5192,28 @@ public class EdtMetadataService {
     private void applySimpleFeatureValue(EObject target, String fieldName, Object value, Configuration configuration) {
         EStructuralFeature feature = resolveStructuralFeatureIgnoreCase(target, fieldName);
         if (feature == null) {
+            // A caller often writes a form event as a bare property key — e.g.
+            // set_form_props {"ChoiceProcessing": "ChoiceProcessing"} — instead of the canonical
+            // handlers:[{event,handler}] shape. When the key is a declared event on this handler
+            // container (Form / *FormExtInfo), treat it as an event→handler binding (the value is the
+            // handler procedure name, defaulting to the event name per 1C convention) and route it
+            // through the merge-safe binding path. Feedback 2026-06-24 (BF-12684).
+            if (target instanceof EventHandlerContainer ehc && isAllowedFormEvent(target, fieldName)) {
+                String handlerProc = asString(value);
+                if (handlerProc == null || handlerProc.isBlank()) {
+                    handlerProc = fieldName;
+                }
+                applyEventHandlersBinding(target, ehc,
+                        java.util.List.of(java.util.Map.of("event", fieldName, "handler", handlerProc))); //$NON-NLS-1$ //$NON-NLS-2$
+                return;
+            }
+            String hint = target instanceof EventHandlerContainer
+                    ? ". To register a form event handler, use handlers:[{event,handler}] " //$NON-NLS-1$
+                            + "(or pass the event name as the key with the handler procedure as the value)." //$NON-NLS-1$
+                    : ""; //$NON-NLS-1$
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
-                    "Unknown form property: " + fieldName, false); //$NON-NLS-1$
+                    "Unknown form property: " + fieldName + hint, false); //$NON-NLS-1$
         }
         if (feature instanceof EReference reference) {
             if (applyStringMapReferenceValue(target, reference, value)) {
