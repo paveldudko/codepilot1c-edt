@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Matcher;
@@ -809,11 +810,31 @@ public class EdtInfobaseConnectService {
         }
         InfobaseAccess access = (login != null && !login.isBlank())
                 ? InfobaseAccess.INFOBASE : InfobaseAccess.OS;
+        String effectiveUser = access == InfobaseAccess.INFOBASE ? login : null;
+        String effectivePwd = access == InfobaseAccess.INFOBASE ? (password == null ? "" : password) : null; //$NON-NLS-1$
         InfobaseAccessSettings settings = new InfobaseAccessSettings(
-                access,
-                access == InfobaseAccess.INFOBASE ? login : null,
-                access == InfobaseAccess.INFOBASE ? (password == null ? "" : password) : null, //$NON-NLS-1$
-                null);
+                access, effectiveUser, effectivePwd, null);
+        // Skip the write when the stored settings are already identical. EDT's updateSettings flushes
+        // the SHARED default secure-storage file (SecurePreferencesFactory.getDefault()); when another
+        // EDT instance has touched that file the flush raises the interactive "secure storage was
+        // modified by another program" dialog, which a headless bind cannot answer — so it blocks to
+        // the connect timeout. resolveSettings is a READ (no flush, no dialog), so comparing first lets
+        // an idempotent re-bind / reconnect with unchanged creds (and a connect retry-storm re-applying
+        // the same creds) avoid the write entirely. Does NOT fix the genuinely-first write of a fresh
+        // association (that still flushes once); full isolation needs a per-instance -eclipse.keyring.
+        // Feedback 2026-06-24 (BF-12562, multi-instance secure-storage contention).
+        try {
+            IInfobaseAccessSettings current = accessManager.resolveSettings(reference);
+            if (current != null && current != IInfobaseAccessSettings.NOT_DEFINED
+                    && current.access() == access
+                    && Objects.equals(current.userName(), effectiveUser)
+                    && Objects.equals(current.password(), effectivePwd)) {
+                LOG.info("Infobase access settings unchanged — skipping store (avoids a shared secure-storage flush)"); //$NON-NLS-1$
+                return;
+            }
+        } catch (Exception | NoSuchMethodError e) {
+            // best-effort comparison; fall through to the write
+        }
         try {
             // EDT 2025.2 (services.core 21.x) replaced storeSettings(ref, settings) with
             // updateSettings(ref, settings) — same signature. storeSettings is gone from the 21.x
