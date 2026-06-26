@@ -8,7 +8,10 @@
 package com.codepilot1c.core.mcp.host;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import com.codepilot1c.core.tools.surface.ToolGroupVisibility;
 
@@ -57,6 +60,67 @@ public class ProfileEndpoint {
     /** Build the per-profile announce/execute gate from this profile's facets. */
     public ToolGroupVisibility toGroupVisibility() {
         return ToolGroupVisibility.of(disableGroups, disableTools, enableGroups, enableTools);
+    }
+
+    /** {@code true} when this profile announces everything (no group/name filter). */
+    public boolean announcesEverything() {
+        return !toGroupVisibility().isActive() && "*".equals(getExposedToolsFilter()); //$NON-NLS-1$
+    }
+
+    /**
+     * Compact, language-neutral one-line summary of the tool set for the UI table:
+     * {@code *} = everything, otherwise the enabled groups (or {@code all except …}
+     * in denylist mode) plus any per-tool {@code +enable}/{@code -disable} overrides
+     * and a trailing {@code [name-filter]} when one is set.
+     */
+    public String toolsSummary() {
+        if (announcesEverything()) {
+            return "*"; //$NON-NLS-1$
+        }
+        StringBuilder sb = new StringBuilder();
+        if (enableGroups != null && !enableGroups.isBlank()) {
+            sb.append(enableGroups.trim());
+        } else if (disableGroups != null && !disableGroups.isBlank()) {
+            sb.append("all except ").append(disableGroups.trim()); //$NON-NLS-1$
+        } else {
+            sb.append('*');
+        }
+        if (enableTools != null && !enableTools.isBlank()) {
+            sb.append(" +").append(enableTools.trim()); //$NON-NLS-1$
+        }
+        if (disableTools != null && !disableTools.isBlank()) {
+            sb.append(" -").append(disableTools.trim()); //$NON-NLS-1$
+        }
+        if (!"*".equals(getExposedToolsFilter())) { //$NON-NLS-1$
+            sb.append(" [").append(getExposedToolsFilter()).append(']'); //$NON-NLS-1$
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Suggest a name not already taken (for add/duplicate): {@code base},
+     * {@code base-2}, {@code base-3}, … Case-insensitive against {@code existing}.
+     */
+    public static String suggestUniqueName(String base, Collection<String> existing) {
+        String root = (base == null || base.isBlank()) ? "endpoint" : base.trim(); //$NON-NLS-1$
+        Set<String> taken = new HashSet<>();
+        if (existing != null) {
+            for (String n : existing) {
+                if (n != null) {
+                    taken.add(n.toLowerCase(java.util.Locale.ROOT));
+                }
+            }
+        }
+        if (!taken.contains(root.toLowerCase(java.util.Locale.ROOT))) {
+            return root;
+        }
+        for (int i = 2; i < 10_000; i++) {
+            String candidate = root + "-" + i; //$NON-NLS-1$
+            if (!taken.contains(candidate.toLowerCase(java.util.Locale.ROOT))) {
+                return candidate;
+            }
+        }
+        return root + "-x"; //$NON-NLS-1$
     }
 
     public String getName() {

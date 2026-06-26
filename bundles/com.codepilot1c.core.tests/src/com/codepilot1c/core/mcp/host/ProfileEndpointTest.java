@@ -115,6 +115,30 @@ public class ProfileEndpointTest {
         assertFalse(v.isToolVisible("bsl_list_methods", "bsl")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
+    @Test
+    public void toolsSummaryShowsStarForEverythingAndGroupsOtherwise() {
+        assertEquals("*", ProfileEndpoint.fullDefault(1, "t", "*").toolsSummary()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertTrue(ProfileEndpoint.fullDefault(1, "t", "*").announcesEverything()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("diagnostics,qa,forms.read,files,workspace.read,meta", //$NON-NLS-1$
+                profile("qa").toolsSummary()); //$NON-NLS-1$
+        assertFalse(profile("qa").announcesEverything()); //$NON-NLS-1$
+        // dev's per-tool disable shows as a -override.
+        assertEquals("diagnostics,bsl,metadata,forms,dcs,extensions,files,workspace.read,meta -connect_infobase", //$NON-NLS-1$
+                profile("dev").toolsSummary()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void suggestUniqueNameAvoidsCollisionsCaseInsensitively() {
+        assertEquals("endpoint", //$NON-NLS-1$
+                ProfileEndpoint.suggestUniqueName("endpoint", List.of("full", "qa"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertEquals("qa-2", //$NON-NLS-1$
+                ProfileEndpoint.suggestUniqueName("qa", List.of("full", "qa"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertEquals("qa-3", //$NON-NLS-1$
+                ProfileEndpoint.suggestUniqueName("qa", List.of("QA", "qa-2"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertEquals("endpoint", //$NON-NLS-1$
+                ProfileEndpoint.suggestUniqueName("  ", List.of())); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
     private static ProfileEndpoint profile(String name) {
         return ProfileEndpoint.seededDefaults(8765).stream()
                 .filter(p -> p.getName().equals(name))

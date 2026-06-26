@@ -7,6 +7,7 @@
  */
 package com.codepilot1c.core.tools.surface;
 
+import java.util.List;
 import java.util.Set;
 
 import com.codepilot1c.core.tools.ITool;
@@ -31,6 +32,28 @@ import com.codepilot1c.core.tools.ITool;
  * <p>Backs feedback {@code 2026-06-26-toggleable-tool-groups.md}.</p>
  */
 public final class ToolGroupTaxonomy {
+
+    /**
+     * Canonical announce-surface group tokens in a stable display order, for the
+     * endpoint-profile tool-set editor (one checkbox per token). Faceted tokens
+     * ({@code metadata.read}/{@code metadata.write}) are listed separately; a bare
+     * token (e.g. {@code metadata}) used in config matches both facets.
+     */
+    public static final List<String> ANNOUNCEABLE_GROUPS = List.of(
+            "diagnostics", //$NON-NLS-1$
+            "bsl", //$NON-NLS-1$
+            "metadata.read", //$NON-NLS-1$
+            "metadata.write", //$NON-NLS-1$
+            "forms.read", //$NON-NLS-1$
+            "forms.write", //$NON-NLS-1$
+            "files.read", //$NON-NLS-1$
+            "files.write", //$NON-NLS-1$
+            "workspace.read", //$NON-NLS-1$
+            "workspace.write", //$NON-NLS-1$
+            "dcs", //$NON-NLS-1$
+            "extensions", //$NON-NLS-1$
+            "qa", //$NON-NLS-1$
+            "meta"); //$NON-NLS-1$
 
     /** Tools that belong to the {@code meta} group regardless of their category. */
     public static final Set<String> META_TOOLS = Set.of(
