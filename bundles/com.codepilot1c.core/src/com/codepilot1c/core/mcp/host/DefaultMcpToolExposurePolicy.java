@@ -23,15 +23,25 @@ public class DefaultMcpToolExposurePolicy implements McpToolExposurePolicy {
     private final ToolGroupVisibility groupVisibility;
 
     public DefaultMcpToolExposurePolicy(McpHostConfig config) {
-        this(config, ToolGroupVisibility.fromEnvironment());
+        this(config, config.getExposedToolsFilter(), ToolGroupVisibility.fromEnvironment());
     }
 
     public DefaultMcpToolExposurePolicy(McpHostConfig config, ToolGroupVisibility groupVisibility) {
+        this(config, config.getExposedToolsFilter(), groupVisibility);
+    }
+
+    /**
+     * Per-profile policy: the name allow/deny filter comes from the profile, the
+     * group/per-tool gate from the profile's {@link ToolGroupVisibility}, and the
+     * mutation policy stays host-level (shared) via {@code config}.
+     */
+    public DefaultMcpToolExposurePolicy(McpHostConfig config, String exposedToolsFilter,
+            ToolGroupVisibility groupVisibility) {
         this.config = config;
         this.explicitAllow = new HashSet<>();
         this.explicitDeny = new HashSet<>();
         this.groupVisibility = groupVisibility;
-        parse(config.getExposedToolsFilter());
+        parse(exposedToolsFilter);
     }
 
     public ToolGroupVisibility getGroupVisibility() {

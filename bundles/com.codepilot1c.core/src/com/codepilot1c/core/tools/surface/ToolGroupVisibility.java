@@ -98,6 +98,24 @@ public final class ToolGroupVisibility {
                 resolve(PROP_ENABLE_TOOLS, ENV_ENABLE_TOOLS));
     }
 
+    /**
+     * {@code true} when any of the raw {@code CODEPILOT1C_*} group/tool env vars
+     * (or their {@code -D} equivalents) is set. The multi-endpoint host treats
+     * this as a global override: when present it forces {@link #fromEnvironment()}
+     * onto every endpoint instead of each profile's own facets, so the ad-hoc
+     * env layer keeps working as a fleet-wide "force this surface" switch.
+     */
+    public static boolean isEnvironmentConfigured() {
+        return notBlank(resolve(PROP_DISABLE_GROUPS, ENV_DISABLE_GROUPS))
+                || notBlank(resolve(PROP_DISABLE_TOOLS, ENV_DISABLE_TOOLS))
+                || notBlank(resolve(PROP_ENABLE_GROUPS, ENV_ENABLE_GROUPS))
+                || notBlank(resolve(PROP_ENABLE_TOOLS, ENV_ENABLE_TOOLS));
+    }
+
+    private static boolean notBlank(String value) {
+        return value != null && !value.isBlank();
+    }
+
     /** {@code true} when any group/tool filter is active (config is non-empty). */
     public boolean isActive() {
         return !disableGroups.isEmpty() || !disableTools.isEmpty()

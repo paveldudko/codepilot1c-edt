@@ -1,0 +1,189 @@
+/*
+ * Copyright (c) 2024 Example
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, version 3.
+ * SPDX-License-Identifier: AGPL-3.0-only
+ */
+package com.codepilot1c.core.mcp.host;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import com.codepilot1c.core.tools.surface.ToolGroupVisibility;
+
+/**
+ * A named MCP endpoint ("profile"). One EDT + one plugin instance can bring up
+ * several of these concurrently — each binds its own TCP port with its own
+ * bearer token and announces only the tools its role needs. The tool set reuses
+ * the {@link ToolGroupVisibility} facet vocabulary (enable/disable groups +
+ * per-tool overrides).
+ *
+ * <p>Profiles collapse "profile definition" and "endpoint binding" into one
+ * concept: name + port + token + tool-set + enabled. Host-level settings
+ * (bind address, auth mode, mutation policy) stay shared on {@link McpHostConfig}.</p>
+ *
+ * <p>Persisted as JSON in {@code InstanceScope} preferences (see
+ * {@link McpHostConfigStore}). Backs the multi-endpoint tool-profiles feature.</p>
+ */
+public class ProfileEndpoint {
+
+    private String name;
+    private int port;
+    private String bearerToken;
+    private boolean enabled;
+
+    /** Tool-set facets — same vocabulary as {@link ToolGroupVisibility}. */
+    private String enableGroups;
+    private String enableTools;
+    private String disableGroups;
+    private String disableTools;
+
+    /** Name allow/deny filter ({@code *}, {@code -toolName}); default {@code *}. */
+    private String exposedToolsFilter;
+
+    public ProfileEndpoint() {
+        // Gson / bean
+    }
+
+    public ProfileEndpoint(String name, int port, String bearerToken, boolean enabled) {
+        this.name = name;
+        this.port = port;
+        this.bearerToken = bearerToken;
+        this.enabled = enabled;
+        this.exposedToolsFilter = "*"; //$NON-NLS-1$
+    }
+
+    /** Build the per-profile announce/execute gate from this profile's facets. */
+    public ToolGroupVisibility toGroupVisibility() {
+        return ToolGroupVisibility.of(disableGroups, disableTools, enableGroups, enableTools);
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    public int getPort() {
+        return port;
+    }
+
+    public void setPort(int port) {
+        this.port = port;
+    }
+
+    public String getBearerToken() {
+        return bearerToken;
+    }
+
+    public void setBearerToken(String bearerToken) {
+        this.bearerToken = bearerToken;
+    }
+
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
+
+    public String getEnableGroups() {
+        return enableGroups;
+    }
+
+    public void setEnableGroups(String enableGroups) {
+        this.enableGroups = enableGroups;
+    }
+
+    public String getEnableTools() {
+        return enableTools;
+    }
+
+    public void setEnableTools(String enableTools) {
+        this.enableTools = enableTools;
+    }
+
+    public String getDisableGroups() {
+        return disableGroups;
+    }
+
+    public void setDisableGroups(String disableGroups) {
+        this.disableGroups = disableGroups;
+    }
+
+    public String getDisableTools() {
+        return disableTools;
+    }
+
+    public void setDisableTools(String disableTools) {
+        this.disableTools = disableTools;
+    }
+
+    public String getExposedToolsFilter() {
+        return exposedToolsFilter == null || exposedToolsFilter.isBlank()
+                ? "*" //$NON-NLS-1$
+                : exposedToolsFilter;
+    }
+
+    public void setExposedToolsFilter(String exposedToolsFilter) {
+        this.exposedToolsFilter = exposedToolsFilter;
+    }
+
+    /** Defensive deep copy (profiles are mutable POJOs edited by the UI). */
+    public ProfileEndpoint copy() {
+        ProfileEndpoint c = new ProfileEndpoint(name, port, bearerToken, enabled);
+        c.enableGroups = enableGroups;
+        c.enableTools = enableTools;
+        c.disableGroups = disableGroups;
+        c.disableTools = disableTools;
+        c.exposedToolsFilter = exposedToolsFilter;
+        return c;
+    }
+
+    /**
+     * The default endpoint: everything announced (empty filter). Carries the
+     * migrated legacy port/token/name-filter so an existing client keeps working.
+     */
+    public static ProfileEndpoint fullDefault(int port, String bearerToken, String exposedToolsFilter) {
+        ProfileEndpoint p = new ProfileEndpoint("full", port, bearerToken, true); //$NON-NLS-1$
+        p.exposedToolsFilter = (exposedToolsFilter == null || exposedToolsFilter.isBlank())
+                ? "*" //$NON-NLS-1$
+                : exposedToolsFilter;
+        return p;
+    }
+
+    /**
+     * The seeded starter set (all DISABLED with suggested ports — the operator
+     * enables + assigns ports per instance). Tool sets per the agreed design.
+     */
+    public static List<ProfileEndpoint> seededDefaults(int basePort) {
+        List<ProfileEndpoint> seeds = new ArrayList<>();
+
+        ProfileEndpoint orchestrator = new ProfileEndpoint(
+                "orchestrator", basePort + 1, McpHostConfig.generateToken(), false); //$NON-NLS-1$
+        orchestrator.enableGroups = "diagnostics,bsl,metadata.read,forms.read,files.read,meta"; //$NON-NLS-1$
+        seeds.add(orchestrator);
+
+        ProfileEndpoint dev = new ProfileEndpoint(
+                "dev", basePort + 2, McpHostConfig.generateToken(), false); //$NON-NLS-1$
+        dev.enableGroups = "diagnostics,bsl,metadata,forms,dcs,extensions,files,workspace.read,meta"; //$NON-NLS-1$
+        dev.disableTools = "connect_infobase"; //$NON-NLS-1$
+        seeds.add(dev);
+
+        ProfileEndpoint qa = new ProfileEndpoint(
+                "qa", basePort + 3, McpHostConfig.generateToken(), false); //$NON-NLS-1$
+        qa.enableGroups = "diagnostics,qa,forms.read,files,workspace.read,meta"; //$NON-NLS-1$
+        seeds.add(qa);
+
+        ProfileEndpoint infra = new ProfileEndpoint(
+                "infra", basePort + 4, McpHostConfig.generateToken(), false); //$NON-NLS-1$
+        infra.enableGroups = "diagnostics,workspace,files,meta"; //$NON-NLS-1$
+        seeds.add(infra);
+
+        return seeds;
+    }
+}

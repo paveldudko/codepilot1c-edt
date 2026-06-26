@@ -1,6 +1,8 @@
 package com.codepilot1c.core.mcp.host;
 
 import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -52,6 +54,21 @@ public class McpHostConfig {
     private MutationPolicy mutationPolicy;
     private String exposedToolsFilter;
 
+    /**
+     * The multi-endpoint profile list. Each enabled profile becomes its own HTTP
+     * listener (port + token + tool set). The legacy single
+     * {@code port}/{@code bearerToken}/{@code exposedToolsFilter} fields above are
+     * kept only for migration into a {@code full} profile (see {@link McpHostConfigStore}).
+     */
+    private List<ProfileEndpoint> profiles = new ArrayList<>();
+
+    /**
+     * Transient runtime selector from {@code CODEPILOT1C_PROFILE} — when set, the
+     * manager forces up only this single profile (per-instance fleet override).
+     * Not persisted.
+     */
+    private transient String selectedProfileName;
+
     public static McpHostConfig defaults() {
         McpHostConfig cfg = new McpHostConfig();
         cfg.enabled = true;
@@ -62,6 +79,7 @@ public class McpHostConfig {
         cfg.authMode = AuthMode.OAUTH_OR_BEARER;
         cfg.mutationPolicy = MutationPolicy.ALLOW;
         cfg.exposedToolsFilter = "*"; //$NON-NLS-1$
+        cfg.profiles = new ArrayList<>();
         return cfg;
     }
 
@@ -137,5 +155,21 @@ public class McpHostConfig {
 
     public void setExposedToolsFilter(String exposedToolsFilter) {
         this.exposedToolsFilter = exposedToolsFilter;
+    }
+
+    public List<ProfileEndpoint> getProfiles() {
+        return profiles;
+    }
+
+    public void setProfiles(List<ProfileEndpoint> profiles) {
+        this.profiles = profiles != null ? profiles : new ArrayList<>();
+    }
+
+    public String getSelectedProfileName() {
+        return selectedProfileName;
+    }
+
+    public void setSelectedProfileName(String selectedProfileName) {
+        this.selectedProfileName = selectedProfileName;
     }
 }

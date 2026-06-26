@@ -114,6 +114,17 @@ public final class VibePreferenceConstants {
     public static final String PREF_MCP_HOST_POLICY_DEFAULT_MUTATION_DECISION =
         "mcp.host.policy.defaultMutationDecision"; //$NON-NLS-1$
     public static final String PREF_MCP_HOST_POLICY_EXPOSED_TOOLS = "mcp.host.policy.exposedTools"; //$NON-NLS-1$
+    /**
+     * Multi-endpoint profiles as a JSON array of {@code ProfileEndpoint}. Each
+     * enabled profile becomes its own MCP HTTP listener (port + token + tool set).
+     */
+    public static final String PREF_MCP_HOST_PROFILES = "mcp.host.profiles"; //$NON-NLS-1$
+    /**
+     * Marks that the legacy single endpoint was already migrated into a {@code full}
+     * profile and the starter set seeded — so an operator who intentionally clears
+     * all profiles is not re-seeded on the next load.
+     */
+    public static final String PREF_MCP_HOST_PROFILES_SEEDED = "mcp.host.profilesSeeded"; //$NON-NLS-1$
 
     // Feature flags
     /** Feature flag: enable LLM-based history compaction instead of lossy truncation. */
