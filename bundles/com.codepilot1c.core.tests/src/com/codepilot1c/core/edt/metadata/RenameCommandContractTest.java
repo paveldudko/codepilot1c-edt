@@ -68,15 +68,22 @@ public class RenameCommandContractTest {
     @Test
     public void renameRebindsReferencingButtons() throws Exception {
         String source = readSource(SERVICE_PATH);
-        // Button.commandName is an EMF object reference, so referencing buttons
-        // (incl. those inside autoCommandBars / context menus, reachable via
-        // eAllContents) stay consistent across the rename — Issue 1.
-        assertTrue("rename_command must declare rebindButtonsToCommand", //$NON-NLS-1$
-                source.contains("private int rebindButtonsToCommand(")); //$NON-NLS-1$
-        assertTrue("rebindButtonsToCommand must walk eAllContents() to reach every button", //$NON-NLS-1$
+        // A button references a form command through a CommandRef wrapper that the
+        // BM serializer writes as a qualified name (Form.Command.<name>) — a
+        // name-based link. So the referers must be collected by identity BEFORE the
+        // rename (while the link still resolves) and re-pointed AFTER — Issue 1.
+        assertTrue("rename_command must declare collectCommandReferers", //$NON-NLS-1$
+                source.contains("private void collectCommandReferers(")); //$NON-NLS-1$
+        assertTrue("collection must walk eAllContents() to reach every button", //$NON-NLS-1$
                 source.contains("formModel.eAllContents()")); //$NON-NLS-1$
-        assertTrue("rebindButtonsToCommand must re-set the command reference on matching buttons", //$NON-NLS-1$
-                source.contains("button.setCommandName(command)")); //$NON-NLS-1$
+        assertTrue("rebind must re-point the CommandRef wrapper after the rename", //$NON-NLS-1$
+                source.contains("commandRef.setCommand(command)")); //$NON-NLS-1$
+        // Collection must precede the rename (collectCommandReferers call appears
+        // before command.setName in source order).
+        int collectAt = source.indexOf("collectCommandReferers(formModel, command"); //$NON-NLS-1$
+        int renameAt = source.indexOf("command.setName(newName)"); //$NON-NLS-1$
+        assertTrue("referers must be collected before command.setName", //$NON-NLS-1$
+                collectAt > 0 && renameAt > 0 && collectAt < renameAt);
     }
 
     @Test

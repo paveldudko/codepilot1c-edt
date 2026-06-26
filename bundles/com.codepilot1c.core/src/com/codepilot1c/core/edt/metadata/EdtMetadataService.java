@@ -122,6 +122,7 @@ import com._1c.g5.v8.dt.form.model.Titled;
 import com._1c.g5.v8.dt.form.model.Visible;
 import com._1c.g5.v8.dt.mcore.ButtonRepresentation;
 import com._1c.g5.v8.dt.mcore.Command;
+import com._1c.g5.v8.dt.mcore.CommandRef;
 import com._1c.g5.v8.dt.form.service.item.FormNewItemDescriptor;
 import com._1c.g5.v8.dt.form.service.item.IFormItemManagementService;
 import com._1c.g5.v8.dt.mcore.DateQualifiers;
@@ -1396,11 +1397,21 @@ public class EdtMetadataService {
                                     "Form command already exists: " + newName, false); //$NON-NLS-1$
                         }
                     }
+                    // Collect referencing buttons BEFORE the rename: the BM CommandRef
+                    // stores its target by qualified name, so renaming first breaks the
+                    // link and the referers can no longer be identified. Re-point them
+                    // AFTER the rename so the serializer emits the new qualified name.
+                    List<CommandRef> commandRefs = new ArrayList<>();
+                    List<Button> directButtons = new ArrayList<>();
+                    collectCommandReferers(formModel, command, commandRefs, directButtons);
                     command.setName(newName);
-                    // Button.commandName is an EMF object reference, so referencing buttons
-                    // resolve to the renamed command automatically on serialize. Re-set them
-                    // defensively (mark the feature explicitly assigned) and count for the report.
-                    int reboundButtons = rebindButtonsToCommand(formModel, command);
+                    for (CommandRef commandRef : commandRefs) {
+                        commandRef.setCommand(command);
+                    }
+                    for (Button directButton : directButtons) {
+                        directButton.setCommandName(command);
+                    }
+                    int reboundButtons = commandRefs.size() + directButtons.size();
                     // Optional: re-bind the BSL handler procedure on the command's action.
                     Object newAction = firstNonNull(
                             getMapValueIgnoreCase(operation, "new_action"), //$NON-NLS-1$
@@ -2308,25 +2319,43 @@ public class EdtMetadataService {
     }
 
     /**
-     * Re-point every {@link Button} whose {@code commandName} reference resolves to
-     * {@code command} (including buttons living inside table/form autoCommandBars and
-     * context menus, reachable via {@code eAllContents()}). Returns the count of
-     * rebound buttons for the operation summary.
+     * Collect every {@link Button} that references {@code command} (including
+     * buttons inside table/form autoCommandBars and context menus, reachable via
+     * {@code eAllContents()}), <em>before</em> the command is renamed.
+     *
+     * <p>A button references a form command through a {@link CommandRef} wrapper
+     * ({@code Button.getCommandName()} is typed {@code mcore.Command} but the live
+     * value is a {@code CommandRef} whose {@code getCommand()} is the target). The
+     * BM serializer writes that target back as a qualified name
+     * ({@code Form.Command.<name>}), so the link is name-based: renaming the
+     * {@link FormCommand} first would leave the wrapper dangling AND make the
+     * referers unfindable. Hence the caller collects here by object identity while
+     * the link still resolves, renames, then re-points each wrapper
+     * ({@code setCommand}) / direct ref so serialization emits the new name.</p>
      */
-    private int rebindButtonsToCommand(Form formModel, FormCommand command) {
+    private void collectCommandReferers(
+            Form formModel,
+            FormCommand command,
+            List<CommandRef> commandRefs,
+            List<Button> directButtons) {
         if (formModel == null || command == null) {
-            return 0;
+            return;
         }
-        int count = 0;
         TreeIterator<EObject> iterator = formModel.eAllContents();
         while (iterator.hasNext()) {
             EObject obj = iterator.next();
-            if (obj instanceof Button button && button.getCommandName() == command) {
-                button.setCommandName(command);
-                count++;
+            if (!(obj instanceof Button button)) {
+                continue;
+            }
+            Command ref = button.getCommandName();
+            if (ref instanceof CommandRef commandRef) {
+                if (commandRef.getCommand() == command) {
+                    commandRefs.add(commandRef);
+                }
+            } else if (ref == command) {
+                directButtons.add(button);
             }
         }
-        return count;
     }
 
     /**
