@@ -4,6 +4,8 @@ import java.util.List;
 import java.util.Map;
 
 import com.codepilot1c.core.logging.VibeLogger;
+import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.mcp.host.prompt.PromptTemplateProvider;
 import com.codepilot1c.core.mcp.host.resource.DiagnosticsResourceProvider;
 import com.codepilot1c.core.mcp.host.resource.IMcpResourceProvider;
@@ -71,6 +73,39 @@ public class McpHostServer implements IMcpHostServer {
         running = true;
         LOG.info("MCP host server started (http=%s, auth=%s)", //$NON-NLS-1$
             Boolean.valueOf(config.isHttpEnabled()), config.getAuthMode());
+        logAnnouncedToolSurface(exposurePolicy);
+    }
+
+    /**
+     * Log how many tools the server announces and the rough size of their input
+     * schemas, so a tuned group/per-tool config can be A/B-compared against the
+     * default surface for tool-definition context. Backs feedback
+     * {@code 2026-06-26-toggleable-tool-groups.md} (the "measurability" ask).
+     */
+    private void logAnnouncedToolSurface(DefaultMcpToolExposurePolicy exposurePolicy) {
+        try {
+            int total = 0;
+            int announced = 0;
+            long announcedSchemaChars = 0;
+            for (ITool tool : ToolRegistry.getInstance().getAllTools()) {
+                total++;
+                if (!exposurePolicy.isExposed(tool.getName())) {
+                    continue;
+                }
+                announced++;
+                String schema = tool.getParameterSchema();
+                if (schema != null) {
+                    announcedSchemaChars += schema.length();
+                }
+            }
+            LOG.info("MCP host tool surface: announcing %d/%d tools, ~%d chars of input schema (group filter active=%s)", //$NON-NLS-1$
+                    Integer.valueOf(announced),
+                    Integer.valueOf(total),
+                    Long.valueOf(announcedSchemaChars),
+                    Boolean.valueOf(exposurePolicy.getGroupVisibility().isActive()));
+        } catch (RuntimeException e) {
+            LOG.warn("Failed to log announced tool surface: %s", e.getMessage()); //$NON-NLS-1$
+        }
     }
 
     @Override

@@ -23,6 +23,8 @@ import com.codepilot1c.core.tools.surface.BuiltinToolTaxonomy;
 import com.codepilot1c.core.tools.surface.DeferredToolSession;
 import com.codepilot1c.core.tools.surface.DeferredToolSet;
 import com.codepilot1c.core.tools.surface.ToolCategory;
+import com.codepilot1c.core.tools.surface.ToolGroupTaxonomy;
+import com.codepilot1c.core.tools.surface.ToolGroupVisibility;
 import com.codepilot1c.core.tools.surface.ToolSurfaceContext;
 
 import com.google.gson.Gson;
@@ -133,10 +135,20 @@ public class DiscoverToolsTool extends AbstractTool {
         List<ToolSummary> toolSummaries = new ArrayList<>();
         ToolSurfaceContext surfaceContext = toolRegistry.createRuntimeSurfaceContext(
                 ToolSurfaceContext.defaultProfile());
+        // Honor the operator's group/per-tool gate as a hard ceiling: a category
+        // disabled via config must not be revealed through discover_tools either.
+        ToolGroupVisibility visibility = ToolGroupVisibility.fromEnvironment();
+        int matchedInCategory = 0;
+        int hiddenByConfig = 0;
 
         for (ITool tool : toolRegistry.getAllTools()) {
             ToolCategory toolCategory = BuiltinToolTaxonomy.categoryOf(tool);
             if (toolCategory == category) {
+                matchedInCategory++;
+                if (!visibility.isToolVisible(tool.getName(), ToolGroupTaxonomy.groupOf(tool))) {
+                    hiddenByConfig++;
+                    continue;
+                }
                 ToolDefinition def = toolRegistry.getToolDefinition(tool, surfaceContext);
                 toolSummaries.add(new ToolSummary(
                         def.getName(),
@@ -146,6 +158,13 @@ public class DiscoverToolsTool extends AbstractTool {
         }
 
         if (toolSummaries.isEmpty()) {
+            if (matchedInCategory > 0 && hiddenByConfig == matchedInCategory) {
+                return CompletableFuture.completedFuture(
+                        ToolResult.success("Category '" + categoryName //$NON-NLS-1$
+                                + "' is disabled by config on this server instance " //$NON-NLS-1$
+                                + "(CODEPILOT1C_DISABLE_GROUPS / CODEPILOT1C_ENABLE_GROUPS). " //$NON-NLS-1$
+                                + "No tools to reveal.")); //$NON-NLS-1$
+            }
             return CompletableFuture.completedFuture(
                     ToolResult.success("No tools found for category: " + categoryName + //$NON-NLS-1$
                             ". This category may not be available in the current workspace.")); //$NON-NLS-1$

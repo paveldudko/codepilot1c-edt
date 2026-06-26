@@ -8,21 +8,34 @@ import java.util.Set;
 
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolRegistry;
+import com.codepilot1c.core.tools.surface.ToolGroupTaxonomy;
+import com.codepilot1c.core.tools.surface.ToolGroupVisibility;
 
 /**
- * Default tool exposure policy with wildcard and deny-by-name support.
+ * Default tool exposure policy with wildcard and deny-by-name support, plus an
+ * operator-configurable group/per-tool announce gate ({@link ToolGroupVisibility}).
  */
 public class DefaultMcpToolExposurePolicy implements McpToolExposurePolicy {
 
     private final McpHostConfig config;
     private final Set<String> explicitAllow;
     private final Set<String> explicitDeny;
+    private final ToolGroupVisibility groupVisibility;
 
     public DefaultMcpToolExposurePolicy(McpHostConfig config) {
+        this(config, ToolGroupVisibility.fromEnvironment());
+    }
+
+    public DefaultMcpToolExposurePolicy(McpHostConfig config, ToolGroupVisibility groupVisibility) {
         this.config = config;
         this.explicitAllow = new HashSet<>();
         this.explicitDeny = new HashSet<>();
+        this.groupVisibility = groupVisibility;
         parse(config.getExposedToolsFilter());
+    }
+
+    public ToolGroupVisibility getGroupVisibility() {
+        return groupVisibility;
     }
 
     private void parse(String raw) {
@@ -51,10 +64,18 @@ public class DefaultMcpToolExposurePolicy implements McpToolExposurePolicy {
         if (explicitDeny.contains(toolName)) {
             return false;
         }
-        if (explicitAllow.contains("*")) { //$NON-NLS-1$
-            return true;
+        boolean allowedByNameFilter = explicitAllow.contains("*") || explicitAllow.contains(toolName); //$NON-NLS-1$
+        if (!allowedByNameFilter) {
+            return false;
         }
-        return explicitAllow.contains(toolName);
+        // Operator-configurable group/per-tool gate (env-driven). Applies to both
+        // tools/list (announce) and tools/call (execution) — a hard ceiling.
+        return groupVisibility.isToolVisible(toolName, resolveGroup(toolName));
+    }
+
+    private String resolveGroup(String toolName) {
+        ITool tool = ToolRegistry.getInstance().getTool(toolName);
+        return tool != null ? ToolGroupTaxonomy.groupOf(tool) : "dynamic"; //$NON-NLS-1$
     }
 
     @Override
