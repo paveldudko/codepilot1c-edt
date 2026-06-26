@@ -97,6 +97,13 @@ public class GetDiagnosticsTool implements ITool {
     }
 
     @Override
+    public String getCategory() {
+        // Place this UI-bundle tool in the operator-facing "diagnostics" group
+        // (otherwise the ITool default "general" lands it in "dynamic").
+        return "diagnostics"; //$NON-NLS-1$
+    }
+
+    @Override
     public String getDescription() {
         return "Live EDT diagnostics (errors/warnings) for a project, file, or active editor; grouped by rule, each tagged " //$NON-NLS-1$
                 + "with its v8-code-style rule code. Options: line_from/line_to to focus on a method and cut tokens on big " //$NON-NLS-1$

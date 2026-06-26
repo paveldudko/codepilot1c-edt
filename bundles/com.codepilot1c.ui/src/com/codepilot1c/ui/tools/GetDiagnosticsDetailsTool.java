@@ -70,6 +70,13 @@ public class GetDiagnosticsDetailsTool implements ITool {
     }
 
     @Override
+    public String getCategory() {
+        // Place this UI-bundle tool in the operator-facing "diagnostics" group
+        // (otherwise the ITool default "general" lands it in "dynamic").
+        return "diagnostics"; //$NON-NLS-1$
+    }
+
+    @Override
     public String getDescription() {
         return "Returns the rich EDT 'Check Info' description (Markdown) for one or more check_id values. " //$NON-NLS-1$
                 + "Use this after get_diagnostics when you need guidance on how to fix an issue — Noncompliant/Compliant " //$NON-NLS-1$
