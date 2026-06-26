@@ -1368,6 +1368,63 @@ public class EdtMetadataService {
                             + ", id=" + safeItemId(button) //$NON-NLS-1$
                             + (commandRef != null ? ", command=" + commandRef : "")); //$NON-NLS-1$ //$NON-NLS-2$
                 }
+                case "renamecommand", "renameformcommand" -> {
+                    FormCommand command = resolveRequiredFormCommand(formModel, operation);
+                    String oldName = command.getName();
+                    String newName = asString(firstNonNull(
+                            getMapValueIgnoreCase(operation, "new_name"), //$NON-NLS-1$
+                            getMapValueIgnoreCase(operation, "newName"), //$NON-NLS-1$
+                            getMapValueIgnoreCase(operation, "to"), //$NON-NLS-1$
+                            getMapValueIgnoreCase(operation, "rename_to"))); //$NON-NLS-1$
+                    if (newName == null || newName.isBlank()) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                                "rename_command requires new_name", false); //$NON-NLS-1$
+                    }
+                    if (!MetadataNameValidator.isValidName(newName)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid command name: " + newName, false); //$NON-NLS-1$
+                    }
+                    // Reject collision with a *different* existing command (a case-only
+                    // rename of the same command is allowed — the target is excluded).
+                    for (FormCommand existing : formModel.getFormCommands()) {
+                        if (existing != null && existing != command
+                                && newName.equalsIgnoreCase(existing.getName())) {
+                            throw new MetadataOperationException(
+                                    MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                                    "Form command already exists: " + newName, false); //$NON-NLS-1$
+                        }
+                    }
+                    command.setName(newName);
+                    // Button.commandName is an EMF object reference, so referencing buttons
+                    // resolve to the renamed command automatically on serialize. Re-set them
+                    // defensively (mark the feature explicitly assigned) and count for the report.
+                    int reboundButtons = rebindButtonsToCommand(formModel, command);
+                    // Optional: re-bind the BSL handler procedure on the command's action.
+                    Object newAction = firstNonNull(
+                            getMapValueIgnoreCase(operation, "new_action"), //$NON-NLS-1$
+                            getMapValueIgnoreCase(operation, "action")); //$NON-NLS-1$
+                    String actionApplied = null;
+                    if (newAction != null) {
+                        String actionName = asString(newAction);
+                        if (actionName != null && !actionName.isBlank()) {
+                            applyCommandActionHandler(command, actionName);
+                            actionApplied = actionName;
+                        }
+                    }
+                    // Optional: update the localized display title.
+                    Object newTitle = firstNonNull(
+                            getMapValueIgnoreCase(operation, "new_title"), //$NON-NLS-1$
+                            getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
+                    if (newTitle != null) {
+                        applyTitleValue(command, newTitle, resolveProjectDefaultLanguageCode(formModel));
+                    }
+                    summaries.add("rename_command[" + operationIndex + "]: " + oldName //$NON-NLS-1$ //$NON-NLS-2$
+                            + " -> " + newName + ", id=" + command.getId() //$NON-NLS-1$ //$NON-NLS-2$
+                            + ", buttons_rebound=" + reboundButtons //$NON-NLS-1$
+                            + (actionApplied != null ? ", action=" + actionApplied : "")); //$NON-NLS-1$ //$NON-NLS-2$
+                }
                 default -> throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
                         "Unsupported form operation: " + rawOp, false); //$NON-NLS-1$
@@ -2200,6 +2257,96 @@ public class EdtMetadataService {
             }
         }
         return null;
+    }
+
+    /**
+     * Resolve the {@link FormCommand} targeted by a {@code rename_command} operation.
+     * Accepts {@code command_name}/{@code name} or {@code command_id}/{@code id} — the
+     * latter matches the formCommand ids surfaced by {@code get_form_rendering}, which
+     * {@code set_item} cannot address (those ids live in the command list, not the UI
+     * item tree). Feedback 2026-06-26 (BF-12562) Issues 2 & 4.
+     */
+    private FormCommand resolveRequiredFormCommand(Form formModel, Map<String, Object> operation) {
+        Integer commandId = asOptionalInteger(getMapValueIgnoreCase(operation, "command_id"), "command_id"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (commandId == null) {
+            commandId = asOptionalInteger(getMapValueIgnoreCase(operation, "id"), "id"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        String commandName = asString(getMapValueIgnoreCase(operation, "command_name")); //$NON-NLS-1$
+        if (commandName == null) {
+            commandName = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+        }
+        if (commandId == null && (commandName == null || commandName.isBlank())) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "rename_command requires command_name or command_id", false); //$NON-NLS-1$
+        }
+        FormCommand command = findFormCommand(formModel, commandId, commandName);
+        if (command == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_NOT_FOUND,
+                    "Form command not found: id=" + commandId + ", name=" + commandName, false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        return command;
+    }
+
+    private FormCommand findFormCommand(Form formModel, Integer id, String name) {
+        if (formModel == null) {
+            return null;
+        }
+        for (FormCommand cmd : formModel.getFormCommands()) {
+            if (cmd == null) {
+                continue;
+            }
+            if (id != null && cmd.getId() == id.intValue()) {
+                return cmd;
+            }
+            if (name != null && name.equalsIgnoreCase(cmd.getName())) {
+                return cmd;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Re-point every {@link Button} whose {@code commandName} reference resolves to
+     * {@code command} (including buttons living inside table/form autoCommandBars and
+     * context menus, reachable via {@code eAllContents()}). Returns the count of
+     * rebound buttons for the operation summary.
+     */
+    private int rebindButtonsToCommand(Form formModel, FormCommand command) {
+        if (formModel == null || command == null) {
+            return 0;
+        }
+        int count = 0;
+        TreeIterator<EObject> iterator = formModel.eAllContents();
+        while (iterator.hasNext()) {
+            EObject obj = iterator.next();
+            if (obj instanceof Button button && button.getCommandName() == command) {
+                button.setCommandName(command);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Set the BSL handler procedure name on a command's action, creating the
+     * {@link FormCommandHandlerContainer}/{@link CommandHandler} chain if absent.
+     */
+    private void applyCommandActionHandler(FormCommand command, String actionName) {
+        FormCommandHandlerContainer container;
+        if (command.getAction() instanceof FormCommandHandlerContainer existing) {
+            container = existing;
+        } else {
+            container = FormFactory.eINSTANCE.createFormCommandHandlerContainer();
+            command.setAction(container);
+        }
+        CommandHandler handler = container.getHandler();
+        if (handler == null) {
+            handler = FormFactory.eINSTANCE.createCommandHandler();
+            container.setHandler(handler);
+        }
+        handler.setName(actionName);
     }
 
     private int nextFormCommandId(Form formModel) {
@@ -4690,7 +4837,7 @@ public class EdtMetadataService {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Operation requires \"op\" field. Valid values: add_field, add_group, add_command, " //$NON-NLS-1$
-                            + "add_button, set_item, remove_item, move_item, set_form_props", false); //$NON-NLS-1$
+                            + "add_button, set_item, remove_item, move_item, rename_command, set_form_props", false); //$NON-NLS-1$
         }
 
         // Detect "type":"field" hallucination — model should use op:"add_field"
