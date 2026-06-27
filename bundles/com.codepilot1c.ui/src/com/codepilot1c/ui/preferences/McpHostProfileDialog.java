@@ -28,10 +28,16 @@ import org.eclipse.swt.widgets.Group;
 import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.Shell;
 import org.eclipse.swt.widgets.Spinner;
+import org.eclipse.swt.widgets.Table;
+import org.eclipse.swt.widgets.TableColumn;
+import org.eclipse.swt.widgets.TableItem;
 import org.eclipse.swt.widgets.Text;
 
+import com.codepilot1c.core.mcp.host.DefaultMcpToolExposurePolicy;
 import com.codepilot1c.core.mcp.host.McpHostConfig;
 import com.codepilot1c.core.mcp.host.ProfileEndpoint;
+import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.surface.ToolGroupTaxonomy;
 import com.codepilot1c.ui.internal.Messages;
 
@@ -56,6 +62,8 @@ public class McpHostProfileDialog extends TitleAreaDialog {
     private Text disableToolsText;
     private Text disableGroupsText;
     private Text nameFilterText;
+    private Group previewGroup;
+    private Table previewTable;
 
     public McpHostProfileDialog(Shell parentShell, ProfileEndpoint profile, Set<String> otherNames) {
         super(parentShell);
@@ -130,12 +138,17 @@ public class McpHostProfileDialog extends TitleAreaDialog {
         announceAllCheck.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 2, 1));
         boolean announceAll = working.getEnableGroups() == null || working.getEnableGroups().isBlank();
         announceAllCheck.setSelection(announceAll);
-        announceAllCheck.addListener(SWT.Selection, e -> updateGroupEnablement());
+        announceAllCheck.addListener(SWT.Selection, e -> {
+            updateGroupEnablement();
+            refreshPreview();
+        });
 
         createGroupPicker(container);
         createAdvanced(container);
+        createPreview(container);
 
         updateGroupEnablement();
+        refreshPreview();
         validate();
         return area;
     }
@@ -153,6 +166,7 @@ public class McpHostProfileDialog extends TitleAreaDialog {
             // A bare base token (e.g. "files") in config selects both facets.
             String base = ToolGroupTaxonomy.baseGroup(token);
             check.setSelection(selected.contains(token) || selected.contains(base));
+            check.addListener(SWT.Selection, e -> refreshPreview());
             groupChecks.put(token, check);
         }
     }
@@ -181,7 +195,65 @@ public class McpHostProfileDialog extends TitleAreaDialog {
         text.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
         text.setMessage(hint);
         text.setText(nullToEmpty(value));
+        text.addModifyListener(e -> refreshPreview());
         return text;
+    }
+
+    private void createPreview(Composite parent) {
+        previewGroup = new Group(parent, SWT.NONE);
+        previewGroup.setText(Messages.McpHostProfileDialog_Preview);
+        previewGroup.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true, 2, 1));
+        previewGroup.setLayout(new GridLayout(1, false));
+
+        previewTable = new Table(previewGroup, SWT.BORDER | SWT.FULL_SELECTION | SWT.V_SCROLL);
+        GridData tableGd = new GridData(SWT.FILL, SWT.FILL, true, true);
+        tableGd.heightHint = 150;
+        tableGd.widthHint = 520;
+        previewTable.setLayoutData(tableGd);
+        previewTable.setHeaderVisible(true);
+        previewTable.setLinesVisible(true);
+        TableColumn nameCol = new TableColumn(previewTable, SWT.NONE);
+        nameCol.setText(Messages.McpHostProfileDialog_PreviewColTool);
+        nameCol.setWidth(170);
+        TableColumn descCol = new TableColumn(previewTable, SWT.NONE);
+        descCol.setText(Messages.McpHostProfileDialog_PreviewColDescription);
+        descCol.setWidth(340);
+    }
+
+    /** Re-list the tools this profile would announce, with descriptions. */
+    private void refreshPreview() {
+        if (previewTable == null || previewTable.isDisposed()) {
+            return;
+        }
+        ProfileEndpoint preview = working.copy();
+        readToolSetInto(preview);
+        previewTable.setRedraw(false);
+        previewTable.removeAll();
+        int count = 0;
+        try {
+            DefaultMcpToolExposurePolicy policy = new DefaultMcpToolExposurePolicy(
+                    McpHostConfig.defaults(), preview.getExposedToolsFilter(), preview.toGroupVisibility());
+            for (ITool tool : ToolRegistry.getInstance().getAllTools()) {
+                if (!policy.isExposed(tool.getName())) {
+                    continue;
+                }
+                TableItem item = new TableItem(previewTable, SWT.NONE);
+                item.setText(new String[] { tool.getName(), oneLine(tool.getDescription()) });
+                count++;
+            }
+        } catch (RuntimeException e) {
+            // Tool registry unavailable (e.g. very early startup) — leave the preview empty.
+        }
+        previewTable.setRedraw(true);
+        previewGroup.setText(Messages.McpHostProfileDialog_Preview + " (" + count + ")"); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private static String oneLine(String s) {
+        if (s == null) {
+            return ""; //$NON-NLS-1$
+        }
+        String flat = s.replaceAll("\\s+", " ").trim(); //$NON-NLS-1$ //$NON-NLS-2$
+        return flat.length() > 160 ? flat.substring(0, 159) + "…" : flat; //$NON-NLS-1$
     }
 
     private void updateGroupEnablement() {
@@ -220,9 +292,14 @@ public class McpHostProfileDialog extends TitleAreaDialog {
         working.setEnabled(enabledCheck.getSelection());
         working.setPort(portSpinner.getSelection());
         working.setBearerToken(tokenText.getText().trim());
+        readToolSetInto(working);
+        super.okPressed();
+    }
 
+    /** Read the tool-set widgets (announce-all/groups + advanced) into a profile. */
+    private void readToolSetInto(ProfileEndpoint target) {
         if (announceAllCheck.getSelection()) {
-            working.setEnableGroups(""); //$NON-NLS-1$ everything (denylist mode)
+            target.setEnableGroups(""); //$NON-NLS-1$ everything (denylist mode)
         } else {
             List<String> chosen = new ArrayList<>();
             for (Map.Entry<String, Button> entry : groupChecks.entrySet()) {
@@ -230,15 +307,13 @@ public class McpHostProfileDialog extends TitleAreaDialog {
                     chosen.add(entry.getKey());
                 }
             }
-            working.setEnableGroups(String.join(",", chosen)); //$NON-NLS-1$
+            target.setEnableGroups(String.join(",", chosen)); //$NON-NLS-1$
         }
-        working.setEnableTools(emptyToNull(enableToolsText.getText().trim()));
-        working.setDisableTools(emptyToNull(disableToolsText.getText().trim()));
-        working.setDisableGroups(emptyToNull(disableGroupsText.getText().trim()));
+        target.setEnableTools(emptyToNull(enableToolsText.getText().trim()));
+        target.setDisableTools(emptyToNull(disableToolsText.getText().trim()));
+        target.setDisableGroups(emptyToNull(disableGroupsText.getText().trim()));
         String filter = nameFilterText.getText().trim();
-        working.setExposedToolsFilter(filter.isEmpty() ? "*" : filter); //$NON-NLS-1$
-
-        super.okPressed();
+        target.setExposedToolsFilter(filter.isEmpty() ? "*" : filter); //$NON-NLS-1$
     }
 
     private static Set<String> parseTokens(String csv) {

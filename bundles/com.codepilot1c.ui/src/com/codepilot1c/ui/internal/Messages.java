@@ -385,6 +385,9 @@ public class Messages extends NLS {
     public static String McpHostProfileDialog_NameFilter;
     public static String McpHostProfileDialog_ErrNameEmpty;
     public static String McpHostProfileDialog_ErrNameDup;
+    public static String McpHostProfileDialog_Preview;
+    public static String McpHostProfileDialog_PreviewColTool;
+    public static String McpHostProfileDialog_PreviewColDescription;
 
     static {
         NLS.initializeMessages(BUNDLE_NAME, Messages.class);

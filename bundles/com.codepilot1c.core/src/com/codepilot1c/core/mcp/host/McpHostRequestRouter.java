@@ -30,6 +30,7 @@ import com.codepilot1c.core.permissions.PermissionManager;
 import com.codepilot1c.core.evaluation.trace.TraceEventType;
 import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.surface.ToolSurfaceContext;
@@ -158,6 +159,10 @@ public class McpHostRequestRouter {
             return ok(request, toolError("Tool execution denied by permission policy: " + decision)); //$NON-NLS-1$
         }
 
+        // Expose THIS endpoint's tool-visibility to the call so endpoint-aware
+        // tools (discover_tools) answer per the calling port's profile, not a
+        // global view. tool.execute runs doExecute synchronously on this thread.
+        ToolExecutionContext.setEndpointToolVisibility(exposurePolicy::isExposed);
         ToolResult toolResult;
         try {
             int timeoutSeconds;
@@ -182,6 +187,8 @@ public class McpHostRequestRouter {
             writeMcpToolTrace(session, toolName, arguments, decision, null,
                     Duration.between(startedAt, Instant.now()), e);
             return ok(request, toolError("Tool execution failed: " + e.getMessage())); //$NON-NLS-1$
+        } finally {
+            ToolExecutionContext.clearEndpointToolVisibility();
         }
 
         Duration duration = Duration.between(startedAt, Instant.now());

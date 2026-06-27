@@ -12,9 +12,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
+import java.util.function.Predicate;
+
 import com.codepilot1c.core.model.ToolDefinition;
 import com.codepilot1c.core.tools.AbstractTool;
 import com.codepilot1c.core.tools.ITool;
+import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolRegistry;
@@ -135,9 +138,14 @@ public class DiscoverToolsTool extends AbstractTool {
         List<ToolSummary> toolSummaries = new ArrayList<>();
         ToolSurfaceContext surfaceContext = toolRegistry.createRuntimeSurfaceContext(
                 ToolSurfaceContext.defaultProfile());
-        // Honor the operator's group/per-tool gate as a hard ceiling: a category
-        // disabled via config must not be revealed through discover_tools either.
-        ToolGroupVisibility visibility = ToolGroupVisibility.fromEnvironment();
+        // Honor the exposure gate as a hard ceiling: a category disabled for this
+        // endpoint must not be revealed through discover_tools either. When invoked
+        // via the MCP host, the router supplies the CALLING PORT's visibility so the
+        // answer is strictly per-profile; otherwise (in-process agent) fall back to
+        // the global env view.
+        Predicate<String> endpointVisible = ToolExecutionContext.endpointToolVisibility();
+        ToolGroupVisibility envVisibility = endpointVisible == null
+                ? ToolGroupVisibility.fromEnvironment() : null;
         int matchedInCategory = 0;
         int hiddenByConfig = 0;
 
@@ -145,7 +153,10 @@ public class DiscoverToolsTool extends AbstractTool {
             ToolCategory toolCategory = BuiltinToolTaxonomy.categoryOf(tool);
             if (toolCategory == category) {
                 matchedInCategory++;
-                if (!visibility.isToolVisible(tool.getName(), ToolGroupTaxonomy.groupOf(tool))) {
+                boolean visible = endpointVisible != null
+                        ? endpointVisible.test(tool.getName())
+                        : envVisibility.isToolVisible(tool.getName(), ToolGroupTaxonomy.groupOf(tool));
+                if (!visible) {
                     hiddenByConfig++;
                     continue;
                 }
@@ -161,9 +172,9 @@ public class DiscoverToolsTool extends AbstractTool {
             if (matchedInCategory > 0 && hiddenByConfig == matchedInCategory) {
                 return CompletableFuture.completedFuture(
                         ToolResult.success("Category '" + categoryName //$NON-NLS-1$
-                                + "' is disabled by config on this server instance " //$NON-NLS-1$
-                                + "(CODEPILOT1C_DISABLE_GROUPS / CODEPILOT1C_ENABLE_GROUPS). " //$NON-NLS-1$
-                                + "No tools to reveal.")); //$NON-NLS-1$
+                                + "' is disabled for this endpoint's profile " //$NON-NLS-1$
+                                + "(or server config: CODEPILOT1C_DISABLE_GROUPS / CODEPILOT1C_ENABLE_GROUPS). " //$NON-NLS-1$
+                                + "No tools to reveal on this port.")); //$NON-NLS-1$
             }
             return CompletableFuture.completedFuture(
                     ToolResult.success("No tools found for category: " + categoryName + //$NON-NLS-1$
