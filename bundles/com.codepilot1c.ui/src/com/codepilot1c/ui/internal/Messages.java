@@ -373,21 +373,18 @@ public class Messages extends NLS {
     public static String McpHostProfileDialog_Header;
     public static String McpHostProfileDialog_Name;
     public static String McpHostProfileDialog_Enabled;
-    public static String McpHostProfileDialog_Port;
     public static String McpHostProfileDialog_Token;
     public static String McpHostProfileDialog_Regenerate;
+    public static String McpHostProfileDialog_SharedHint;
     public static String McpHostProfileDialog_AnnounceAll;
-    public static String McpHostProfileDialog_Groups;
-    public static String McpHostProfileDialog_Advanced;
-    public static String McpHostProfileDialog_EnableTools;
-    public static String McpHostProfileDialog_DisableTools;
-    public static String McpHostProfileDialog_DisableGroups;
-    public static String McpHostProfileDialog_NameFilter;
+    public static String McpHostProfileDialog_Tools;
+    public static String McpHostProfileDialog_ToolsHint;
+    public static String McpHostProfileDialog_ColTool;
+    public static String McpHostProfileDialog_ColDescription;
+    public static String McpHostProfileDialog_ToolCount;
     public static String McpHostProfileDialog_ErrNameEmpty;
     public static String McpHostProfileDialog_ErrNameDup;
-    public static String McpHostProfileDialog_Preview;
-    public static String McpHostProfileDialog_PreviewColTool;
-    public static String McpHostProfileDialog_PreviewColDescription;
+    public static String McpHostProfileDialog_ErrNoTools;
 
     static {
         NLS.initializeMessages(BUNDLE_NAME, Messages.class);

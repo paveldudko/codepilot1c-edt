@@ -8,6 +8,7 @@
 package com.codepilot1c.ui.preferences;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -19,6 +20,7 @@ import org.eclipse.jface.dialogs.IDialogConstants;
 import org.eclipse.jface.dialogs.IMessageProvider;
 import org.eclipse.jface.dialogs.TitleAreaDialog;
 import org.eclipse.swt.SWT;
+import org.eclipse.swt.graphics.Rectangle;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
 import org.eclipse.swt.widgets.Button;
@@ -27,11 +29,10 @@ import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Group;
 import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.Shell;
-import org.eclipse.swt.widgets.Spinner;
-import org.eclipse.swt.widgets.Table;
-import org.eclipse.swt.widgets.TableColumn;
-import org.eclipse.swt.widgets.TableItem;
 import org.eclipse.swt.widgets.Text;
+import org.eclipse.swt.widgets.Tree;
+import org.eclipse.swt.widgets.TreeColumn;
+import org.eclipse.swt.widgets.TreeItem;
 
 import com.codepilot1c.core.mcp.host.DefaultMcpToolExposurePolicy;
 import com.codepilot1c.core.mcp.host.McpHostConfig;
@@ -39,13 +40,14 @@ import com.codepilot1c.core.mcp.host.ProfileEndpoint;
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.tools.surface.ToolGroupTaxonomy;
+import com.codepilot1c.core.tools.surface.ToolSelectionModel;
 import com.codepilot1c.ui.internal.Messages;
 
 /**
- * Editor for a single {@link ProfileEndpoint} (multi-endpoint MCP profile):
- * name, port, enabled, bearer token, and a tool-set picker (announce-all vs a
- * per-group allowlist using the {@link ToolGroupTaxonomy} vocabulary, plus
- * advanced per-tool / name-filter overrides).
+ * Editor for a single {@link ProfileEndpoint} (machine-shared half: name, enabled,
+ * bearer token, tool set). The tool set is picked per-tool in a checkbox tree
+ * (groups → individual tools, with descriptions); the per-instance port is edited
+ * in the endpoints table, not here.
  */
 public class McpHostProfileDialog extends TitleAreaDialog {
 
@@ -54,16 +56,14 @@ public class McpHostProfileDialog extends TitleAreaDialog {
 
     private Text nameText;
     private Button enabledCheck;
-    private Spinner portSpinner;
     private Text tokenText;
     private Button announceAllCheck;
-    private final Map<String, Button> groupChecks = new LinkedHashMap<>();
-    private Text enableToolsText;
-    private Text disableToolsText;
-    private Text disableGroupsText;
-    private Text nameFilterText;
-    private Group previewGroup;
-    private Table previewTable;
+    private Tree toolTree;
+    private TreeColumn descColumn;
+    private Label countLabel;
+    private boolean adjustingColumns;
+
+    private static final int NAME_COL_WIDTH = 260;
 
     public McpHostProfileDialog(Shell parentShell, ProfileEndpoint profile, Set<String> otherNames) {
         super(parentShell);
@@ -110,12 +110,6 @@ public class McpHostProfileDialog extends TitleAreaDialog {
         enabledCheck.setSelection(working.isEnabled());
         enabledCheck.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 2, 1));
 
-        label(container, Messages.McpHostProfileDialog_Port);
-        portSpinner = new Spinner(container, SWT.BORDER);
-        portSpinner.setMinimum(1);
-        portSpinner.setMaximum(65535);
-        portSpinner.setSelection(working.getPort() > 0 ? working.getPort() : 8765);
-
         label(container, Messages.McpHostProfileDialog_Token);
         Composite tokenRow = new Composite(container, SWT.NONE);
         tokenRow.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
@@ -130,137 +124,218 @@ public class McpHostProfileDialog extends TitleAreaDialog {
         regen.setText(Messages.McpHostProfileDialog_Regenerate);
         regen.addListener(SWT.Selection, e -> tokenText.setText(McpHostConfig.generateToken()));
 
+        Label sharedHint = new Label(container, SWT.WRAP);
+        sharedHint.setText(Messages.McpHostProfileDialog_SharedHint);
+        GridData sharedGd = new GridData(SWT.FILL, SWT.TOP, true, false, 2, 1);
+        sharedGd.widthHint = 540;
+        sharedHint.setLayoutData(sharedGd);
+
         new Label(container, SWT.SEPARATOR | SWT.HORIZONTAL)
                 .setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 2, 1));
 
         announceAllCheck = new Button(container, SWT.CHECK);
         announceAllCheck.setText(Messages.McpHostProfileDialog_AnnounceAll);
         announceAllCheck.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false, 2, 1));
-        boolean announceAll = working.getEnableGroups() == null || working.getEnableGroups().isBlank();
-        announceAllCheck.setSelection(announceAll);
+        announceAllCheck.setSelection(working.announcesEverything());
         announceAllCheck.addListener(SWT.Selection, e -> {
-            updateGroupEnablement();
-            refreshPreview();
+            updateTreeEnablement();
+            updateCount();
+            validate();
         });
 
-        createGroupPicker(container);
-        createAdvanced(container);
-        createPreview(container);
+        createToolTree(container);
 
-        updateGroupEnablement();
-        refreshPreview();
+        updateTreeEnablement();
+        updateCount();
         validate();
         return area;
     }
 
-    private void createGroupPicker(Composite parent) {
+    private void createToolTree(Composite parent) {
         Group group = new Group(parent, SWT.NONE);
-        group.setText(Messages.McpHostProfileDialog_Groups);
-        group.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, false, 2, 1));
-        group.setLayout(new GridLayout(2, true));
+        group.setText(Messages.McpHostProfileDialog_Tools);
+        group.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true, 2, 1));
+        group.setLayout(new GridLayout(1, false));
 
-        Set<String> selected = parseTokens(working.getEnableGroups());
+        Label hint = new Label(group, SWT.WRAP);
+        hint.setText(Messages.McpHostProfileDialog_ToolsHint);
+        GridData hintGd = new GridData(SWT.FILL, SWT.TOP, true, false);
+        hintGd.widthHint = 540;
+        hint.setLayoutData(hintGd);
+
+        toolTree = new Tree(group, SWT.BORDER | SWT.CHECK | SWT.FULL_SELECTION | SWT.V_SCROLL);
+        GridData treeGd = new GridData(SWT.FILL, SWT.FILL, true, true);
+        treeGd.heightHint = 320;
+        treeGd.widthHint = 580;
+        toolTree.setLayoutData(treeGd);
+        toolTree.setHeaderVisible(true);
+        toolTree.setLinesVisible(true);
+        TreeColumn nameCol = new TreeColumn(toolTree, SWT.NONE);
+        nameCol.setText(Messages.McpHostProfileDialog_ColTool);
+        nameCol.setWidth(NAME_COL_WIDTH);
+        descColumn = new TreeColumn(toolTree, SWT.NONE);
+        descColumn.setText(Messages.McpHostProfileDialog_ColDescription);
+        descColumn.setWidth(300);
+
+        populateTree();
+
+        toolTree.addListener(SWT.Selection, e -> {
+            if (e.detail == SWT.CHECK && e.item instanceof TreeItem item) {
+                onCheck(item);
+            }
+        });
+        toolTree.addListener(SWT.Resize, e -> fitDescriptionColumn());
+
+        countLabel = new Label(group, SWT.NONE);
+        countLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+    }
+
+    /** Build the group → tools rows and seed check state from the profile's current surface. */
+    private void populateTree() {
+        Map<String, List<ITool>> byGroup = toolsByGroup();
+        DefaultMcpToolExposurePolicy policy = new DefaultMcpToolExposurePolicy(
+                McpHostConfig.defaults(), working.getExposedToolsFilter(), working.toGroupVisibility());
+        boolean announceAll = working.announcesEverything();
+        for (Map.Entry<String, List<ITool>> entry : byGroup.entrySet()) {
+            TreeItem groupItem = new TreeItem(toolTree, SWT.NONE);
+            groupItem.setText(0, entry.getKey());
+            groupItem.setData(entry.getKey());
+            for (ITool tool : entry.getValue()) {
+                TreeItem toolItem = new TreeItem(groupItem, SWT.NONE);
+                toolItem.setText(0, tool.getName());
+                toolItem.setText(1, normalize(tool.getDescription()));
+                toolItem.setChecked(announceAll || policy.isExposed(tool.getName()));
+            }
+            refreshParentState(groupItem);
+            groupItem.setExpanded(true);
+        }
+    }
+
+    /** Tools grouped by announce-surface group, in {@link ToolGroupTaxonomy#ANNOUNCEABLE_GROUPS} order. */
+    private Map<String, List<ITool>> toolsByGroup() {
+        Map<String, List<ITool>> byGroup = new LinkedHashMap<>();
         for (String token : ToolGroupTaxonomy.ANNOUNCEABLE_GROUPS) {
-            Button check = new Button(group, SWT.CHECK);
-            check.setText(token);
-            // A bare base token (e.g. "files") in config selects both facets.
-            String base = ToolGroupTaxonomy.baseGroup(token);
-            check.setSelection(selected.contains(token) || selected.contains(base));
-            check.addListener(SWT.Selection, e -> refreshPreview());
-            groupChecks.put(token, check);
+            byGroup.put(token, new ArrayList<>());
         }
-    }
-
-    private void createAdvanced(Composite parent) {
-        Group group = new Group(parent, SWT.NONE);
-        group.setText(Messages.McpHostProfileDialog_Advanced);
-        group.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, false, 2, 1));
-        group.setLayout(new GridLayout(2, false));
-
-        label(group, Messages.McpHostProfileDialog_EnableTools);
-        enableToolsText = advancedField(group, working.getEnableTools(), "git_inspect"); //$NON-NLS-1$
-
-        label(group, Messages.McpHostProfileDialog_DisableTools);
-        disableToolsText = advancedField(group, working.getDisableTools(), "connect_infobase"); //$NON-NLS-1$
-
-        label(group, Messages.McpHostProfileDialog_DisableGroups);
-        disableGroupsText = advancedField(group, working.getDisableGroups(), "metadata.write,qa"); //$NON-NLS-1$
-
-        label(group, Messages.McpHostProfileDialog_NameFilter);
-        nameFilterText = advancedField(group, working.getExposedToolsFilter(), "*, -edit_file"); //$NON-NLS-1$
-    }
-
-    private Text advancedField(Composite parent, String value, String hint) {
-        Text text = new Text(parent, SWT.BORDER);
-        text.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
-        text.setMessage(hint);
-        text.setText(nullToEmpty(value));
-        text.addModifyListener(e -> refreshPreview());
-        return text;
-    }
-
-    private void createPreview(Composite parent) {
-        previewGroup = new Group(parent, SWT.NONE);
-        previewGroup.setText(Messages.McpHostProfileDialog_Preview);
-        previewGroup.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true, 2, 1));
-        previewGroup.setLayout(new GridLayout(1, false));
-
-        previewTable = new Table(previewGroup, SWT.BORDER | SWT.FULL_SELECTION | SWT.V_SCROLL);
-        GridData tableGd = new GridData(SWT.FILL, SWT.FILL, true, true);
-        tableGd.heightHint = 150;
-        tableGd.widthHint = 520;
-        previewTable.setLayoutData(tableGd);
-        previewTable.setHeaderVisible(true);
-        previewTable.setLinesVisible(true);
-        TableColumn nameCol = new TableColumn(previewTable, SWT.NONE);
-        nameCol.setText(Messages.McpHostProfileDialog_PreviewColTool);
-        nameCol.setWidth(170);
-        TableColumn descCol = new TableColumn(previewTable, SWT.NONE);
-        descCol.setText(Messages.McpHostProfileDialog_PreviewColDescription);
-        descCol.setWidth(340);
-    }
-
-    /** Re-list the tools this profile would announce, with descriptions. */
-    private void refreshPreview() {
-        if (previewTable == null || previewTable.isDisposed()) {
-            return;
-        }
-        ProfileEndpoint preview = working.copy();
-        readToolSetInto(preview);
-        previewTable.setRedraw(false);
-        previewTable.removeAll();
-        int count = 0;
         try {
-            DefaultMcpToolExposurePolicy policy = new DefaultMcpToolExposurePolicy(
-                    McpHostConfig.defaults(), preview.getExposedToolsFilter(), preview.toGroupVisibility());
-            for (ITool tool : ToolRegistry.getInstance().getAllTools()) {
-                if (!policy.isExposed(tool.getName())) {
-                    continue;
+            List<ITool> all = new ArrayList<>(ToolRegistry.getInstance().getAllTools());
+            all.sort((a, b) -> a.getName().compareToIgnoreCase(b.getName()));
+            for (ITool tool : all) {
+                String groupToken = ToolGroupTaxonomy.groupOf(tool);
+                List<ITool> bucket = byGroup.get(groupToken);
+                if (bucket != null) {
+                    bucket.add(tool);
                 }
-                TableItem item = new TableItem(previewTable, SWT.NONE);
-                item.setText(new String[] { tool.getName(), oneLine(tool.getDescription()) });
-                count++;
             }
         } catch (RuntimeException e) {
-            // Tool registry unavailable (e.g. very early startup) — leave the preview empty.
+            // Tool registry unavailable (very early startup) — leave groups empty.
         }
-        previewTable.setRedraw(true);
-        previewGroup.setText(Messages.McpHostProfileDialog_Preview + " (" + count + ")"); //$NON-NLS-1$ //$NON-NLS-2$
+        byGroup.values().removeIf(List::isEmpty);
+        return byGroup;
     }
 
-    private static String oneLine(String s) {
+    private void onCheck(TreeItem item) {
+        if (item.getParentItem() == null) {
+            // Group toggled — cascade to its tools.
+            boolean checked = item.getChecked();
+            item.setGrayed(false);
+            for (TreeItem child : item.getItems()) {
+                child.setChecked(checked);
+            }
+        } else {
+            refreshParentState(item.getParentItem());
+        }
+        updateCount();
+        validate();
+    }
+
+    /** Set a group's tri-state from its tools (checked = all, grayed = some). */
+    private void refreshParentState(TreeItem groupItem) {
+        int checked = 0;
+        TreeItem[] children = groupItem.getItems();
+        for (TreeItem child : children) {
+            if (child.getChecked()) {
+                checked++;
+            }
+        }
+        groupItem.setChecked(checked > 0);
+        groupItem.setGrayed(checked > 0 && checked < children.length);
+    }
+
+    private void updateTreeEnablement() {
+        if (toolTree != null && !toolTree.isDisposed()) {
+            toolTree.setEnabled(!announceAllCheck.getSelection());
+        }
+    }
+
+    private void updateCount() {
+        if (countLabel == null || countLabel.isDisposed()) {
+            return;
+        }
+        int count;
+        if (announceAllCheck.getSelection()) {
+            count = totalTools();
+        } else {
+            count = selectedToolNames().size();
+        }
+        countLabel.setText(org.eclipse.osgi.util.NLS.bind(Messages.McpHostProfileDialog_ToolCount, Integer.valueOf(count)));
+    }
+
+    private int totalTools() {
+        int total = 0;
+        for (TreeItem groupItem : toolTree.getItems()) {
+            total += groupItem.getItemCount();
+        }
+        return total;
+    }
+
+    private void fitDescriptionColumn() {
+        if (adjustingColumns || toolTree == null || toolTree.isDisposed()) {
+            return;
+        }
+        Rectangle clientArea = toolTree.getClientArea();
+        int target = clientArea.width - toolTree.getColumn(0).getWidth() - 4;
+        if (target > 120 && Math.abs(target - descColumn.getWidth()) > 1) {
+            adjustingColumns = true;
+            try {
+                descColumn.setWidth(target);
+            } finally {
+                adjustingColumns = false;
+            }
+        }
+    }
+
+    /** The tool names currently checked (tool leaves only). */
+    private Set<String> selectedToolNames() {
+        Set<String> selected = new HashSet<>();
+        for (TreeItem groupItem : toolTree.getItems()) {
+            for (TreeItem child : groupItem.getItems()) {
+                if (child.getChecked()) {
+                    selected.add(child.getText(0));
+                }
+            }
+        }
+        return selected;
+    }
+
+    /** Group token → its full tool-name membership, mirroring the tree structure. */
+    private Map<String, List<String>> currentToolsByGroup() {
+        Map<String, List<String>> byGroup = new LinkedHashMap<>();
+        for (TreeItem groupItem : toolTree.getItems()) {
+            List<String> tools = new ArrayList<>();
+            for (TreeItem child : groupItem.getItems()) {
+                tools.add(child.getText(0));
+            }
+            byGroup.put((String) groupItem.getData(), tools);
+        }
+        return byGroup;
+    }
+
+    private static String normalize(String s) {
         if (s == null) {
             return ""; //$NON-NLS-1$
         }
-        String flat = s.replaceAll("\\s+", " ").trim(); //$NON-NLS-1$ //$NON-NLS-2$
-        return flat.length() > 160 ? flat.substring(0, 159) + "…" : flat; //$NON-NLS-1$
-    }
-
-    private void updateGroupEnablement() {
-        boolean announceAll = announceAllCheck.getSelection();
-        for (Button check : groupChecks.values()) {
-            check.setEnabled(!announceAll);
-        }
+        return s.replaceAll("[ \\t]+", " ").trim(); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private void validate() {
@@ -272,6 +347,11 @@ public class McpHostProfileDialog extends TitleAreaDialog {
         }
         if (otherNamesLower.contains(name.toLowerCase(Locale.ROOT))) {
             setMessage(Messages.McpHostProfileDialog_ErrNameDup, IMessageProvider.ERROR);
+            setOkEnabled(false);
+            return;
+        }
+        if (!announceAllCheck.getSelection() && selectedToolNames().isEmpty()) {
+            setMessage(Messages.McpHostProfileDialog_ErrNoTools, IMessageProvider.ERROR);
             setOkEnabled(false);
             return;
         }
@@ -290,44 +370,26 @@ public class McpHostProfileDialog extends TitleAreaDialog {
     protected void okPressed() {
         working.setName(nameText.getText().trim());
         working.setEnabled(enabledCheck.getSelection());
-        working.setPort(portSpinner.getSelection());
         working.setBearerToken(tokenText.getText().trim());
         readToolSetInto(working);
         super.okPressed();
     }
 
-    /** Read the tool-set widgets (announce-all/groups + advanced) into a profile. */
+    /** Translate the announce-all toggle / checkbox tree into the profile's facets. */
     private void readToolSetInto(ProfileEndpoint target) {
+        // The per-tool tree fully captures the surface, so the legacy per-tool enable /
+        // disable-groups / name-filter facets are no longer needed from this editor.
+        target.setEnableTools(null);
+        target.setDisableGroups(null);
+        target.setExposedToolsFilter("*"); //$NON-NLS-1$
         if (announceAllCheck.getSelection()) {
-            target.setEnableGroups(""); //$NON-NLS-1$ everything (denylist mode)
-        } else {
-            List<String> chosen = new ArrayList<>();
-            for (Map.Entry<String, Button> entry : groupChecks.entrySet()) {
-                if (entry.getValue().getSelection()) {
-                    chosen.add(entry.getKey());
-                }
-            }
-            target.setEnableGroups(String.join(",", chosen)); //$NON-NLS-1$
+            target.setEnableGroups(""); //$NON-NLS-1$ empty allowlist = announce everything (denylist mode)
+            target.setDisableTools(null);
+            return;
         }
-        target.setEnableTools(emptyToNull(enableToolsText.getText().trim()));
-        target.setDisableTools(emptyToNull(disableToolsText.getText().trim()));
-        target.setDisableGroups(emptyToNull(disableGroupsText.getText().trim()));
-        String filter = nameFilterText.getText().trim();
-        target.setExposedToolsFilter(filter.isEmpty() ? "*" : filter); //$NON-NLS-1$
-    }
-
-    private static Set<String> parseTokens(String csv) {
-        Set<String> out = new java.util.HashSet<>();
-        if (csv == null) {
-            return out;
-        }
-        for (String token : csv.split(",")) { //$NON-NLS-1$
-            String trimmed = token.trim().toLowerCase(Locale.ROOT);
-            if (!trimmed.isEmpty()) {
-                out.add(trimmed);
-            }
-        }
-        return out;
+        ToolSelectionModel selection = ToolSelectionModel.fromSelection(currentToolsByGroup(), selectedToolNames());
+        target.setEnableGroups(selection.getEnableGroups());
+        target.setDisableTools(emptyToNull(selection.getDisableTools()));
     }
 
     private static Label label(Composite parent, String text) {

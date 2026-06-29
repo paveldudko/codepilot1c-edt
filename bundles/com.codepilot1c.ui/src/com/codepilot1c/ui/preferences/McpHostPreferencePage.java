@@ -13,9 +13,11 @@ import java.util.stream.Collectors;
 import org.eclipse.jface.dialogs.MessageDialog;
 import org.eclipse.jface.preference.PreferencePage;
 import org.eclipse.swt.SWT;
+import org.eclipse.swt.custom.TableEditor;
 import org.eclipse.swt.dnd.Clipboard;
 import org.eclipse.swt.dnd.TextTransfer;
 import org.eclipse.swt.dnd.Transfer;
+import org.eclipse.swt.graphics.Point;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
 import org.eclipse.swt.widgets.Button;
@@ -24,6 +26,7 @@ import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.Listener;
+import org.eclipse.swt.widgets.Spinner;
 import org.eclipse.swt.widgets.Table;
 import org.eclipse.swt.widgets.TableColumn;
 import org.eclipse.swt.widgets.TableItem;
@@ -66,6 +69,11 @@ public class McpHostPreferencePage extends PreferencePage implements IWorkbenchP
 
     private McpHostConfig config;
     private final List<ProfileEndpoint> profiles = new ArrayList<>();
+
+    private TableEditor portEditor;
+    /** Column under the last mouse press, so the per-instance port cell edits inline. */
+    private int clickedColumn = -1;
+    private static final int PORT_COLUMN = 1;
 
     @Override
     public void init(IWorkbench workbench) {
@@ -168,7 +176,25 @@ public class McpHostPreferencePage extends PreferencePage implements IWorkbenchP
             updateButtons();
             updateInstallHints();
         });
-        table.addListener(SWT.MouseDoubleClick, e -> editSelected());
+        portEditor = new TableEditor(table);
+        portEditor.grabHorizontal = true;
+        portEditor.minimumWidth = 60;
+        table.addListener(SWT.MouseDown, e -> {
+            clickedColumn = columnAt(e.x, e.y);
+            if (clickedColumn == PORT_COLUMN) {
+                TableItem item = table.getItem(new Point(e.x, e.y));
+                if (item != null) {
+                    editPortInline(item);
+                }
+            }
+        });
+        // Double-click opens the profile editor (shared settings); the per-instance
+        // port cell is edited inline instead, so don't pop the dialog over it.
+        table.addListener(SWT.MouseDoubleClick, e -> {
+            if (clickedColumn != PORT_COLUMN) {
+                editSelected();
+            }
+        });
 
         Composite buttons = new Composite(parent, SWT.NONE);
         buttons.setLayoutData(new GridData(SWT.FILL, SWT.TOP, false, false));
@@ -214,6 +240,9 @@ public class McpHostPreferencePage extends PreferencePage implements IWorkbenchP
     // --- table <-> model -----------------------------------------------------
 
     private void refreshTable() {
+        if (portEditor != null && portEditor.getEditor() != null) {
+            portEditor.getEditor().dispose();
+        }
         int selected = table.getSelectionIndex();
         table.removeAll();
         for (ProfileEndpoint p : profiles) {
@@ -248,6 +277,59 @@ public class McpHostPreferencePage extends PreferencePage implements IWorkbenchP
     private ProfileEndpoint selectedProfile() {
         int index = table.getSelectionIndex();
         return (index >= 0 && index < profiles.size()) ? profiles.get(index) : null;
+    }
+
+    private int columnAt(int x, int y) {
+        Point pt = new Point(x, y);
+        TableItem item = table.getItem(pt);
+        if (item != null) {
+            for (int i = 0; i < table.getColumnCount(); i++) {
+                if (item.getBounds(i).contains(pt)) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    /** Inline-edit the per-instance port of a profile via a spinner over the Port cell. */
+    private void editPortInline(TableItem item) {
+        Control old = portEditor.getEditor();
+        if (old != null) {
+            old.dispose();
+        }
+        int index = table.indexOf(item);
+        if (index < 0 || index >= profiles.size()) {
+            return;
+        }
+        ProfileEndpoint profile = profiles.get(index);
+        Spinner spinner = new Spinner(table, SWT.BORDER);
+        spinner.setMinimum(1);
+        spinner.setMaximum(65535);
+        spinner.setSelection(profile.getPort() > 0 ? profile.getPort() : 8765);
+        spinner.addListener(SWT.FocusOut, e -> commitPort(spinner, item, profile));
+        spinner.addListener(SWT.DefaultSelection, e -> commitPort(spinner, item, profile));
+        spinner.addListener(SWT.Traverse, e -> {
+            if (e.detail == SWT.TRAVERSE_ESCAPE) {
+                spinner.dispose();
+                e.doit = false;
+            } else if (e.detail == SWT.TRAVERSE_RETURN) {
+                commitPort(spinner, item, profile);
+                e.doit = false;
+            }
+        });
+        portEditor.setEditor(spinner, item, PORT_COLUMN);
+        spinner.setFocus();
+    }
+
+    private void commitPort(Spinner spinner, TableItem item, ProfileEndpoint profile) {
+        if (spinner.isDisposed()) {
+            return;
+        }
+        profile.setPort(spinner.getSelection());
+        item.setText(PORT_COLUMN, Integer.toString(profile.getPort()));
+        spinner.dispose();
+        updateInstallHints();
     }
 
     private void updateButtons() {

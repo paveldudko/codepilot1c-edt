@@ -122,9 +122,18 @@ public final class VibePreferenceConstants {
     /**
      * Marks that the legacy single endpoint was already migrated into a {@code full}
      * profile and the starter set seeded — so an operator who intentionally clears
-     * all profiles is not re-seeded on the next load.
+     * all profiles is not re-seeded on the next load. Legacy: superseded by the
+     * machine-shared profiles file (see {@code SharedProfileStore}); still read for
+     * one-time migration.
      */
     public static final String PREF_MCP_HOST_PROFILES_SEEDED = "mcp.host.profilesSeeded"; //$NON-NLS-1$
+    /**
+     * Instance-local port assignment for the machine-shared profiles, as a JSON
+     * object {@code {"profileName": port, …}}. The profile <em>set</em> (names, tool
+     * sets, tokens, enabled) is shared across instances via the per-user profiles
+     * file; only the port each instance binds a profile on stays here, per workspace.
+     */
+    public static final String PREF_MCP_HOST_PROFILE_PORTS = "mcp.host.profilePorts"; //$NON-NLS-1$
 
     // Feature flags
     /** Feature flag: enable LLM-based history compaction instead of lossy truncation. */
