@@ -58,9 +58,10 @@ public class EdtInfobaseConnectSetDefaultRetryTest {
         boolean primary = service.invokeAssociate(project, reference, true);
 
         assertTrue("REGRESSION: the first setDefaultInfobase failure right after associate() must " //$NON-NLS-1$
-                + "be retried in place (re-adopt + re-associate + setDefault), not surfaced — " //$NON-NLS-1$
-                + "otherwise the first connect of every new branch context fails and only an " //$NON-NLS-1$
-                + "external retry heals it.", primary); //$NON-NLS-1$
+                + "be retried in place (re-adopt + re-persist + re-associate + setDefault), not " //$NON-NLS-1$
+                + "surfaced — otherwise the first connect of every new branch context fails and " //$NON-NLS-1$
+                + "only an external retry heals it. The re-associate's own 'already connected' " //$NON-NLS-1$
+                + "complaint must be tolerated.", primary); //$NON-NLS-1$
         assertEquals("associate() must be re-issued before the retry", 2, manager.associateCalls.get()); //$NON-NLS-1$
         assertEquals("setDefaultInfobase must be attempted exactly twice", 2, manager.setDefaultCalls.get()); //$NON-NLS-1$
     }
@@ -143,7 +144,12 @@ public class EdtInfobaseConnectSetDefaultRetryTest {
         public Object invoke(Object p, Method method, Object[] args) {
             switch (method.getName()) {
                 case "associate": //$NON-NLS-1$
-                    associateCalls.incrementAndGet();
+                    if (associateCalls.incrementAndGet() >= 2) {
+                        // Live behaviour: the first associate DID land, so the retry's re-associate
+                        // reports a duplicate — the retry must tolerate this and proceed.
+                        throw new IllegalArgumentException(
+                                "Infobase polygon-task-A is already connected"); //$NON-NLS-1$
+                    }
                     return null;
                 case "setDefaultInfobase": //$NON-NLS-1$
                     if (setDefaultCalls.incrementAndGet() <= failures) {

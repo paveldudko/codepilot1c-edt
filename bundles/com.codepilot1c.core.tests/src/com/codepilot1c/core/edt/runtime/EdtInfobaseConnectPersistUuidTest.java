@@ -108,6 +108,51 @@ public class EdtInfobaseConnectPersistUuidTest {
         assertSame("the live row must be the one persisted via update()", live, manager.updated.get()); //$NON-NLS-1$
     }
 
+    /**
+     * The stored connection string may differ cosmetically (drive-letter case, trailing
+     * separator) from the freshly built one — EDT normalizes on store. Identity matching must be
+     * canonical, otherwise a retry hits NAME_COLLISION on the row this very call just added
+     * (live-observed, stack polygon 2026-07-02).
+     */
+    @Test
+    public void existingRowMatchedDespiteCosmeticPathDifferences() {
+        InfobaseReference row =
+                InfobaseReferences.newFileInfobaseReference("C:\\polygon\\db\\polygon-cosmetic\\"); //$NON-NLS-1$
+        row.setName("polygon-cosmetic"); //$NON-NLS-1$
+        UUID registered = UUID.randomUUID();
+        row.setUuid(registered);
+        RecordingInfobaseManager manager = new RecordingInfobaseManager(List.of(row));
+        TestableConnectService service = new TestableConnectService(new StubGateway(manager.proxy));
+        InfobaseReference reference =
+                InfobaseReferences.newFileInfobaseReference("c:\\polygon\\db\\polygon-cosmetic"); //$NON-NLS-1$
+        reference.setName("polygon-cosmetic"); //$NON-NLS-1$
+
+        service.invokePersistReference(reference, false);
+
+        assertNull("REGRESSION: a cosmetic path difference must not be treated as a different " //$NON-NLS-1$
+                + "infobase (no re-add, no NAME_COLLISION).", manager.added.get()); //$NON-NLS-1$
+        assertEquals("the registered UUID must be adopted", registered, reference.getUuid()); //$NON-NLS-1$
+    }
+
+    /** A registry row's UUID outranks one the caller minted locally (e.g. on a retry). */
+    @Test
+    public void registryUuidWinsOverLocallyMintedOne() {
+        InfobaseReference row = newFileReference("polygon-authority"); //$NON-NLS-1$
+        UUID registered = UUID.randomUUID();
+        row.setUuid(registered);
+        RecordingInfobaseManager manager = new RecordingInfobaseManager(List.of(row));
+        TestableConnectService service = new TestableConnectService(new StubGateway(manager.proxy));
+        InfobaseReference reference = newFileReference("polygon-authority"); //$NON-NLS-1$
+        reference.setUuid(UUID.randomUUID()); // minted by an earlier failed attempt
+
+        service.invokePersistReference(reference, false);
+
+        assertEquals("REGRESSION: the registry row's UUID must win over a locally minted one — " //$NON-NLS-1$
+                + "associations must point at a UUID the registry can resolve.", //$NON-NLS-1$
+                registered, reference.getUuid());
+        assertNull("a healthy row must not be rewritten", manager.updated.get()); //$NON-NLS-1$
+    }
+
     /** A row that already has a UUID is reused as-is: no update, no churn. */
     @Test
     public void existingUuidIsAdoptedWithoutUpdate() {

@@ -20,9 +20,20 @@ commit hash in parentheses where useful.
   here — NOT `InfobaseAssociationException` (verified against 2025.2.x bytecode) —
   so the historical wrap-and-rethrow never fired at all. `associate()` now catches
   `RuntimeException`, settles briefly, re-adopts the persisted identity, best-effort
-  re-persists the reference, re-`associate`s and retries `setDefaultInfobase` once —
-  a persistent failure still surfaces as `EDT_SERVICE_UNAVAILABLE`. Regression test:
-  `EdtInfobaseConnectSetDefaultRetryTest` (injects the live exception type).
+  re-persists the reference, re-`associate`s (tolerating its "Infobase ... is already
+  connected" complaint — proof the first associate landed) and retries
+  `setDefaultInfobase` once — a persistent failure still surfaces as
+  `EDT_SERVICE_UNAVAILABLE`. Regression test: `EdtInfobaseConnectSetDefaultRetryTest`
+  (injects the live exception types).
+- **Canonical connection-identity matching everywhere.** (2026-07-02) EDT normalizes
+  stored connection strings (slash direction, trailing separator, drive-letter case)
+  and may re-identify registry rows (different UUID after reload), so the raw
+  `equals()` comparison in `findExistingByIdentity`/`adoptExistingAssociationName`
+  missed the row the very same call had just added — the retry then hit
+  NAME_COLLISION on its own infobase. Identity checks now use the canonical
+  `connectionIdentitiesMatch` (previously force-path-only), a UUID mismatch no longer
+  short-circuits the connection comparison, and the registry row's UUID is adopted as
+  the identity authority over a locally minted one.
 - **Persist locally assigned infobase UUIDs back into the registry.** (2026-07-02)
   `IInfobaseManager.add()` can write the `ibases.v8i` row with `ID=null`;
   `persistReference` then assigned a UUID to the in-memory reference only, so every

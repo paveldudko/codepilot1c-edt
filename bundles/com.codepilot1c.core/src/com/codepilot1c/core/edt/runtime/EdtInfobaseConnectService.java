@@ -586,7 +586,10 @@ public class EdtInfobaseConnectService {
             // (storeSettings, associate) target the already-registered row.
             InfobaseReference row = existing.get();
             UUID existingUuid = row.getUuid();
-            if (existingUuid != null && reference.getUuid() == null) {
+            if (existingUuid != null) {
+                // The registry row is the identity authority: adopt its UUID even when our
+                // reference already carries one (e.g. a retry minted a UUID the registry never
+                // stored) — associations must point at a UUID the registry can resolve.
                 reference.setUuid(existingUuid);
             }
             if (reference.getUuid() == null) {
@@ -763,13 +766,19 @@ public class EdtInfobaseConnectService {
         }
         UUID leftUuid = left.getUuid();
         UUID rightUuid = right.getUuid();
-        if (leftUuid != null && rightUuid != null) {
-            return leftUuid.equals(rightUuid);
+        if (leftUuid != null && leftUuid.equals(rightUuid)) {
+            return true;
         }
+        // NB: a UUID mismatch must NOT short-circuit to false — EDT re-identifies registry rows
+        // (a reloaded row may carry a different/auto-assigned UUID than the one we minted), so the
+        // physical connection identity is the tie-breaker. Compare canonically, not with raw
+        // equals(): EDT normalizes stored connection strings (slash direction, trailing separator,
+        // drive-letter case), which made raw comparison miss the row this very call just added
+        // (live-observed: retry hit NAME_COLLISION on its own infobase, stack polygon 2026-07-02).
         String leftConnection = infobaseIdentity(left);
         String rightConnection = infobaseIdentity(right);
         if (leftConnection != null && rightConnection != null) {
-            return leftConnection.equals(rightConnection);
+            return connectionIdentitiesMatch(leftConnection, rightConnection);
         }
         return false;
     }
@@ -944,7 +953,8 @@ public class EdtInfobaseConnectService {
                 continue;
             }
             String candidateConnection = infobaseIdentity(candidate);
-            if (!ourConnection.equals(candidateConnection)) {
+            // Canonical compare: EDT normalizes stored connection strings, raw equals() misses.
+            if (!connectionIdentitiesMatch(ourConnection, candidateConnection)) {
                 continue;
             }
             String candidateName = candidate.getName();
@@ -959,7 +969,9 @@ public class EdtInfobaseConnectService {
             if (candidateName != null && !candidateName.isBlank()) {
                 reference.setName(candidateName);
             }
-            if (candidate.getUuid() != null && reference.getUuid() == null) {
+            if (candidate.getUuid() != null) {
+                // The bound entry's UUID is what setDefaultInfobase must match — adopt it even
+                // over a UUID we minted ourselves (ours may never have reached the registry).
                 reference.setUuid(candidate.getUuid());
             }
             return;
@@ -1006,15 +1018,22 @@ public class EdtInfobaseConnectService {
                 LOG.warn("setDefaultInfobase failed right after associate (project=%s): %s — retrying once", //$NON-NLS-1$
                         project.getName(), first.getMessage());
                 settleBeforeSetDefaultRetry();
+                adoptExistingAssociationName(project, reference, null);
                 try {
-                    adoptExistingAssociationName(project, reference, null);
-                    try {
-                        persistReference(reference, false);
-                    } catch (RuntimeException e) {
-                        LOG.warn("setDefault retry: persistReference failed (%s) — continuing with associate", //$NON-NLS-1$
-                                e.getMessage());
-                    }
+                    persistReference(reference, false);
+                } catch (RuntimeException e) {
+                    LOG.warn("setDefault retry: persistReference failed (%s) — continuing with associate", //$NON-NLS-1$
+                            e.getMessage());
+                }
+                try {
                     associationManager.associate(project, reference, settings);
+                } catch (RuntimeException e) {
+                    // Expected when the first associate DID land — EDT reports "Infobase ... is
+                    // already connected". The retry only needs setDefaultInfobase to see it.
+                    LOG.warn("setDefault retry: re-associate reported '%s' — proceeding to setDefaultInfobase", //$NON-NLS-1$
+                            e.getMessage());
+                }
+                try {
                     associationManager.setDefaultInfobase(project, reference, context);
                 } catch (RuntimeException e) {
                     String detail = e.getMessage() != null && !e.getMessage().isBlank()
