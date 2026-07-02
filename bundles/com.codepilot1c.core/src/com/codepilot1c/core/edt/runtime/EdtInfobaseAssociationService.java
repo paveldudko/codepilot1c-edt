@@ -176,16 +176,12 @@ public class EdtInfobaseAssociationService {
             }
             LOG.info("manage_associations bind: already associated — proceeding (%s)", e.getMessage()); //$NON-NLS-1$
         }
+        InfobaseReference effective = row;
         if (setDefault) {
-            try {
-                manager.setDefaultInfobase(project, row, ctx);
-            } catch (RuntimeException e) {
-                throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
-                        "Associated, but failed to set default infobase: " + detail(e), e); //$NON-NLS-1$
-            }
+            effective = setDefaultWithAdoption(project, manager, ctx, row, settings);
         }
-        return new BindOutcome(contextValue(ctx), row.getName(),
-                row.getUuid() == null ? null : row.getUuid().toString(), setDefault);
+        return new BindOutcome(contextValue(ctx), effective.getName(),
+                effective.getUuid() == null ? null : effective.getUuid().toString(), setDefault);
     }
 
     // -- copy -------------------------------------------------------------------------------
@@ -226,13 +222,7 @@ public class EdtInfobaseAssociationService {
         }
         String defaultName = null;
         if (setDefault && defaultRef != null) {
-            try {
-                manager.setDefaultInfobase(project, defaultRef, toCtx);
-                defaultName = defaultRef.getName();
-            } catch (RuntimeException e) {
-                throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
-                        "Copied, but failed to set default infobase: " + detail(e), e); //$NON-NLS-1$
-            }
+            defaultName = setDefaultWithAdoption(project, manager, toCtx, defaultRef, settings).getName();
         }
         return new CopyOutcome(contextValue(fromCtx), contextValue(toCtx), copied, defaultName);
     }
@@ -365,6 +355,159 @@ public class EdtInfobaseAssociationService {
         return matches.get(0);
     }
 
+    /**
+     * Sets the context's default infobase robustly. Two live findings (polygon scenario 4,
+     * 2026-07-02) make the naive {@code setDefaultInfobase(project, row, ctx)} fail:
+     * <ul>
+     *   <li>EDT resolves the reference against the association's OWN entry — whose name/UUID may
+     *       differ from the registry row (e.g. a legacy {@code ID=null} v8i row: associate()
+     *       persisted the entry under a freshly assigned UUID while the row still has none). So
+     *       the association's matching entry is adopted (canonical identity compare) and THAT
+     *       object is passed to EDT — the ctx-parameterized twin of
+     *       {@code EdtInfobaseConnectService.adoptExistingAssociationName}.</li>
+     *   <li>The very first write into a fresh context may not be visible to the immediate
+     *       read-back (same race the connect arc retries) — settle briefly, re-adopt,
+     *       re-associate (tolerating "already connected") and retry once.</li>
+     * </ul>
+     * Returns the reference that was actually made default.
+     */
+    private InfobaseReference setDefaultWithAdoption(IProject project,
+            IInfobaseAssociationManager manager, InfobaseAssociationContext ctx,
+            InfobaseReference row, InfobaseAssociationSettings settings) {
+        InfobaseReference target = adoptFromAssociation(project, manager, ctx, row);
+        if (trySetDefault(project, manager, ctx, target)) {
+            return target;
+        }
+        // The very first write into a fresh context may not be visible to the immediate
+        // read-back (same race the connect arc retries) — settle, re-adopt, re-associate
+        // (tolerating "already connected") and retry once.
+        LOG.warn("manage_associations: setDefaultInfobase failed right after associate " //$NON-NLS-1$
+                + "(context=%s) — retrying once", contextValue(ctx)); //$NON-NLS-1$
+        settleBeforeSetDefaultRetry();
+        target = adoptFromAssociation(project, manager, ctx, row);
+        try {
+            manager.associate(project, target, settings);
+        } catch (RuntimeException e) {
+            // Expected when the first associate landed: "Infobase ... is already connected".
+            LOG.info("manage_associations: retry re-associate reported '%s' — proceeding", //$NON-NLS-1$
+                    e.getMessage());
+        }
+        target = adoptFromAssociation(project, manager, ctx, target);
+        if (trySetDefault(project, manager, ctx, target)) {
+            return target;
+        }
+        throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
+                "Associated, but failed to set default infobase for context " //$NON-NLS-1$
+                        + contextValue(ctx) + " (see log for the underlying EDT errors)"); //$NON-NLS-1$
+    }
+
+    /**
+     * One set-default attempt: the official API first, then the non-current-context workaround.
+     *
+     * <p>EDT quirk (bytecode-verified on services.core 21.0.0 / 2025.2.x):
+     * {@code setDefaultInfobase(project, ref, ctx)} validates membership against the no-arg
+     * {@code getAssociation(project)} — the CURRENT provider context — and uses the {@code ctx}
+     * argument ONLY for the final {@code storeProperty("DefaultInfobase", uuid, ctx)} write. For
+     * any non-current target context the validation can never pass, no matter what reference is
+     * passed. When the TARGET context's association does contain the reference (verified via the
+     * ctx-parameterized read), the broken validation is bypassed and the DefaultInfobase property
+     * is written exactly the way the official method would — via the manager's own (private)
+     * {@code storeProperty}, reflectively.</p>
+     */
+    private boolean trySetDefault(IProject project, IInfobaseAssociationManager manager,
+            InfobaseAssociationContext ctx, InfobaseReference target) {
+        try {
+            manager.setDefaultInfobase(project, target, ctx);
+            return true;
+        } catch (RuntimeException official) {
+            LOG.info("manage_associations: official setDefaultInfobase refused (context=%s): %s", //$NON-NLS-1$
+                    contextValue(ctx), official.getMessage());
+        }
+        if (target.getUuid() == null || !associationContains(project, manager, ctx, target)) {
+            return false;
+        }
+        try {
+            java.lang.reflect.Method storeProperty = manager.getClass().getDeclaredMethod(
+                    "storeProperty", IProject.class, String.class, String.class, //$NON-NLS-1$
+                    InfobaseAssociationContext.class);
+            storeProperty.setAccessible(true);
+            storeProperty.invoke(manager, project, "DefaultInfobase", //$NON-NLS-1$
+                    target.getUuid().toString(), ctx);
+            LOG.info("manage_associations: DefaultInfobase for context %s written via the " //$NON-NLS-1$
+                    + "storeProperty workaround (official API validates against the CURRENT " //$NON-NLS-1$
+                    + "context only)", contextValue(ctx)); //$NON-NLS-1$
+            return true;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            Throwable cause = e instanceof java.lang.reflect.InvocationTargetException ite
+                    ? ite.getCause() : e;
+            LOG.warn("manage_associations: storeProperty workaround failed (context=%s): %s", //$NON-NLS-1$
+                    contextValue(ctx), detail(cause));
+            return false;
+        }
+    }
+
+    /** True when the context's association (ctx-parameterized read) contains the reference. */
+    private boolean associationContains(IProject project, IInfobaseAssociationManager manager,
+            InfobaseAssociationContext ctx, InfobaseReference reference) {
+        String identity = InfobaseIdentity.identityOf(reference);
+        if (identity == null) {
+            return false;
+        }
+        try {
+            Optional<IInfobaseAssociation> assoc = manager.getAssociation(project, ctx);
+            if (assoc.isPresent() && assoc.get().getInfobases() != null) {
+                for (InfobaseReference candidate : assoc.get().getInfobases()) {
+                    if (candidate != null
+                            && InfobaseIdentity.matches(identity, InfobaseIdentity.identityOf(candidate))) {
+                        return true;
+                    }
+                }
+            }
+        } catch (RuntimeException e) {
+            return false;
+        }
+        return false;
+    }
+
+    /**
+     * Returns the context association's own entry matching the reference's canonical connection
+     * identity, or the reference itself when the association has no matching entry (or cannot be
+     * read). EDT's {@code setDefaultInfobase} matches against the association entry, not the
+     * registry row.
+     */
+    private InfobaseReference adoptFromAssociation(IProject project,
+            IInfobaseAssociationManager manager, InfobaseAssociationContext ctx,
+            InfobaseReference reference) {
+        String identity = InfobaseIdentity.identityOf(reference);
+        if (identity == null) {
+            return reference;
+        }
+        try {
+            Optional<IInfobaseAssociation> assoc = manager.getAssociation(project, ctx);
+            if (assoc.isPresent() && assoc.get().getInfobases() != null) {
+                for (InfobaseReference candidate : assoc.get().getInfobases()) {
+                    if (candidate != null
+                            && InfobaseIdentity.matches(identity, InfobaseIdentity.identityOf(candidate))) {
+                        return candidate;
+                    }
+                }
+            }
+        } catch (RuntimeException e) {
+            LOG.warn("manage_associations: association read-back failed (context=%s): %s", //$NON-NLS-1$
+                    contextValue(ctx), e.getMessage());
+        }
+        return reference;
+    }
+
+    /** Grace pause before the setDefault retry; overridable so unit tests do not pay it. */
+    protected void settleBeforeSetDefaultRetry() {
+        try {
+            Thread.sleep(250);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private IInfobaseAssociation associationOrThrow(IProject project,
             IInfobaseAssociationManager manager, InfobaseAssociationContext ctx, String branch) {
         Optional<IInfobaseAssociation> assoc;
@@ -419,7 +562,8 @@ public class EdtInfobaseAssociationService {
         }
     }
 
-    private IProject resolveProject(String projectName) {
+    /** Visible for testing (headless JUnit has no workspace to resolve against). */
+    protected IProject resolveProject(String projectName) {
         if (projectName == null || projectName.isBlank()) {
             throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT, "project_name is required"); //$NON-NLS-1$
         }

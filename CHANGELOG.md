@@ -79,6 +79,23 @@ commit hash in parentheses where useful.
   `connect_infobase` (this tool never creates/repairs v8i rows); bind/copy run under
   the lease guard. Identity helpers extracted to `InfobaseIdentity` (shared by the
   connect service, the association service and the guard).
+- **manage_associations: setting a default for a NON-current branch context now works.**
+  (2026-07-02, found by polygon scenario 4) EDT quirk, bytecode-verified on
+  services.core 21.0.0: the 3-arg `setDefaultInfobase(project, ref, ctx)` validates
+  membership against the no-arg `getAssociation(project)` — the CURRENT provider
+  context — and uses the `ctx` argument ONLY for the final
+  `storeProperty("DefaultInfobase", uuid, ctx)` write, so for any branch that is not
+  checked out it always threw "Association does not contain infobase ...". Fixes in
+  `setDefaultWithAdoption`: (1) adopt the target context association's own entry
+  before the call (ctx-parameterized twin of `adoptExistingAssociationName` — a
+  legacy `ID=null` registry row can never match the association entry otherwise);
+  (2) when the official API still refuses and the TARGET context's association does
+  contain the entry, write the DefaultInfobase property through the manager's own
+  private `storeProperty` (reflective) — exactly what the official method does after
+  its mis-scoped validation; (3) settle+retry once on the fresh-context read-back
+  race (connect-arc pattern). Live-validated: bind into a never-checked-out branch
+  lands `Infobases=` + `DefaultInfobase=` under `refs/heads/<branch>`.
+  Test: `EdtInfobaseAssociationBindAdoptionTest`.
 
 ### MCP host — multi-endpoint profiles
 
