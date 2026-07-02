@@ -22,7 +22,7 @@ import org.eclipse.core.resources.IProject;
 import org.junit.Test;
 
 import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseAssociationManager;
-import com._1c.g5.v8.dt.platform.services.core.infobases.InfobaseAssociationException;
+import com._1c.g5.v8.dt.platform.services.core.infobases.IInfobaseManager;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
 
 /**
@@ -31,15 +31,17 @@ import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
  *
  * <p>Live-observed on EDT 2025.2.x: the very first {@code connect_infobase} for a new git-branch
  * association context persisted the association file, yet the immediately following
- * {@code setDefaultInfobase} threw {@code InfobaseAssociationException} ("Project ... is not
- * associated with infobase ...") — while an external re-run of the whole connect always succeeded
- * (2/2 reproduction on a fresh context; idempotent re-binds were unaffected).</p>
+ * {@code setDefaultInfobase} threw a plain {@code IllegalArgumentException} ("Project ... is not
+ * associated with infobase ...") — NOT {@code InfobaseAssociationException} (verified against the
+ * 2025.2.x bytecode), which is why the historical wrap-and-rethrow never fired. An external re-run
+ * of the whole connect always succeeded (2/2 reproduction on fresh contexts).</p>
  *
- * <p>The fix retries once in place: on the first {@code InfobaseAssociationException} from
- * {@code setDefaultInfobase}, {@link EdtInfobaseConnectService#associate} re-adopts the persisted
- * association identity, re-issues {@code associate()} and retries {@code setDefaultInfobase}. This
- * test injects a first-call failure and asserts the retry converges; a companion test asserts a
- * persistent failure is still surfaced as a typed error after exactly one retry.</p>
+ * <p>The fix widens the catch to {@code RuntimeException} and retries once in place:
+ * {@link EdtInfobaseConnectService#associate} re-adopts the persisted association identity,
+ * best-effort re-persists the reference, re-issues {@code associate()} and retries
+ * {@code setDefaultInfobase}. This test injects the live exception type on the first call and
+ * asserts the retry converges; a companion test asserts a persistent failure is still surfaced as
+ * a typed error after exactly one retry.</p>
  */
 public class EdtInfobaseConnectSetDefaultRetryTest {
 
@@ -115,6 +117,12 @@ public class EdtInfobaseConnectSetDefaultRetryTest {
                 peekInfobaseAssociationContextProvider() {
             return null; // no context extension in unit tests -> empty context
         }
+
+        @Override
+        public IInfobaseManager getInfobaseManager() {
+            // The retry path re-persists best-effort; an unavailable registry must not break it.
+            throw new IllegalStateException("no infobase manager in unit tests"); //$NON-NLS-1$
+        }
     }
 
     /** Association manager whose {@code setDefaultInfobase} fails the first {@code failures} calls. */
@@ -139,7 +147,9 @@ public class EdtInfobaseConnectSetDefaultRetryTest {
                     return null;
                 case "setDefaultInfobase": //$NON-NLS-1$
                     if (setDefaultCalls.incrementAndGet() <= failures) {
-                        throw new InfobaseAssociationException(
+                        // The exact live exception type: plain IllegalArgumentException, NOT
+                        // InfobaseAssociationException (EDT 2025.2.x InfobaseAssociationManager).
+                        throw new IllegalArgumentException(
                                 "Project Polygon is not associated with infobase polygon-task-A"); //$NON-NLS-1$
                     }
                     return null;

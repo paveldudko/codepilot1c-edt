@@ -84,6 +84,30 @@ public class EdtInfobaseConnectPersistUuidTest {
         assertSame("the repaired row must be persisted via update()", row, manager.updated.get()); //$NON-NLS-1$
     }
 
+    /**
+     * {@code add()} copies the reference into the registry model (live row is a different object):
+     * the UUID must be stamped on the LIVE row, not only on the detached reference we handed in —
+     * otherwise the registry keeps {@code ID=null} even though {@code update()} was called.
+     */
+    @Test
+    public void uuidIsStampedOnLiveRegistryRowWhenAddCopies() {
+        RecordingInfobaseManager manager = new RecordingInfobaseManager(List.of());
+        manager.copyOnAdd = true;
+        TestableConnectService service = new TestableConnectService(new StubGateway(manager.proxy));
+        InfobaseReference reference = newFileReference("polygon-copied"); //$NON-NLS-1$
+
+        service.invokePersistReference(reference, false);
+
+        InfobaseReference live = manager.added.get();
+        assertNotNull("add() must have been invoked", live); //$NON-NLS-1$
+        assertNotNull("the reference must carry a usable UUID", reference.getUuid()); //$NON-NLS-1$
+        assertEquals("REGRESSION: when add() copies the row into the registry model, the UUID must " //$NON-NLS-1$
+                + "be stamped on the LIVE registered row — updating only the detached reference " //$NON-NLS-1$
+                + "leaves ibases.v8i with ID=null.", //$NON-NLS-1$
+                reference.getUuid(), live.getUuid());
+        assertSame("the live row must be the one persisted via update()", live, manager.updated.get()); //$NON-NLS-1$
+    }
+
     /** A row that already has a UUID is reused as-is: no update, no churn. */
     @Test
     public void existingUuidIsAdoptedWithoutUpdate() {
@@ -136,13 +160,16 @@ public class EdtInfobaseConnectPersistUuidTest {
 
     /**
      * Registry stub modelling the live 2025.2.x behaviour: {@code add()} accepts the row but never
-     * populates its UUID (the v8i row is written with {@code ID=null}). Records what was added and
-     * what was passed to {@code update()} (with the UUID visible at call time).
+     * populates its UUID (the v8i row is written with {@code ID=null}). With {@code copyOnAdd} it
+     * additionally models EDT copying the reference into its registry model — the live row is a
+     * DIFFERENT object than the one handed to {@code add()}. Records what was added and what was
+     * passed to {@code update()} (with the UUID visible at call time).
      */
     private static final class RecordingInfobaseManager implements InvocationHandler {
         final AtomicReference<InfobaseReference> added = new AtomicReference<>();
         final AtomicReference<InfobaseReference> updated = new AtomicReference<>();
         final AtomicReference<UUID> updatedUuid = new AtomicReference<>();
+        boolean copyOnAdd;
         private final List<InfobaseReference> registry;
 
         private final IInfobaseManager proxy = (IInfobaseManager) Proxy.newProxyInstance(
@@ -150,7 +177,7 @@ public class EdtInfobaseConnectPersistUuidTest {
                 new Class<?>[] { IInfobaseManager.class }, this);
 
         RecordingInfobaseManager(List<InfobaseReference> registry) {
-            this.registry = registry;
+            this.registry = new ArrayList<>(registry);
         }
 
         @Override
@@ -167,7 +194,13 @@ public class EdtInfobaseConnectPersistUuidTest {
                     return new ArrayList<Section>(registry); // the getAll() sweep is what finds rows
                 case "add": //$NON-NLS-1$
                     if (args != null && args.length == 2 && args[0] instanceof InfobaseReference ref) {
-                        added.set(ref); // deliberately do NOT assign a UUID (ID=null in v8i)
+                        if (copyOnAdd) {
+                            InfobaseReference copy = newFileReference(ref.getName());
+                            added.set(copy); // live row is a different object, UUID still null
+                            registry.add(copy);
+                        } else {
+                            added.set(ref); // deliberately do NOT assign a UUID (ID=null in v8i)
+                        }
                     }
                     return null;
                 case "update": //$NON-NLS-1$

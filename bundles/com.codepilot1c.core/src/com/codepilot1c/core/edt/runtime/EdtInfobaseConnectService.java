@@ -655,10 +655,23 @@ public class EdtInfobaseConnectService {
         // manager.add() normally populates the UUID; if it didn't (live-observed on 2025.2.x —
         // the v8i row is written with ID=null), assign one locally so the subsequent
         // storeSettings call has a non-null key, and write it back so the registry row keeps
-        // the same identity across connects and workspaces.
+        // the same identity across connects and workspaces. add() may have COPIED the reference
+        // into the registry model, so stamp the UUID on the live registered row when it is a
+        // different object.
         if (reference.getUuid() == null) {
             reference.setUuid(UUID.randomUUID());
-            persistAssignedUuid(manager, reference);
+            InfobaseReference live = null;
+            try {
+                live = findExistingByIdentity(manager, reference).orElse(null);
+            } catch (RuntimeException ignored) {
+                // Best-effort lookup only; fall back to updating the reference we added.
+            }
+            if (live != null && live != reference) {
+                live.setUuid(reference.getUuid());
+                persistAssignedUuid(manager, live);
+            } else {
+                persistAssignedUuid(manager, reference);
+            }
         }
     }
 
@@ -978,22 +991,32 @@ public class EdtInfobaseConnectService {
         if (setPrimary) {
             try {
                 associationManager.setDefaultInfobase(project, reference, context);
-            } catch (InfobaseAssociationException first) {
+            } catch (RuntimeException first) {
+                // NB: the catch must be this wide — EDT's setDefaultInfobase throws a plain
+                // IllegalArgumentException ("Project {0} is not associated with infobase {1}"),
+                // NOT InfobaseAssociationException (verified against 2025.2.x bytecode).
+                //
                 // Live-observed on 2025.2.x (stack polygon, 2026-07-02): the very first bind into a
                 // fresh branch context persists the association file, yet the immediately following
                 // setDefaultInfobase still throws "Project ... is not associated with infobase ...".
                 // An external re-run of the whole connect always healed it: by then the persisted
-                // association was visible and its adopt step re-pointed the reference at the stored
-                // row. Do the same in place — let the backing store settle, re-adopt, re-associate,
-                // and retry once — instead of failing the first connect of every new branch.
+                // association was visible and its adopt+persist steps re-pointed the reference at
+                // the stored row. Do the same in place — settle, re-adopt, re-persist, re-associate,
+                // retry once — instead of failing the first connect of every new branch.
                 LOG.warn("setDefaultInfobase failed right after associate (project=%s): %s — retrying once", //$NON-NLS-1$
                         project.getName(), first.getMessage());
                 settleBeforeSetDefaultRetry();
                 try {
                     adoptExistingAssociationName(project, reference, null);
+                    try {
+                        persistReference(reference, false);
+                    } catch (RuntimeException e) {
+                        LOG.warn("setDefault retry: persistReference failed (%s) — continuing with associate", //$NON-NLS-1$
+                                e.getMessage());
+                    }
                     associationManager.associate(project, reference, settings);
                     associationManager.setDefaultInfobase(project, reference, context);
-                } catch (InfobaseAssociationException e) {
+                } catch (RuntimeException e) {
                     String detail = e.getMessage() != null && !e.getMessage().isBlank()
                             ? e.getMessage() : e.getClass().getSimpleName();
                     throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
