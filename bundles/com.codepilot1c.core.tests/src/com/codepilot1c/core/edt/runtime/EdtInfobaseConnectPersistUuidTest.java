@@ -31,43 +31,44 @@ import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
 import com._1c.g5.v8.dt.platform.services.model.Section;
 
 /**
- * Regression test for the "ID=null UUID churn" defect (stack polygon live finding, 2026-07-02).
+ * Regression tests for the "ID=null UUID churn" defect (stack polygon live findings, 2026-07-02).
  *
- * <p>Live-observed on EDT 2025.2.x: {@code IInfobaseManager.add()} wrote the registry row into
- * {@code ibases.v8i} with {@code ID=null}. {@code persistReference} then assigned a fresh UUID to
- * the in-memory reference only — the registry row kept {@code ID=null} forever, so EVERY
- * subsequent connect minted yet another UUID for the same infobase (three different UUIDs were
- * observed for one infobase across two workspaces and a restart), and per-branch associations in
- * different workspaces pointed at diverging identities.</p>
+ * <p>Live-observed on EDT 2025.2.x: {@code IInfobaseManager.add()} does not populate the row's
+ * UUID — the {@code ibases.v8i} row is written with {@code ID=null}. The historical code assigned
+ * a UUID to the in-memory reference only AFTER {@code add()}, so the registry kept {@code ID=null}
+ * forever and every connect minted yet another UUID for the same infobase (three different UUIDs
+ * observed across two workspaces and a restart); association-UUID resolution then failed. The row
+ * also cannot be repaired by direct mutation afterwards — the registry model is transactional
+ * ("Cannot modify resource set without a write transaction", live-observed).</p>
  *
- * <p>The fix writes the locally assigned UUID back through {@link IInfobaseManager#update} on all
- * three assignment paths: after {@code add()} left it null, when an existing row is found with a
- * null UUID, and on the force=true same-path reuse of a null-UUID candidate.</p>
+ * <p>The fix: assign the UUID BEFORE {@code add()} so the row is stored with a resolvable ID;
+ * repair legacy null-UUID rows through the manager API (delete + add); match rows canonically
+ * (EDT normalizes stored connection strings); treat the registry row's UUID as the identity
+ * authority.</p>
  */
 public class EdtInfobaseConnectPersistUuidTest {
 
-    /** Fresh registry: {@code add()} does not populate the UUID — the local one must be written back. */
+    /** Fresh registry: the reference must carry a non-null UUID already AT {@code add()} time. */
     @Test
-    public void uuidAssignedAfterAddIsPersistedBack() {
+    public void uuidAssignedBeforeAdd() {
         RecordingInfobaseManager manager = new RecordingInfobaseManager(List.of());
         TestableConnectService service = new TestableConnectService(new StubGateway(manager.proxy));
         InfobaseReference reference = newFileReference("polygon-fresh"); //$NON-NLS-1$
 
         service.invokePersistReference(reference, false);
 
-        assertNotNull("persistReference must leave a non-null UUID on the reference", reference.getUuid()); //$NON-NLS-1$
         assertSame("the added row is the reference itself", reference, manager.added.get()); //$NON-NLS-1$
-        assertSame("REGRESSION: the UUID assigned after add() must be written back via " //$NON-NLS-1$
-                + "IInfobaseManager.update(), otherwise the v8i row keeps ID=null and every " //$NON-NLS-1$
-                + "connect mints a new identity for the same infobase.", //$NON-NLS-1$
-                reference, manager.updated.get());
-        assertEquals("update() must see the assigned UUID on the row", //$NON-NLS-1$
-                reference.getUuid(), manager.updatedUuid.get());
+        assertNotNull("REGRESSION: the UUID must be assigned BEFORE add() — EDT stores the row " //$NON-NLS-1$
+                + "as-is (ID=null otherwise) and the transactional registry model forbids " //$NON-NLS-1$
+                + "repairing it by direct mutation afterwards.", //$NON-NLS-1$
+                manager.addedUuid.get());
+        assertEquals("the reference must keep the UUID that was stored", //$NON-NLS-1$
+                manager.addedUuid.get(), reference.getUuid());
     }
 
-    /** Existing registry row with a null UUID: both objects get the same UUID and the row is updated. */
+    /** Legacy registry row with a null UUID is repaired through the manager API: delete + add. */
     @Test
-    public void nullUuidOnExistingRowIsRepairedAndPersisted() {
+    public void nullUuidOnExistingRowIsRepairedViaDeleteAndAdd() {
         InfobaseReference row = newFileReference("polygon-existing"); //$NON-NLS-1$
         RecordingInfobaseManager manager = new RecordingInfobaseManager(List.of(row));
         TestableConnectService service = new TestableConnectService(new StubGateway(manager.proxy));
@@ -76,36 +77,13 @@ public class EdtInfobaseConnectPersistUuidTest {
 
         service.invokePersistReference(reference, false);
 
-        assertNull("idempotent reuse must not re-add the row", manager.added.get()); //$NON-NLS-1$
         assertNotNull("the reference must carry a usable UUID", reference.getUuid()); //$NON-NLS-1$
-        assertEquals("REGRESSION: the registry row must adopt the SAME UUID as the reference — " //$NON-NLS-1$
-                + "otherwise each workspace invents its own identity for one physical infobase.", //$NON-NLS-1$
-                reference.getUuid(), row.getUuid());
-        assertSame("the repaired row must be persisted via update()", row, manager.updated.get()); //$NON-NLS-1$
-    }
-
-    /**
-     * {@code add()} copies the reference into the registry model (live row is a different object):
-     * the UUID must be stamped on the LIVE row, not only on the detached reference we handed in —
-     * otherwise the registry keeps {@code ID=null} even though {@code update()} was called.
-     */
-    @Test
-    public void uuidIsStampedOnLiveRegistryRowWhenAddCopies() {
-        RecordingInfobaseManager manager = new RecordingInfobaseManager(List.of());
-        manager.copyOnAdd = true;
-        TestableConnectService service = new TestableConnectService(new StubGateway(manager.proxy));
-        InfobaseReference reference = newFileReference("polygon-copied"); //$NON-NLS-1$
-
-        service.invokePersistReference(reference, false);
-
-        InfobaseReference live = manager.added.get();
-        assertNotNull("add() must have been invoked", live); //$NON-NLS-1$
-        assertNotNull("the reference must carry a usable UUID", reference.getUuid()); //$NON-NLS-1$
-        assertEquals("REGRESSION: when add() copies the row into the registry model, the UUID must " //$NON-NLS-1$
-                + "be stamped on the LIVE registered row — updating only the detached reference " //$NON-NLS-1$
-                + "leaves ibases.v8i with ID=null.", //$NON-NLS-1$
-                reference.getUuid(), live.getUuid());
-        assertSame("the live row must be the one persisted via update()", live, manager.updated.get()); //$NON-NLS-1$
+        assertSame("REGRESSION: the stale null-UUID row must be deleted through the manager API " //$NON-NLS-1$
+                + "(direct mutation is forbidden by the transactional registry model)", //$NON-NLS-1$
+                row, manager.deleted.get());
+        assertSame("the replacement row must be our reference with the minted UUID", //$NON-NLS-1$
+                reference, manager.added.get());
+        assertNotNull("the replacement must be stored with a non-null UUID", manager.addedUuid.get()); //$NON-NLS-1$
     }
 
     /**
@@ -150,12 +128,13 @@ public class EdtInfobaseConnectPersistUuidTest {
         assertEquals("REGRESSION: the registry row's UUID must win over a locally minted one — " //$NON-NLS-1$
                 + "associations must point at a UUID the registry can resolve.", //$NON-NLS-1$
                 registered, reference.getUuid());
-        assertNull("a healthy row must not be rewritten", manager.updated.get()); //$NON-NLS-1$
+        assertNull("a healthy row must not be deleted", manager.deleted.get()); //$NON-NLS-1$
+        assertNull("a healthy row must not be re-added", manager.added.get()); //$NON-NLS-1$
     }
 
-    /** A row that already has a UUID is reused as-is: no update, no churn. */
+    /** A row that already has a UUID is reused as-is: no delete, no add, no churn. */
     @Test
-    public void existingUuidIsAdoptedWithoutUpdate() {
+    public void existingUuidIsAdoptedWithoutRepair() {
         InfobaseReference row = newFileReference("polygon-stable"); //$NON-NLS-1$
         UUID stable = UUID.randomUUID();
         row.setUuid(stable);
@@ -166,7 +145,7 @@ public class EdtInfobaseConnectPersistUuidTest {
         service.invokePersistReference(reference, false);
 
         assertEquals("the registered UUID must be adopted onto the reference", stable, reference.getUuid()); //$NON-NLS-1$
-        assertNull("a healthy row must not be rewritten", manager.updated.get()); //$NON-NLS-1$
+        assertNull("a healthy row must not be deleted", manager.deleted.get()); //$NON-NLS-1$
         assertNull("a healthy row must not be re-added", manager.added.get()); //$NON-NLS-1$
     }
 
@@ -204,17 +183,14 @@ public class EdtInfobaseConnectPersistUuidTest {
     }
 
     /**
-     * Registry stub modelling the live 2025.2.x behaviour: {@code add()} accepts the row but never
-     * populates its UUID (the v8i row is written with {@code ID=null}). With {@code copyOnAdd} it
-     * additionally models EDT copying the reference into its registry model — the live row is a
-     * DIFFERENT object than the one handed to {@code add()}. Records what was added and what was
-     * passed to {@code update()} (with the UUID visible at call time).
+     * Registry stub modelling the live 2025.2.x behaviour: {@code add()} stores the row as-is and
+     * never populates a missing UUID (the v8i row is written with {@code ID=null}). Records the
+     * added/deleted rows and the added row's UUID visible AT call time.
      */
     private static final class RecordingInfobaseManager implements InvocationHandler {
         final AtomicReference<InfobaseReference> added = new AtomicReference<>();
-        final AtomicReference<InfobaseReference> updated = new AtomicReference<>();
-        final AtomicReference<UUID> updatedUuid = new AtomicReference<>();
-        boolean copyOnAdd;
+        final AtomicReference<UUID> addedUuid = new AtomicReference<>();
+        final AtomicReference<InfobaseReference> deleted = new AtomicReference<>();
         private final List<InfobaseReference> registry;
 
         private final IInfobaseManager proxy = (IInfobaseManager) Proxy.newProxyInstance(
@@ -239,19 +215,15 @@ public class EdtInfobaseConnectPersistUuidTest {
                     return new ArrayList<Section>(registry); // the getAll() sweep is what finds rows
                 case "add": //$NON-NLS-1$
                     if (args != null && args.length == 2 && args[0] instanceof InfobaseReference ref) {
-                        if (copyOnAdd) {
-                            InfobaseReference copy = newFileReference(ref.getName());
-                            added.set(copy); // live row is a different object, UUID still null
-                            registry.add(copy);
-                        } else {
-                            added.set(ref); // deliberately do NOT assign a UUID (ID=null in v8i)
-                        }
+                        added.set(ref);
+                        addedUuid.set(ref.getUuid()); // whatever the caller provided — never populated here
+                        registry.add(ref);
                     }
                     return null;
-                case "update": //$NON-NLS-1$
+                case "delete": //$NON-NLS-1$
                     if (args != null && args.length == 1 && args[0] instanceof InfobaseReference ref) {
-                        updated.set(ref);
-                        updatedUuid.set(ref.getUuid());
+                        deleted.set(ref);
+                        registry.remove(ref);
                     }
                     return null;
                 default:

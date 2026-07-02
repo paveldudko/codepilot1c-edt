@@ -34,16 +34,18 @@ commit hash in parentheses where useful.
   `connectionIdentitiesMatch` (previously force-path-only), a UUID mismatch no longer
   short-circuits the connection comparison, and the registry row's UUID is adopted as
   the identity authority over a locally minted one.
-- **Persist locally assigned infobase UUIDs back into the registry.** (2026-07-02)
-  `IInfobaseManager.add()` can write the `ibases.v8i` row with `ID=null`;
-  `persistReference` then assigned a UUID to the in-memory reference only, so every
-  connect minted a NEW identity for the same infobase (three different UUIDs
-  observed for one infobase across two workspaces and a restart) and per-branch
-  associations in different workspaces diverged. All three assignment paths
-  (post-`add()`, existing row with null UUID, force=true same-path reuse) now write
-  the UUID back via `IInfobaseManager.update()`, best-effort — stamping it on the
-  LIVE registered row when `add()` copied the reference into the registry model.
-  Regression test: `EdtInfobaseConnectPersistUuidTest`.
+- **Assign the infobase UUID BEFORE `add()`; repair legacy `ID=null` rows via
+  delete+add.** (2026-07-02) `IInfobaseManager.add()` does not populate the row's
+  UUID — the `ibases.v8i` row is written with `ID=null`; `persistReference` then
+  assigned a UUID to the in-memory reference only, so every connect minted a NEW
+  identity for the same infobase (three different UUIDs observed for one infobase
+  across two workspaces and a restart), per-branch associations in different
+  workspaces diverged, and association-UUID resolution failed. The row also cannot
+  be repaired by direct mutation afterwards — the registry model is transactional
+  ("Cannot modify resource set without a write transaction", live-observed). Now
+  the UUID is minted before `add()` so the row is stored with a resolvable ID, and
+  legacy null-UUID rows are replaced through the manager API (delete + add),
+  best-effort. Regression test: `EdtInfobaseConnectPersistUuidTest`.
 
 ### MCP host — multi-endpoint profiles
 

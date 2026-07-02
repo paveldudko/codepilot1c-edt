@@ -594,13 +594,12 @@ public class EdtInfobaseConnectService {
             }
             if (reference.getUuid() == null) {
                 // Defense-in-depth: existing entry had no UUID either — assign a fresh one so
-                // storeSettings doesn't NPE, and write it back to the registry row. Without the
-                // write-back the row's ID stays null in ibases.v8i and every connect mints a NEW
-                // UUID for the same infobase (live-observed: 3 UUIDs for one infobase, stack
-                // polygon 2026-07-02), so associations in different workspaces diverge.
+                // storeSettings doesn't NPE, and repair the registry row. Without the repair the
+                // row's ID stays null in ibases.v8i and every connect mints a NEW UUID for the
+                // same infobase (live-observed: 3 UUIDs for one infobase, stack polygon
+                // 2026-07-02), so associations in different workspaces diverge.
                 reference.setUuid(UUID.randomUUID());
-                row.setUuid(reference.getUuid());
-                persistAssignedUuid(manager, row);
+                repairRegistryRowUuid(manager, row, reference);
             }
             return;
         }
@@ -624,12 +623,11 @@ public class EdtInfobaseConnectService {
                                     reference.setUuid(candidateUuid);
                                 } else {
                                     // Registry row has no UUID (ID=null in ibases.v8i): assign one and
-                                    // write it back so the identity stops churning per connect.
+                                    // repair the row so the identity stops churning per connect.
                                     if (reference.getUuid() == null) {
                                         reference.setUuid(UUID.randomUUID());
                                     }
-                                    candidate.setUuid(reference.getUuid());
-                                    persistAssignedUuid(manager, candidate);
+                                    repairRegistryRowUuid(manager, candidate, reference);
                                 }
                                 LOG.info("connect_infobase: idempotent reuse of existing reference '%s' (case-insensitive path match)", //$NON-NLS-1$
                                         referenceName);
@@ -647,6 +645,14 @@ public class EdtInfobaseConnectService {
                                 + "the path comparison may have failed due to case mismatch — try force=true."); //$NON-NLS-1$
             }
         }
+        // Assign the UUID BEFORE add(): EDT's add() does not populate one (live-observed on
+        // 2025.2.x — the v8i row is written with ID=null), a null-ID row breaks association-UUID
+        // resolution and makes every connect mint a new identity, and the row cannot be repaired
+        // afterwards by direct mutation — the registry model is transactional ("Cannot modify
+        // resource set without a write transaction", live-observed on the polygon).
+        if (reference.getUuid() == null) {
+            reference.setUuid(UUID.randomUUID());
+        }
         try {
             manager.add(reference, null);
         } catch (InfobaseReferenceException e) {
@@ -655,40 +661,23 @@ public class EdtInfobaseConnectService {
             throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
                     "Failed to register infobase reference: " + detail, e); //$NON-NLS-1$
         }
-        // manager.add() normally populates the UUID; if it didn't (live-observed on 2025.2.x —
-        // the v8i row is written with ID=null), assign one locally so the subsequent
-        // storeSettings call has a non-null key, and write it back so the registry row keeps
-        // the same identity across connects and workspaces. add() may have COPIED the reference
-        // into the registry model, so stamp the UUID on the live registered row when it is a
-        // different object.
-        if (reference.getUuid() == null) {
-            reference.setUuid(UUID.randomUUID());
-            InfobaseReference live = null;
-            try {
-                live = findExistingByIdentity(manager, reference).orElse(null);
-            } catch (RuntimeException ignored) {
-                // Best-effort lookup only; fall back to updating the reference we added.
-            }
-            if (live != null && live != reference) {
-                live.setUuid(reference.getUuid());
-                persistAssignedUuid(manager, live);
-            } else {
-                persistAssignedUuid(manager, reference);
-            }
-        }
     }
 
     /**
-     * Best-effort write-back of a locally assigned UUID into the registered row, so the
-     * {@code ibases.v8i} {@code ID} field stops being {@code null}. A failure here must not fail
-     * the connect — the in-memory reference already carries a usable UUID for this session.
+     * Replaces a legacy registry row that has no UUID ({@code ibases.v8i} {@code ID=null}) with
+     * our reference carrying a freshly minted one. Direct mutation of the live row is forbidden
+     * outside the registry's write transaction, so the repair goes through the manager API:
+     * delete the stale row, add the replacement. Best-effort: on failure the in-memory reference
+     * still carries a usable UUID for this session.
      */
-    private void persistAssignedUuid(IInfobaseManager manager, InfobaseReference row) {
+    private void repairRegistryRowUuid(IInfobaseManager manager, InfobaseReference staleRow,
+            InfobaseReference replacement) {
         try {
-            manager.update(row);
-        } catch (RuntimeException e) {
-            LOG.warn("Failed to persist assigned UUID for infobase '%s': %s", //$NON-NLS-1$
-                    row.getName(), e.getMessage());
+            manager.delete(staleRow);
+            manager.add(replacement, null);
+        } catch (Exception e) {
+            LOG.warn("Failed to repair null-UUID registry row for infobase '%s': %s", //$NON-NLS-1$
+                    replacement.getName(), e.getMessage());
         }
     }
 
