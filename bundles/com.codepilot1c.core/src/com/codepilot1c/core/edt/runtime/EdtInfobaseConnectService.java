@@ -584,14 +584,20 @@ public class EdtInfobaseConnectService {
         if (existing.isPresent()) {
             // Copy the existing entry's UUID onto the in-memory reference so downstream calls
             // (storeSettings, associate) target the already-registered row.
-            UUID existingUuid = existing.get().getUuid();
+            InfobaseReference row = existing.get();
+            UUID existingUuid = row.getUuid();
             if (existingUuid != null && reference.getUuid() == null) {
                 reference.setUuid(existingUuid);
             }
             if (reference.getUuid() == null) {
                 // Defense-in-depth: existing entry had no UUID either — assign a fresh one so
-                // storeSettings doesn't NPE.
+                // storeSettings doesn't NPE, and write it back to the registry row. Without the
+                // write-back the row's ID stays null in ibases.v8i and every connect mints a NEW
+                // UUID for the same infobase (live-observed: 3 UUIDs for one infobase, stack
+                // polygon 2026-07-02), so associations in different workspaces diverge.
                 reference.setUuid(UUID.randomUUID());
+                row.setUuid(reference.getUuid());
+                persistAssignedUuid(manager, row);
             }
             return;
         }
@@ -613,8 +619,14 @@ public class EdtInfobaseConnectService {
                                 UUID candidateUuid = candidate.getUuid();
                                 if (candidateUuid != null) {
                                     reference.setUuid(candidateUuid);
-                                } else if (reference.getUuid() == null) {
-                                    reference.setUuid(UUID.randomUUID());
+                                } else {
+                                    // Registry row has no UUID (ID=null in ibases.v8i): assign one and
+                                    // write it back so the identity stops churning per connect.
+                                    if (reference.getUuid() == null) {
+                                        reference.setUuid(UUID.randomUUID());
+                                    }
+                                    candidate.setUuid(reference.getUuid());
+                                    persistAssignedUuid(manager, candidate);
                                 }
                                 LOG.info("connect_infobase: idempotent reuse of existing reference '%s' (case-insensitive path match)", //$NON-NLS-1$
                                         referenceName);
@@ -640,10 +652,27 @@ public class EdtInfobaseConnectService {
             throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
                     "Failed to register infobase reference: " + detail, e); //$NON-NLS-1$
         }
-        // manager.add() normally populates the UUID; if it didn't, assign one locally so the
-        // subsequent storeSettings call has a non-null key.
+        // manager.add() normally populates the UUID; if it didn't (live-observed on 2025.2.x —
+        // the v8i row is written with ID=null), assign one locally so the subsequent
+        // storeSettings call has a non-null key, and write it back so the registry row keeps
+        // the same identity across connects and workspaces.
         if (reference.getUuid() == null) {
             reference.setUuid(UUID.randomUUID());
+            persistAssignedUuid(manager, reference);
+        }
+    }
+
+    /**
+     * Best-effort write-back of a locally assigned UUID into the registered row, so the
+     * {@code ibases.v8i} {@code ID} field stops being {@code null}. A failure here must not fail
+     * the connect — the in-memory reference already carries a usable UUID for this session.
+     */
+    private void persistAssignedUuid(IInfobaseManager manager, InfobaseReference row) {
+        try {
+            manager.update(row);
+        } catch (RuntimeException e) {
+            LOG.warn("Failed to persist assigned UUID for infobase '%s': %s", //$NON-NLS-1$
+                    row.getName(), e.getMessage());
         }
     }
 
@@ -949,15 +978,43 @@ public class EdtInfobaseConnectService {
         if (setPrimary) {
             try {
                 associationManager.setDefaultInfobase(project, reference, context);
-            } catch (InfobaseAssociationException e) {
-                String detail = e.getMessage() != null && !e.getMessage().isBlank()
-                        ? e.getMessage() : e.getClass().getSimpleName();
-                throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
-                        "Failed to set default infobase for project: " + detail, e); //$NON-NLS-1$
+            } catch (InfobaseAssociationException first) {
+                // Live-observed on 2025.2.x (stack polygon, 2026-07-02): the very first bind into a
+                // fresh branch context persists the association file, yet the immediately following
+                // setDefaultInfobase still throws "Project ... is not associated with infobase ...".
+                // An external re-run of the whole connect always healed it: by then the persisted
+                // association was visible and its adopt step re-pointed the reference at the stored
+                // row. Do the same in place — let the backing store settle, re-adopt, re-associate,
+                // and retry once — instead of failing the first connect of every new branch.
+                LOG.warn("setDefaultInfobase failed right after associate (project=%s): %s — retrying once", //$NON-NLS-1$
+                        project.getName(), first.getMessage());
+                settleBeforeSetDefaultRetry();
+                try {
+                    adoptExistingAssociationName(project, reference, null);
+                    associationManager.associate(project, reference, settings);
+                    associationManager.setDefaultInfobase(project, reference, context);
+                } catch (InfobaseAssociationException e) {
+                    String detail = e.getMessage() != null && !e.getMessage().isBlank()
+                            ? e.getMessage() : e.getClass().getSimpleName();
+                    throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
+                            "Failed to set default infobase for project: " + detail, e); //$NON-NLS-1$
+                }
             }
             return true;
         }
         return false;
+    }
+
+    /**
+     * Grace pause between the failed first {@code setDefaultInfobase} and its retry, giving EDT's
+     * background association flush a moment to land. Overridable so unit tests do not pay it.
+     */
+    protected void settleBeforeSetDefaultRetry() {
+        try {
+            Thread.sleep(250);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**

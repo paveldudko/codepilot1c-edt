@@ -9,6 +9,28 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### connect_infobase — reliability (stack-polygon live findings)
+
+- **Retry `setDefaultInfobase` once on a fresh association context.** (2026-07-02)
+  Live-observed on EDT 2025.2.x: the FIRST bind into a new git-branch association
+  context persisted the association file, yet the immediately following
+  `setDefaultInfobase` threw "Project ... is not associated with infobase ..."
+  (2/2 repro on fresh contexts; an external re-run of the connect always healed,
+  because its adopt step re-read the by-then-visible association). `associate()`
+  now does the same in place: short settle, re-adopt the persisted identity,
+  re-`associate`, retry `setDefaultInfobase` once — a persistent failure still
+  surfaces as `EDT_SERVICE_UNAVAILABLE`. Regression test:
+  `EdtInfobaseConnectSetDefaultRetryTest`.
+- **Persist locally assigned infobase UUIDs back into the registry.** (2026-07-02)
+  `IInfobaseManager.add()` can write the `ibases.v8i` row with `ID=null`;
+  `persistReference` then assigned a UUID to the in-memory reference only, so every
+  connect minted a NEW identity for the same infobase (three different UUIDs
+  observed for one infobase across two workspaces and a restart) and per-branch
+  associations in different workspaces diverged. All three assignment paths
+  (post-`add()`, existing row with null UUID, force=true same-path reuse) now write
+  the UUID back via `IInfobaseManager.update()`, best-effort. Regression test:
+  `EdtInfobaseConnectPersistUuidTest`.
+
 ### MCP host — multi-endpoint profiles
 
 - **Profiles are now shared across all plugin instances; only the port is
