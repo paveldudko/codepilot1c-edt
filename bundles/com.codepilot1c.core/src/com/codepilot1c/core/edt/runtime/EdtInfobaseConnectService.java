@@ -8,12 +8,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IWorkspaceRoot;
@@ -38,6 +35,8 @@ import com._1c.g5.v8.dt.platform.services.core.infobases.InfobaseReferences;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseAccess;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
 import com._1c.g5.v8.dt.platform.services.model.Section;
+import com.codepilot1c.core.edt.runtime.lease.InfobaseLease;
+import com.codepilot1c.core.edt.runtime.lease.InfobaseLeaseGuard;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.e1c.g5.v8.dt.platform.standaloneserver.core.StandaloneServerException;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
@@ -190,13 +189,19 @@ public class EdtInfobaseConnectService {
     }
 
     private final EdtRuntimeGateway gateway;
+    private final InfobaseLeaseGuard leaseGuard;
 
     public EdtInfobaseConnectService() {
         this(new EdtRuntimeGateway());
     }
 
     public EdtInfobaseConnectService(EdtRuntimeGateway gateway) {
+        this(gateway, InfobaseLeaseGuard.fromEnvironment());
+    }
+
+    public EdtInfobaseConnectService(EdtRuntimeGateway gateway, InfobaseLeaseGuard leaseGuard) {
         this.gateway = gateway;
+        this.leaseGuard = leaseGuard;
     }
 
     public ConnectResult connect(ConnectRequest request) {
@@ -262,6 +267,7 @@ public class EdtInfobaseConnectService {
             connectionString = "Srvr=\"" + server + "\";Ref=\"" + ref + "\";"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         }
 
+        enforceLease(project, reference, connectionString);
         PrimaryOutcome primaryOutcome = evaluatePrimary(project, request, reference);
         if (primaryOutcome.idempotent()) {
             LOG.info("connect_infobase(server) project=%s srvr=%s ref=%s already primary — idempotent no-op", //$NON-NLS-1$
@@ -318,6 +324,7 @@ public class EdtInfobaseConnectService {
         }
         reference.setName(infobaseName);
 
+        enforceLease(project, reference, filePathArg);
         PrimaryOutcome primaryOutcome = evaluatePrimary(project, request, reference);
         if (primaryOutcome.idempotent()) {
             LOG.info("connect_infobase(file) project=%s path=%s already primary — idempotent no-op", //$NON-NLS-1$
@@ -369,6 +376,7 @@ public class EdtInfobaseConnectService {
         }
         reference.setName(infobaseName);
 
+        enforceLease(project, reference, filePathArg);
         PrimaryOutcome primaryOutcome = evaluatePrimary(project, request, reference);
         if (primaryOutcome.idempotent()) {
             LOG.info("connect_infobase(standalone) project=%s path=%s already primary — idempotent no-op", //$NON-NLS-1$
@@ -773,51 +781,17 @@ public class EdtInfobaseConnectService {
     }
 
     private static String infobaseIdentity(InfobaseReference reference) {
-        try {
-            if (reference == null || reference.getConnectionString() == null) {
-                return null;
-            }
-            String value = reference.getConnectionString().asConnectionString();
-            return value == null || value.isBlank() ? null : value.trim();
-        } catch (RuntimeException e) {
-            return null;
-        }
+        return InfobaseIdentity.identityOf(reference);
     }
 
-    private static final Pattern FILE_TOKEN = Pattern.compile(
-            "File\\s*=\\s*\"([^\"]*)\"|File\\s*=\\s*'([^']*)'", Pattern.CASE_INSENSITIVE); //$NON-NLS-1$
-
-    /**
-     * True when two infobase connection strings denote the SAME physical identity, tolerant of
-     * cosmetic differences EDT does not treat as meaningful: a trailing path separator, slash
-     * direction and drive-letter/path case on the {@code File="..."} token. Without this, a re-bind
-     * whose resolved path lacked the trailing backslash present on the registered entry was wrongly
-     * flagged NAME_COLLISION even under force=true (live finding 2026-06-11).
-     */
+    // Kept as thin delegates (the implementation moved to InfobaseIdentity so the association
+    // tool and the lease guard share the same matching rules); tests exercise them here too.
     static boolean connectionIdentitiesMatch(String a, String b) {
-        String ca = canonicalConnection(a);
-        String cb = canonicalConnection(b);
-        return ca != null && ca.equals(cb);
+        return InfobaseIdentity.matches(a, b);
     }
 
-    /** Canonical form of a connection string: file IBs by normalized path, others case/space-folded. */
     static String canonicalConnection(String connectionString) {
-        if (connectionString == null) {
-            return null;
-        }
-        Matcher m = FILE_TOKEN.matcher(connectionString);
-        if (m.find()) {
-            String path = m.group(1) != null ? m.group(1) : m.group(2);
-            if (path != null) {
-                String norm = path.trim().toLowerCase(Locale.ROOT).replace('\\', '/');
-                while (norm.endsWith("/")) { //$NON-NLS-1$
-                    norm = norm.substring(0, norm.length() - 1);
-                }
-                return "file:" + norm; //$NON-NLS-1$
-            }
-        }
-        // server/standalone: fold case and strip all whitespace so Srvr/Ref order/spacing is ignored
-        return connectionString.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", ""); //$NON-NLS-1$
+        return InfobaseIdentity.canonical(connectionString);
     }
 
     protected void storeAccessSettings(InfobaseReference reference, String login, String password) {
@@ -1081,6 +1055,36 @@ public class EdtInfobaseConnectService {
                     project.getName(), e.getMessage());
             return InfobaseAssociationContext.empty();
         }
+    }
+
+    /**
+     * Pool-exclusivity gate (multi-EDT stack pools): refuses the bind when another stack holds the
+     * lease for this branch — or for the same physical infobase under another branch — and
+     * auto-claims a free lease, so the bind itself is the take. Active only when the guard is
+     * configured (env {@code CODEPILOT1C_LEASE_DIR}); a plain single-instance setup never enters.
+     * Runs BEFORE the idempotent-primary shortcut on purpose: a no-op reconnect from a foreign
+     * stack is exactly the double-entry this guard exists to refuse.
+     */
+    protected void enforceLease(IProject project, InfobaseReference reference, String displayPath) {
+        if (leaseGuard == null || !leaseGuard.isEnabled()) {
+            return;
+        }
+        String contextValue = resolveAssociationContext(project).getContext().orElse(null);
+        String branch = InfobaseLeaseGuard.branchFromContext(contextValue);
+        InfobaseLeaseGuard.Decision decision = leaseGuard.checkOrAcquire(
+                branch, displayPath, infobaseIdentity(reference), null);
+        if (decision.outcome() != InfobaseLeaseGuard.Outcome.DENIED) {
+            return;
+        }
+        InfobaseLease holder = decision.lease();
+        throw new EdtToolException(EdtToolErrorCode.EDT_LEASE_HELD,
+                "lease_held: branch '" + branch + "'" //$NON-NLS-1$ //$NON-NLS-2$
+                        + (displayPath == null ? "" : " (infobase " + displayPath + ")") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        + " is leased by " //$NON-NLS-1$
+                        + (holder == null ? "another stack" : holder.describeHolder()) //$NON-NLS-1$
+                        + ". Two EDT instances must not work the same file infobase. " //$NON-NLS-1$
+                        + "Release the lease on the holding stack (manage_leases action=release), " //$NON-NLS-1$
+                        + "or steal a stale one with manage_leases action=take force=true, then retry."); //$NON-NLS-1$
     }
 
     // -- Helpers --------------------------------------------------------------------------------

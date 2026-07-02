@@ -101,6 +101,8 @@ public class ToolRegistry {
         register(new WorkspaceImportProjectTool());
         register(new ConnectInfobaseTool());
         register(new ConnectInfobaseStatusTool());
+        register(new com.codepilot1c.core.tools.workspace.ManageLeasesTool());
+        register(new com.codepilot1c.core.tools.workspace.ManageAssociationsTool());
         register(new GitInspectTool());
         register(new GitMutateTool());
         register(new GitCloneAndImportProjectTool());

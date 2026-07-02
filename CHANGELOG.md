@@ -47,6 +47,39 @@ commit hash in parentheses where useful.
   legacy null-UUID rows are replaced through the manager API (delete + add),
   best-effort. Regression test: `EdtInfobaseConnectPersistUuidTest`.
 
+### Multi-stack pools — infobase lease exclusivity + association surgery (phase 4)
+
+- **Per-branch infobase leases: two EDT instances can no longer work the same file
+  infobase.** (2026-07-02) Stack-pool requirement (see the polygon design in
+  `stacks\LEASE-DESIGN.md`): tasks = branch + its per-branch IB migrate between EDT
+  stacks through a bare git hub, and nothing stopped two stacks from binding/updating
+  one IB concurrently. New `InfobaseLeaseStore` (one JSON per branch in a shared
+  directory, by convention `<hub>/leases/`; atomic `createFile` claim, atomic-replace
+  steal, owner-checked release) + `InfobaseLeaseGuard` decision layer. **Hard opt-in:**
+  active only when env `CODEPILOT1C_LEASE_DIR` (or instance pref `infobase.lease.dir`)
+  is set — unset means zero behavior change; deliberately no auto-derivation from git
+  remotes. Enforcement: `connect_infobase` (all three kinds, before the idempotent
+  shortcut) and `update_infobase` (before the configurator writes) refuse with the new
+  typed `EDT_LEASE_HELD` (holder + hint in the message) when another stack holds the
+  branch — or the same physical IB under another branch (canonical identity match);
+  a free lease is auto-taken (bind/update = claim). New `manage_leases` tool:
+  status / take (`force` steals, reports the previous holder) / release (`force` drops
+  a stale foreign lease). Only branch contexts are leased; detached HEAD/non-git are
+  exempt. Tests: `InfobaseLeaseStoreTest` (incl. 16-thread claim race, corrupt-payload
+  reads as held), `InfobaseLeaseGuardTest`, `EdtInfobaseConnectLeaseTest`,
+  `EdtRuntimeServiceUpdateLeaseTest`, `ManageLeasesToolTest`.
+- **`manage_associations` tool: per-branch binding surgery without a checkout.**
+  (2026-07-02) list (all contexts with bound IBs, default markers, current-context
+  flag) / bind (attach an EXISTING `ibases.v8i` entry to ANY branch's context) /
+  copy (replicate one branch's bindings onto another) / dissociate. Grounded against
+  2025.2.x bytecode: the git provider builds contexts as
+  `InfobaseAssociationContext.of(repo.getFullBranch())` — a public single-segment
+  factory — so `refs/heads/<branch>` contexts are synthesizable byte-for-byte
+  (`EdtInfobaseAssociationServiceTest` pins the shape). Registry lifecycle stays with
+  `connect_infobase` (this tool never creates/repairs v8i rows); bind/copy run under
+  the lease guard. Identity helpers extracted to `InfobaseIdentity` (shared by the
+  connect service, the association service and the guard).
+
 ### MCP host — multi-endpoint profiles
 
 - **Profiles are now shared across all plugin instances; only the port is

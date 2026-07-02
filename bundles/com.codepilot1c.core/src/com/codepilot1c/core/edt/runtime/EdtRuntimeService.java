@@ -31,6 +31,8 @@ import com._1c.g5.v8.dt.platform.services.model.AppArch;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseAccess;
 import com._1c.g5.v8.dt.platform.services.model.InfobaseReference;
 import com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation;
+import com.codepilot1c.core.edt.runtime.lease.InfobaseLease;
+import com.codepilot1c.core.edt.runtime.lease.InfobaseLeaseGuard;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.StandaloneServerInfobase;
@@ -60,6 +62,7 @@ public class EdtRuntimeService {
             "com._1c.g5.v8.dt.platform.services.core.componentTypes.ThinClient"; //$NON-NLS-1$
 
     private final EdtRuntimeGateway gateway;
+    private final InfobaseLeaseGuard leaseGuard;
 
     public static final class AccessSettings {
         private final boolean osAuthentication;
@@ -121,7 +124,12 @@ public class EdtRuntimeService {
     }
 
     public EdtRuntimeService(EdtRuntimeGateway gateway) {
+        this(gateway, InfobaseLeaseGuard.fromEnvironment());
+    }
+
+    public EdtRuntimeService(EdtRuntimeGateway gateway, InfobaseLeaseGuard leaseGuard) {
         this.gateway = gateway;
+        this.leaseGuard = leaseGuard;
     }
 
     public InfobaseReference resolveDefaultInfobase(String projectName) {
@@ -917,6 +925,7 @@ public class EdtRuntimeService {
             throw new IllegalStateException("EDT project not found: " + projectName); //$NON-NLS-1$
         }
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
+        enforceUpdateLease(project, infobase);
         Object manager = gateway.getInfobaseSynchronizationManager();
         IProgressMonitor usedMonitor = monitor != null ? monitor : new NullProgressMonitor();
         AtomicBoolean exclusiveLockUnavailable = new AtomicBoolean(false);
@@ -936,6 +945,45 @@ public class EdtRuntimeService {
             }
             throw new IllegalStateException("EDT updateInfobase failed: " + e.getMessage(), e); //$NON-NLS-1$
         }
+    }
+
+    /**
+     * Pool-exclusivity gate before the configurator writes into the infobase (multi-EDT stack
+     * pools): refuses the update when another stack holds the lease for the project's current
+     * branch or for this physical infobase, and auto-claims a free lease (working the task claims
+     * it — same semantics as connect_infobase). Active only when the guard is configured (env
+     * {@code CODEPILOT1C_LEASE_DIR}); otherwise this is a no-op, and so is any non-branch context.
+     */
+    protected void enforceUpdateLease(IProject project, InfobaseReference infobase) {
+        if (leaseGuard == null || !leaseGuard.isEnabled()) {
+            return;
+        }
+        String contextValue = null;
+        try {
+            var provider = gateway.peekInfobaseAssociationContextProvider();
+            if (provider != null) {
+                var context = provider.get(project);
+                contextValue = context == null ? null : context.getContext().orElse(null);
+            }
+        } catch (RuntimeException e) {
+            LOG.warn("update_infobase: failed to resolve association context for lease check: %s", //$NON-NLS-1$
+                    e.getMessage());
+        }
+        String branch = InfobaseLeaseGuard.branchFromContext(contextValue);
+        String identity = InfobaseIdentity.identityOf(infobase);
+        InfobaseLeaseGuard.Decision decision = leaseGuard.checkOrAcquire(branch, identity, identity, null);
+        if (decision.outcome() != InfobaseLeaseGuard.Outcome.DENIED) {
+            return;
+        }
+        InfobaseLease holder = decision.lease();
+        throw new EdtToolException(EdtToolErrorCode.EDT_LEASE_HELD,
+                "lease_held: branch '" + branch + "'" //$NON-NLS-1$ //$NON-NLS-2$
+                        + (identity == null ? "" : " (infobase " + identity + ")") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        + " is leased by " //$NON-NLS-1$
+                        + (holder == null ? "another stack" : holder.describeHolder()) //$NON-NLS-1$
+                        + ". Two EDT instances must not work the same file infobase. " //$NON-NLS-1$
+                        + "Release the lease on the holding stack (manage_leases action=release), " //$NON-NLS-1$
+                        + "or steal a stale one with manage_leases action=take force=true, then retry."); //$NON-NLS-1$
     }
 
     public void applyAccessSettings(RuntimeExecutionCommandBuilder builder, AccessSettings settings) {
