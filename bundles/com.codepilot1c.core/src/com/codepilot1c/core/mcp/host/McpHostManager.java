@@ -58,14 +58,31 @@ public class McpHostManager {
         }
     }
 
+    /** Launch-time port override for the {@code CODEPILOT1C_PROFILE}-forced endpoint. */
+    public static final String ENV_PORT = "CODEPILOT1C_PORT"; //$NON-NLS-1$
+    /** System-property twin of {@link #ENV_PORT} (takes precedence; handy in an .ini). */
+    public static final String SYSPROP_PORT = "codepilot.mcp.host.profile.port"; //$NON-NLS-1$
+
     /**
      * The profiles to bring up: {@code CODEPILOT1C_PROFILE} forces a single named
      * one (regardless of its enabled flag); otherwise every enabled profile.
+     *
+     * <p>The forced endpoint's port may be overridden per launch via
+     * {@code -Dcodepilot.mcp.host.profile.port} / env {@code CODEPILOT1C_PORT}, so a
+     * stack's start script fully describes its identity (profile + port + stack id +
+     * lease dir) with no per-workspace GUI step. The override is EPHEMERAL by design —
+     * never written back to the instance's port map, so dropping the variable returns
+     * the profile to its stored port. Without a forced profile the target endpoint
+     * would be ambiguous, so the override is ignored (with a warning).</p>
      */
     private List<ProfileEndpoint> selectProfilesToStart(McpHostConfig cfg) {
         List<ProfileEndpoint> profiles = cfg.getProfiles();
         if (profiles == null || profiles.isEmpty()) {
             return List.of();
+        }
+        String portOverride = System.getProperty(SYSPROP_PORT);
+        if (portOverride == null || portOverride.isBlank()) {
+            portOverride = System.getenv(ENV_PORT);
         }
         String selected = cfg.getSelectedProfileName();
         if (selected != null && !selected.isBlank()) {
@@ -75,12 +92,47 @@ public class McpHostManager {
                     .orElse(null);
             if (match != null) {
                 LOG.info("CODEPILOT1C_PROFILE=%s — forcing only that endpoint", selected); //$NON-NLS-1$
-                return List.of(match);
+                return List.of(applyPortOverride(match, portOverride));
             }
             LOG.warn("CODEPILOT1C_PROFILE=%s not found among %d profiles; starting enabled profiles instead", //$NON-NLS-1$
                     selected, Integer.valueOf(profiles.size()));
         }
+        if (portOverride != null && !portOverride.isBlank()) {
+            LOG.warn("%s is set but no single endpoint is forced via CODEPILOT1C_PROFILE — ignoring the port override", //$NON-NLS-1$
+                    ENV_PORT);
+        }
         return profiles.stream().filter(ProfileEndpoint::isEnabled).toList();
+    }
+
+    /**
+     * Applies a raw port-override value to an endpoint: a valid port yields a COPY of the
+     * endpoint with that port (the original stays untouched — it mirrors the persisted
+     * config); a missing/invalid value keeps the endpoint as is, with a warning, so a
+     * typo in the start script degrades to the stored port instead of a dead stack.
+     */
+    static ProfileEndpoint applyPortOverride(ProfileEndpoint profile, String rawPort) {
+        if (profile == null || rawPort == null || rawPort.isBlank()) {
+            return profile;
+        }
+        int port;
+        try {
+            port = Integer.parseInt(rawPort.trim());
+        } catch (NumberFormatException e) {
+            LOG.warn("Ignoring invalid %s value '%s' — endpoint '%s' keeps port %d", //$NON-NLS-1$
+                    ENV_PORT, rawPort, profile.getName(), Integer.valueOf(profile.getPort()));
+            return profile;
+        }
+        if (port < 1 || port > 65535) {
+            LOG.warn("Ignoring out-of-range %s value %d — endpoint '%s' keeps port %d", //$NON-NLS-1$
+                    ENV_PORT, Integer.valueOf(port), profile.getName(), Integer.valueOf(profile.getPort()));
+            return profile;
+        }
+        if (port == profile.getPort()) {
+            return profile;
+        }
+        LOG.info("Port override for endpoint '%s': %d -> %d (launch-time only, not persisted)", //$NON-NLS-1$
+                profile.getName(), Integer.valueOf(profile.getPort()), Integer.valueOf(port));
+        return SharedProfile.fromEndpoint(profile).toEndpoint(port);
     }
 
     public synchronized void restart() {
