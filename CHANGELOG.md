@@ -9,6 +9,28 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### Infobase leases — consumer-review fixes (stack pool, phase 5)
+
+- **Leases are keyed by the canonical infobase identity; the branch is an
+  attribute.** (`e85d77d`, 2026-07-03) The leased resource is the PHYSICAL
+  infobase: phase branches of one task (which share a single per-task IB) now
+  contend for one lease file instead of littering the pool with parallel
+  branch-keyed claims, a cosmetically different path spelling cannot dodge the
+  guard, and a detached HEAD no longer disables enforcement when the infobase is
+  known. A branch hop by the holder on the same IB refreshes the lease payload in
+  place; re-pointing a branch at a new IB claims a second lease (the old IB stays
+  claimed until released). `manage_leases release` resolves by branch-attribute
+  scan and refuses an ambiguous match (pass `ib_path`). Driven by the AM-side
+  consumer review of the stack-pool brief (2026-07-03, feedback A5).
+
+- **`update_infobase` checks the lease BEFORE the webserver pre-flight.**
+  (`e0d059a`, 2026-07-03) On live pools a web server is always running, so
+  `UPDATE_BLOCKED_BY_WEBSERVER` masked the more specific `EDT_LEASE_HELD` from a
+  non-holder (live polygon observation; consumer review flagged the order as a
+  rollout precondition, feedback A1). New `EdtRuntimeService.checkUpdateLease`
+  runs first in both the sync and async tool paths; the in-path enforcement
+  before the configurator write is unchanged.
+
 ### connect_infobase — reliability (stack-polygon live findings)
 
 - **Retry `setDefaultInfobase` once on a fresh association context.** (2026-07-02)
