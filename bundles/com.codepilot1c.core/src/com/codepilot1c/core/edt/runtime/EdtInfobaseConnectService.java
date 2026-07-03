@@ -1059,9 +1059,10 @@ public class EdtInfobaseConnectService {
 
     /**
      * Pool-exclusivity gate (multi-EDT stack pools): refuses the bind when another stack holds the
-     * lease for this branch — or for the same physical infobase under another branch — and
-     * auto-claims a free lease, so the bind itself is the take. Active only when the guard is
-     * configured (env {@code CODEPILOT1C_LEASE_DIR}); a plain single-instance setup never enters.
+     * lease for this PHYSICAL infobase (canonical-identity key; the branch is only a payload
+     * attribute and a fallback for identity-less reservations) and auto-claims a free lease, so
+     * the bind itself is the take. Active only when the guard is configured (env
+     * {@code CODEPILOT1C_LEASE_DIR}); a plain single-instance setup never enters.
      * Runs BEFORE the idempotent-primary shortcut on purpose: a no-op reconnect from a foreign
      * stack is exactly the double-entry this guard exists to refuse.
      */
@@ -1078,8 +1079,10 @@ public class EdtInfobaseConnectService {
         }
         InfobaseLease holder = decision.lease();
         throw new EdtToolException(EdtToolErrorCode.EDT_LEASE_HELD,
-                "lease_held: branch '" + branch + "'" //$NON-NLS-1$ //$NON-NLS-2$
-                        + (displayPath == null ? "" : " (infobase " + displayPath + ")") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "lease_held: " //$NON-NLS-1$
+                        + (displayPath == null ? "branch '" + branch + "'" //$NON-NLS-1$ //$NON-NLS-2$
+                                : "infobase " + displayPath //$NON-NLS-1$
+                                        + (branch == null ? "" : " (branch '" + branch + "')")) //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                         + " is leased by " //$NON-NLS-1$
                         + (holder == null ? "another stack" : holder.describeHolder()) //$NON-NLS-1$
                         + ". Two EDT instances must not work the same file infobase. " //$NON-NLS-1$

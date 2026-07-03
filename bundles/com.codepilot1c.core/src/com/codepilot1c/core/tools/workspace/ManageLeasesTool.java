@@ -9,6 +9,8 @@ package com.codepilot1c.core.tools.workspace;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 import com.codepilot1c.core.edt.runtime.EdtToolErrorCode;
@@ -47,15 +49,15 @@ public class ManageLeasesTool extends AbstractTool {
                 "action": {
                   "type": "string",
                   "enum": ["status", "take", "release"],
-                  "description": "status: list leases (all, or one when branch is passed). take: claim a branch for THIS stack; with force=true steal it from a stale holder. release: drop this stack's lease; with force=true drop another stack's."
+                  "description": "status: list leases (all, or those matching branch). take: claim an infobase (or reserve a branch name) for THIS stack; with force=true steal it from a stale holder. release: drop this stack's lease; with force=true drop another stack's."
                 },
                 "branch": {
                   "type": "string",
-                  "description": "Git branch (short name, e.g. 'task-C') identifying the task. Required for take/release."
+                  "description": "Git branch (short name, e.g. 'task-C'). Recorded as the lease's attribute; the lease itself is keyed by the infobase identity when ib_path is given, else by this branch name (a name-only reservation). Required for take/release unless ib_path identifies the lease."
                 },
                 "ib_path": {
                   "type": "string",
-                  "description": "take: path of the branch's file infobase, recorded in the lease so same-IB conflicts are detected across branches. Optional but recommended."
+                  "description": "Path of the task's file infobase. take: keys the lease by the PHYSICAL infobase (recommended) — all branches of that infobase share one lease. release: resolves the lease by infobase when branch alone is ambiguous."
                 },
                 "force": {
                   "type": "boolean",
@@ -78,11 +80,13 @@ public class ManageLeasesTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Exclusivity leases for per-branch infobases in a multi-EDT stack pool " //$NON-NLS-1$
-                + "(status/take/release). connect_infobase and update_infobase auto-take a free " //$NON-NLS-1$
-                + "lease; use this tool to inspect the pool, hand a task over (release), or steal " //$NON-NLS-1$
-                + "a stale lease (take force=true). Active only when the CODEPILOT1C_LEASE_DIR " //$NON-NLS-1$
-                + "environment variable points at the pool's shared lease directory."; //$NON-NLS-1$
+        return "Exclusivity leases for infobases in a multi-EDT stack pool (status/take/release). " //$NON-NLS-1$
+                + "A lease claims one PHYSICAL infobase (canonical identity key); the branch is a " //$NON-NLS-1$
+                + "recorded attribute, and phase branches sharing an infobase share its lease. " //$NON-NLS-1$
+                + "connect_infobase and update_infobase auto-take a free lease; use this tool to " //$NON-NLS-1$
+                + "inspect the pool, hand a task over (release), or steal a stale lease " //$NON-NLS-1$
+                + "(take force=true). Active only when the CODEPILOT1C_LEASE_DIR environment " //$NON-NLS-1$
+                + "variable points at the pool's shared lease directory."; //$NON-NLS-1$
     }
 
     @Override
@@ -121,7 +125,7 @@ public class ManageLeasesTool extends AbstractTool {
             return switch (action) {
                 case "status" -> success(status(opId, branch)); //$NON-NLS-1$
                 case "take" -> take(opId, branch, ibPath, force); //$NON-NLS-1$
-                case "release" -> release(opId, branch, force); //$NON-NLS-1$
+                case "release" -> release(opId, branch, ibPath, force); //$NON-NLS-1$
                 default -> failure(errorPayload(opId, EdtToolErrorCode.INVALID_ARGUMENT,
                         "unknown action '" + action + "': expected status | take | release")); //$NON-NLS-1$ //$NON-NLS-2$
             };
@@ -136,10 +140,10 @@ public class ManageLeasesTool extends AbstractTool {
         InfobaseLeaseStore store = guard.store();
         JsonObject payload = basePayload(opId, true);
         JsonArray leases = new JsonArray();
-        if (branch != null) {
-            store.find(branch).ifPresent(l -> leases.add(leaseJson(l)));
-        } else {
-            for (InfobaseLease lease : store.list()) {
+        for (InfobaseLease lease : store.list()) {
+            // The branch is a payload attribute (the lease is keyed by infobase identity),
+            // so a branch filter is a scan — several infobases may carry the same branch.
+            if (branch == null || branch.equals(lease.branch())) {
                 leases.add(leaseJson(lease));
             }
         }
@@ -148,9 +152,9 @@ public class ManageLeasesTool extends AbstractTool {
     }
 
     private CompletableFuture<ToolResult> take(String opId, String branch, String ibPath, boolean force) {
-        if (branch == null) {
+        if (branch == null && ibPath == null) {
             return failure(errorPayload(opId, EdtToolErrorCode.INVALID_ARGUMENT,
-                    "branch is required for action=take")); //$NON-NLS-1$
+                    "branch (or ib_path) is required for action=take")); //$NON-NLS-1$
         }
         InfobaseLeaseStore store = guard.store();
         InfobaseLease lease = guard.newLease(branch, ibPath, ibPath == null ? null
@@ -160,6 +164,9 @@ public class ManageLeasesTool extends AbstractTool {
             JsonObject payload = basePayload(opId, true);
             payload.addProperty("taken", true); //$NON-NLS-1$
             payload.addProperty("branch", branch); //$NON-NLS-1$
+            if (ibPath != null) {
+                payload.addProperty("ib_path", ibPath); //$NON-NLS-1$
+            }
             if (force) {
                 payload.addProperty("forced", true); //$NON-NLS-1$
                 if (result.lease() != null && !result.lease().isHeldBy(guard.stackId())) {
@@ -189,12 +196,39 @@ public class ManageLeasesTool extends AbstractTool {
         return failure(payload);
     }
 
-    private CompletableFuture<ToolResult> release(String opId, String branch, boolean force) {
-        if (branch == null) {
+    private CompletableFuture<ToolResult> release(String opId, String branch, String ibPath, boolean force) {
+        if (branch == null && ibPath == null) {
             return failure(errorPayload(opId, EdtToolErrorCode.INVALID_ARGUMENT,
-                    "branch is required for action=release")); //$NON-NLS-1$
+                    "branch (or ib_path) is required for action=release")); //$NON-NLS-1$
         }
-        InfobaseLeaseStore.ReleaseResult result = guard.store().release(branch, guard.stackId(), force);
+        InfobaseLeaseStore store = guard.store();
+        String resourceKey;
+        if (ibPath != null) {
+            resourceKey = InfobaseLeaseStore.resourceKey("File=\"" + ibPath + "\";", branch); //$NON-NLS-1$ //$NON-NLS-2$
+        } else {
+            // Leases are keyed by infobase identity; a branch names only an attribute, so it may
+            // match several leases (one task's phase branches over several IBs). Resolve by scan
+            // and refuse an ambiguous release rather than dropping the wrong claim.
+            List<InfobaseLease> matches = new ArrayList<>();
+            for (InfobaseLease lease : store.list()) {
+                if (branch.equals(lease.branch())) {
+                    matches.add(lease);
+                }
+            }
+            if (matches.size() > 1) {
+                JsonObject payload = errorPayload(opId, EdtToolErrorCode.INVALID_ARGUMENT,
+                        "branch '" + branch + "' matches " + matches.size() //$NON-NLS-1$ //$NON-NLS-2$
+                                + " leases — pass ib_path to pick the one to release"); //$NON-NLS-1$
+                JsonArray candidates = new JsonArray();
+                for (InfobaseLease lease : matches) {
+                    candidates.add(leaseJson(lease));
+                }
+                payload.add("candidates", candidates); //$NON-NLS-1$
+                return failure(payload);
+            }
+            resourceKey = matches.isEmpty() ? branch : InfobaseLeaseStore.resourceKeyOf(matches.get(0));
+        }
+        InfobaseLeaseStore.ReleaseResult result = store.release(resourceKey, guard.stackId(), force);
         switch (result.status()) {
             case RELEASED -> {
                 JsonObject payload = basePayload(opId, true);

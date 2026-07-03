@@ -20,6 +20,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Stream;
 
+import com.codepilot1c.core.edt.runtime.InfobaseIdentity;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -27,10 +28,14 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 /**
- * File-based lease store: one {@code <branch>.json} per claimed task in a shared directory
- * (by convention {@code <bare-hub>/leases/}). All stacks of a pool run on ONE machine (the pool
- * design is local-by-design — linked worktrees/remote hubs are out), so plain filesystem
- * atomicity is the coordination primitive:
+ * File-based lease store: one {@code <resource-key>.json} per claimed infobase in a shared
+ * directory (by convention {@code <bare-hub>/leases/}). The resource being leased is the
+ * PHYSICAL INFOBASE — the key is its canonical connection identity (see {@link #resourceKey}),
+ * so any number of branches working the same infobase (phase branches, renames, detached HEADs)
+ * contend for ONE file; the branch is a payload attribute, not the key. A branch-named key is
+ * only the fallback for identity-less reservations. All stacks of a pool run on ONE machine
+ * (the pool design is local-by-design — linked worktrees/remote hubs are out), so plain
+ * filesystem atomicity is the coordination primitive:
  *
  * <ul>
  *   <li><b>take</b> — {@link Files#createFile} (atomic fail-if-exists on NTFS/POSIX) IS the
@@ -85,14 +90,15 @@ public final class InfobaseLeaseStore {
     public record ReleaseResult(ReleaseStatus status, InfobaseLease lease) {
     }
 
-    /** Atomically claims the branch. Loser of a concurrent race gets the winner's payload back. */
+    /** Atomically claims the lease's resource. Loser of a concurrent race gets the winner's payload back. */
     public TakeResult take(InfobaseLease lease) {
-        Path target = leaseFile(lease.branch());
+        String key = resourceKeyOf(lease);
+        Path target = leaseFile(key);
         ensureDirectory();
         try {
             Files.createFile(target);
         } catch (FileAlreadyExistsException e) {
-            return new TakeResult(false, find(lease.branch()).orElse(InfobaseLease.unknown(lease.branch())));
+            return new TakeResult(false, find(key).orElse(InfobaseLease.unknown(key)));
         } catch (IOException e) {
             throw new IllegalStateException("Failed to create lease file " + target + ": " + e.getMessage(), e); //$NON-NLS-1$ //$NON-NLS-2$
         }
@@ -100,11 +106,12 @@ public final class InfobaseLeaseStore {
         return new TakeResult(true, null);
     }
 
-    /** Steals the branch lease unconditionally (atomic replace); returns the previous holder, if any. */
+    /** Steals the lease's resource unconditionally (atomic replace); returns the previous holder, if any. */
     public TakeResult forceTake(InfobaseLease lease) {
-        Path target = leaseFile(lease.branch());
+        String key = resourceKeyOf(lease);
+        Path target = leaseFile(key);
         ensureDirectory();
-        InfobaseLease previous = find(lease.branch()).orElse(null);
+        InfobaseLease previous = find(key).orElse(null);
         Path tmp = directory.resolve(TMP_PREFIX + UUID.randomUUID() + LEASE_SUFFIX);
         try {
             Files.write(tmp, GSON.toJson(lease.toJson()).getBytes(StandardCharsets.UTF_8));
@@ -127,12 +134,12 @@ public final class InfobaseLeaseStore {
     }
 
     /**
-     * Releases the branch lease. Without {@code force} only the holder itself may release;
-     * {@code force=true} drops another stack's (stale) lease and reports whose it was.
+     * Releases the lease stored under {@code resourceKey}. Without {@code force} only the holder
+     * itself may release; {@code force=true} drops another stack's (stale) lease and reports whose it was.
      */
-    public ReleaseResult release(String branch, String selfStackId, boolean force) {
-        Path target = leaseFile(branch);
-        Optional<InfobaseLease> current = find(branch);
+    public ReleaseResult release(String resourceKey, String selfStackId, boolean force) {
+        Path target = leaseFile(resourceKey);
+        Optional<InfobaseLease> current = find(resourceKey);
         if (current.isEmpty()) {
             return new ReleaseResult(ReleaseStatus.NOT_HELD, null);
         }
@@ -147,13 +154,13 @@ public final class InfobaseLeaseStore {
         return new ReleaseResult(ReleaseStatus.RELEASED, current.get());
     }
 
-    /** Reads the branch's lease; empty when free. An unreadable payload reads as "held, holder unknown". */
-    public Optional<InfobaseLease> find(String branch) {
-        Path target = leaseFile(branch);
+    /** Reads the lease stored under {@code resourceKey}; empty when free. An unreadable payload reads as "held, holder unknown". */
+    public Optional<InfobaseLease> find(String resourceKey) {
+        Path target = leaseFile(resourceKey);
         if (!Files.exists(target)) {
             return Optional.empty();
         }
-        return Optional.of(read(target, branch));
+        return Optional.of(read(target, resourceKey));
     }
 
     /** All leases in the directory (tmp files excluded). Empty when the directory does not exist yet. */
@@ -167,9 +174,9 @@ public final class InfobaseLeaseStore {
                 String name = p.getFileName().toString();
                 return name.endsWith(LEASE_SUFFIX) && !name.startsWith(TMP_PREFIX);
             }).sorted().forEach(p -> {
-                String fallbackBranch = p.getFileName().toString();
-                fallbackBranch = fallbackBranch.substring(0, fallbackBranch.length() - LEASE_SUFFIX.length());
-                leases.add(read(p, fallbackBranch));
+                String fallbackKey = p.getFileName().toString();
+                fallbackKey = fallbackKey.substring(0, fallbackKey.length() - LEASE_SUFFIX.length());
+                leases.add(read(p, fallbackKey));
             });
         } catch (IOException e) {
             LOG.warn("Failed to list lease directory %s: %s", directory, e.getMessage()); //$NON-NLS-1$
@@ -178,23 +185,44 @@ public final class InfobaseLeaseStore {
     }
 
     /**
-     * Filesystem-safe file name for a branch. Characters outside {@code [A-Za-z0-9._-]} are folded
-     * to {@code _}; when folding changed anything a short hash of the ORIGINAL name is appended so
-     * distinct branches (e.g. {@code feature/x} vs {@code feature_x}) cannot collide on one file.
+     * The store's primary key. The CANONICAL infobase connection identity when one is known —
+     * the lease then claims the physical infobase, and every branch working that infobase
+     * contends for the same file. Falls back to the (trimmed) branch name for identity-less
+     * reservations (e.g. {@code manage_leases take} before the branch has an infobase);
+     * {@code null} when neither is available — such a request is not leasable.
      */
-    public static String fileNameFor(String branch) {
-        String safe = branch.replaceAll("[^A-Za-z0-9._-]", "_"); //$NON-NLS-1$ //$NON-NLS-2$
-        if (!safe.equals(branch)) {
-            safe = safe + "-" + Integer.toHexString(branch.hashCode()); //$NON-NLS-1$
+    public static String resourceKey(String ibIdentity, String branch) {
+        String canonical = InfobaseIdentity.canonical(ibIdentity);
+        if (canonical != null && !canonical.isBlank()) {
+            return canonical;
+        }
+        return branch == null || branch.isBlank() ? null : branch.trim();
+    }
+
+    /** Resource key of a lease payload — the file key it is (and must be) stored under. */
+    public static String resourceKeyOf(InfobaseLease lease) {
+        return resourceKey(lease.ibIdentity(), lease.branch());
+    }
+
+    /**
+     * Filesystem-safe file name for a resource key. Characters outside {@code [A-Za-z0-9._-]} are
+     * folded to {@code _}; when folding changed anything a short hash of the ORIGINAL key is
+     * appended so distinct keys (e.g. {@code feature/x} vs {@code feature_x}) cannot collide on
+     * one file. Already-folded names (as re-read from a directory listing) round-trip unchanged.
+     */
+    public static String fileNameFor(String resourceKey) {
+        String safe = resourceKey.replaceAll("[^A-Za-z0-9._-]", "_"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (!safe.equals(resourceKey)) {
+            safe = safe + "-" + Integer.toHexString(resourceKey.hashCode()); //$NON-NLS-1$
         }
         return safe + LEASE_SUFFIX;
     }
 
-    private Path leaseFile(String branch) {
-        if (branch == null || branch.isBlank()) {
-            throw new IllegalArgumentException("branch is required"); //$NON-NLS-1$
+    private Path leaseFile(String resourceKey) {
+        if (resourceKey == null || resourceKey.isBlank()) {
+            throw new IllegalArgumentException("lease resource key is required (infobase identity or branch)"); //$NON-NLS-1$
         }
-        return directory.resolve(fileNameFor(branch.trim()));
+        return directory.resolve(fileNameFor(resourceKey.trim()));
     }
 
     private void ensureDirectory() {
@@ -217,17 +245,17 @@ public final class InfobaseLeaseStore {
         }
     }
 
-    private static InfobaseLease read(Path file, String fallbackBranch) {
+    private static InfobaseLease read(Path file, String fallbackKey) {
         try {
             String content = Files.readString(file, StandardCharsets.UTF_8);
             if (content.isBlank()) {
-                return InfobaseLease.unknown(fallbackBranch);
+                return InfobaseLease.unknown(fallbackKey);
             }
             JsonObject json = JsonParser.parseString(content).getAsJsonObject();
-            return InfobaseLease.fromJson(json, fallbackBranch);
+            return InfobaseLease.fromJson(json, fallbackKey);
         } catch (IOException | RuntimeException e) {
             // Mid-write race or corruption: the file EXISTS, so the lease is held — never free.
-            return InfobaseLease.unknown(fallbackBranch);
+            return InfobaseLease.unknown(fallbackKey);
         }
     }
 }

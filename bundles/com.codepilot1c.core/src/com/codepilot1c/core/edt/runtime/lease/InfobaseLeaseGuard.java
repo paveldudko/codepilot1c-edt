@@ -27,9 +27,14 @@ import com.codepilot1c.core.logging.VibeLogger;
  * NO auto-derivation from a project's git remote: a local-path remote of an ordinary user must
  * not silently switch enforcement on and start writing files into their remote.</p>
  *
- * <p>Only branch contexts are leasable: a detached-HEAD or non-git context yields
- * {@link Outcome#OFF}. Conflicts are detected by branch OR by canonical infobase identity
- * (another branch leasing the same physical infobase is still a conflict).</p>
+ * <p><b>The leased resource is the physical infobase</b>, keyed by its canonical connection
+ * identity ({@link InfobaseLeaseStore#resourceKey}); the branch is a payload attribute. Any
+ * number of branches working the same infobase (phase branches of one task, renames, detached
+ * HEADs) share ONE lease, and a branch hop on the same infobase by the holder just refreshes
+ * the payload. A branch name is only the fallback key for identity-less reservations
+ * ({@code manage_leases take} before the infobase exists); conflicts are still detected against
+ * such reservations by the branch attribute. A request with neither an identity nor a branch
+ * (nothing to protect) yields {@link Outcome#OFF}.</p>
  */
 public final class InfobaseLeaseGuard {
 
@@ -110,50 +115,63 @@ public final class InfobaseLeaseGuard {
     }
 
     /**
-     * Core decision: may this stack work branch {@code branch} whose infobase has connection
-     * identity {@code ibIdentity}? Free lease is auto-taken (bind = claim). An own lease whose
-     * recorded infobase differs from the current one is refreshed in place.
+     * Core decision: may this stack work the infobase with connection identity {@code ibIdentity}
+     * (branch {@code branch} is the payload attribute)? Free lease is auto-taken (bind = claim).
+     * A branch hop by the holder on the same infobase (phase branches of one task) refreshes the
+     * payload in place; pointing the same branch at a NEW infobase claims a second lease — the
+     * old infobase stays claimed until it is explicitly released.
      *
-     * @param branch short branch name; {@code null}/blank (detached HEAD, non-git) → OFF
+     * @param branch short branch name attribute; may be null (detached HEAD, non-git)
      * @param ibPath human-readable infobase path/connection for the lease payload; may be null
-     * @param ibIdentity raw connection identity (matched canonically); may be null
+     * @param ibIdentity raw connection identity — the primary key (matched canonically); may be null
      * @param opId caller's operation id for the lease journal; may be null
      */
     public Decision checkOrAcquire(String branch, String ibPath, String ibIdentity, String opId) {
         if (!isEnabled()) {
             return Decision.off();
         }
-        if (branch == null || branch.isBlank()) {
+        String normalizedBranch = branch == null || branch.isBlank() ? null : branch.trim();
+        String resourceKey = InfobaseLeaseStore.resourceKey(ibIdentity, normalizedBranch);
+        if (resourceKey == null) {
+            // Neither an infobase identity nor a branch — nothing to protect.
             return Decision.off();
         }
-        String normalizedBranch = branch.trim();
-        InfobaseLease existing = store.find(normalizedBranch).orElse(null);
-        if (existing != null) {
-            if (existing.isHeldBy(stackId)) {
-                if (ibIdentity != null && !InfobaseIdentity.matches(ibIdentity, existing.ibIdentity())) {
-                    // Same task, new infobase identity (e.g. the per-branch IB moved) — refresh.
-                    InfobaseLeaseStore.TakeResult refreshed =
-                            store.forceTake(newLease(normalizedBranch, ibPath, ibIdentity, opId));
-                    return new Decision(Outcome.ALLOWED,
-                            refreshed.lease() == null ? existing : refreshed.lease());
-                }
-                return new Decision(Outcome.ALLOWED, existing);
+        // One scan decides: a FOREIGN lease conflicts when it claims the same physical infobase
+        // (primary rule) or reserves the same branch name (identity-less reservation).
+        InfobaseLease own = null;
+        for (InfobaseLease lease : store.list()) {
+            boolean sameInfobase = ibIdentity != null
+                    && InfobaseIdentity.matches(ibIdentity, lease.ibIdentity());
+            boolean sameBranch = normalizedBranch != null && normalizedBranch.equals(lease.branch());
+            if (!sameInfobase && !sameBranch) {
+                continue;
             }
-            return new Decision(Outcome.DENIED, existing);
+            if (!lease.isHeldBy(stackId)) {
+                return new Decision(Outcome.DENIED, lease);
+            }
+            if (own == null || sameInfobase) {
+                own = lease;
+            }
         }
-        if (ibIdentity != null) {
-            // No lease on this branch — but another branch's lease may claim the same physical
-            // infobase (convention drift). That is still "two EDT into one IB": refuse.
-            for (InfobaseLease lease : store.list()) {
-                if (!lease.isHeldBy(stackId) && lease.ibIdentity() != null
-                        && InfobaseIdentity.matches(ibIdentity, lease.ibIdentity())) {
-                    return new Decision(Outcome.DENIED, lease);
-                }
+        if (own != null) {
+            boolean sameStoredKey = resourceKey.equals(InfobaseLeaseStore.resourceKeyOf(own));
+            boolean branchHopped = normalizedBranch != null && !normalizedBranch.equals(own.branch());
+            if (sameStoredKey && branchHopped) {
+                // Holder moved to another branch of the SAME infobase (phase hop) — refresh in place.
+                InfobaseLeaseStore.TakeResult refreshed =
+                        store.forceTake(newLease(normalizedBranch, ibPath, ibIdentity, opId));
+                return new Decision(Outcome.ALLOWED, refreshed.lease() == null ? own : refreshed.lease());
             }
+            if (sameStoredKey) {
+                return new Decision(Outcome.ALLOWED, own);
+            }
+            // Own match under a DIFFERENT key: a branch-name reservation being exercised with a
+            // real infobase, or the branch re-pointed at a new infobase. Claim the new resource
+            // too (fall through) — the old claim stays until explicitly released.
         }
         InfobaseLeaseStore.TakeResult take = store.take(newLease(normalizedBranch, ibPath, ibIdentity, opId));
         if (take.taken()) {
-            LOG.info("lease auto-taken: branch=%s stack=%s", normalizedBranch, stackId); //$NON-NLS-1$
+            LOG.info("lease auto-taken: key=%s branch=%s stack=%s", resourceKey, normalizedBranch, stackId); //$NON-NLS-1$
             return new Decision(Outcome.ALLOWED, null);
         }
         // Lost a concurrent take race.
@@ -172,7 +190,8 @@ public final class InfobaseLeaseGuard {
 
     /**
      * Short branch name from an association-context value: {@code refs/heads/task-C} → {@code task-C}.
-     * Anything else (detached-HEAD commit hash, empty context, other refs) is not leasable → null.
+     * Anything else (detached-HEAD commit hash, empty context, other refs) → null; the guard then
+     * keys the lease by the infobase identity alone and records no branch attribute.
      */
     public static String branchFromContext(String contextValue) {
         if (contextValue == null) {

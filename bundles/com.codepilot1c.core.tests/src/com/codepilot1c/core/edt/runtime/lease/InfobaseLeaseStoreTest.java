@@ -70,6 +70,11 @@ public class InfobaseLeaseStoreTest {
                 "2026-07-02T18:00:00Z", "op-1"); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
+    /** Resource key the {@link #lease} fixture is stored under: its canonical infobase identity. */
+    private static String keyOf(String branch) {
+        return InfobaseLeaseStore.resourceKeyOf(lease(branch, "any")); //$NON-NLS-1$
+    }
+
     @Test
     public void concurrentTakeHasExactlyOneWinner() throws Exception {
         int contenders = 16;
@@ -94,7 +99,7 @@ public class InfobaseLeaseStoreTest {
         assertTrue("contenders did not finish", done.await(30, java.util.concurrent.TimeUnit.SECONDS)); //$NON-NLS-1$
         assertEquals("the atomic claim must have EXACTLY one winner — more means two stacks " //$NON-NLS-1$
                 + "would open the same infobase", 1, winners.get()); //$NON-NLS-1$
-        Optional<InfobaseLease> current = store.find("task-race"); //$NON-NLS-1$
+        Optional<InfobaseLease> current = store.find(keyOf("task-race")); //$NON-NLS-1$
         assertTrue(current.isPresent());
         assertNotEquals(InfobaseLease.UNKNOWN_HOLDER, current.get().stackId());
     }
@@ -102,7 +107,7 @@ public class InfobaseLeaseStoreTest {
     @Test
     public void takeThenFindRoundtripsThePayload() {
         assertTrue(store.take(lease("task-C", "stack-3")).taken()); //$NON-NLS-1$ //$NON-NLS-2$
-        InfobaseLease read = store.find("task-C").orElseThrow(); //$NON-NLS-1$
+        InfobaseLease read = store.find(keyOf("task-C")).orElseThrow(); //$NON-NLS-1$
         assertEquals("task-C", read.branch()); //$NON-NLS-1$
         assertEquals("stack-3", read.stackId()); //$NON-NLS-1$
         assertEquals("host-1", read.host()); //$NON-NLS-1$
@@ -129,7 +134,7 @@ public class InfobaseLeaseStoreTest {
         assertTrue(stolen.taken());
         assertNotNull("the steal must report whom it stole from", stolen.lease()); //$NON-NLS-1$
         assertEquals("stack-3", stolen.lease().stackId()); //$NON-NLS-1$
-        assertEquals("stack-4", store.find("task-C").orElseThrow().stackId()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("stack-4", store.find(keyOf("task-C")).orElseThrow().stackId()); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Test
@@ -142,24 +147,24 @@ public class InfobaseLeaseStoreTest {
     @Test
     public void releaseByOwnerReleases() {
         store.take(lease("task-C", "stack-3")); //$NON-NLS-1$ //$NON-NLS-2$
-        InfobaseLeaseStore.ReleaseResult result = store.release("task-C", "stack-3", false); //$NON-NLS-1$ //$NON-NLS-2$
+        InfobaseLeaseStore.ReleaseResult result = store.release(keyOf("task-C"), "stack-3", false); //$NON-NLS-1$ //$NON-NLS-2$
         assertEquals(InfobaseLeaseStore.ReleaseStatus.RELEASED, result.status());
-        assertTrue(store.find("task-C").isEmpty()); //$NON-NLS-1$
+        assertTrue(store.find(keyOf("task-C")).isEmpty()); //$NON-NLS-1$
     }
 
     @Test
     public void releaseByOtherIsRefusedWithoutForce() {
         store.take(lease("task-C", "stack-3")); //$NON-NLS-1$ //$NON-NLS-2$
-        InfobaseLeaseStore.ReleaseResult refused = store.release("task-C", "stack-4", false); //$NON-NLS-1$ //$NON-NLS-2$
+        InfobaseLeaseStore.ReleaseResult refused = store.release(keyOf("task-C"), "stack-4", false); //$NON-NLS-1$ //$NON-NLS-2$
         assertEquals("REGRESSION: releasing another stack's lease without force would let a " //$NON-NLS-1$
                 + "misbehaving stack unlock an infobase someone else is working", //$NON-NLS-1$
                 InfobaseLeaseStore.ReleaseStatus.HELD_BY_OTHER, refused.status());
         assertEquals("stack-3", refused.lease().stackId()); //$NON-NLS-1$
-        assertTrue(store.find("task-C").isPresent()); //$NON-NLS-1$
+        assertTrue(store.find(keyOf("task-C")).isPresent()); //$NON-NLS-1$
 
-        InfobaseLeaseStore.ReleaseResult forced = store.release("task-C", "stack-4", true); //$NON-NLS-1$ //$NON-NLS-2$
+        InfobaseLeaseStore.ReleaseResult forced = store.release(keyOf("task-C"), "stack-4", true); //$NON-NLS-1$ //$NON-NLS-2$
         assertEquals(InfobaseLeaseStore.ReleaseStatus.RELEASED, forced.status());
-        assertTrue(store.find("task-C").isEmpty()); //$NON-NLS-1$
+        assertTrue(store.find(keyOf("task-C")).isEmpty()); //$NON-NLS-1$
     }
 
     @Test
@@ -170,9 +175,9 @@ public class InfobaseLeaseStoreTest {
 
     @Test
     public void unreadablePayloadReadsAsHeldByUnknown_neverAsFree() throws IOException {
-        Path file = dir.resolve(InfobaseLeaseStore.fileNameFor("task-C")); //$NON-NLS-1$
+        Path file = dir.resolve(InfobaseLeaseStore.fileNameFor(keyOf("task-C"))); //$NON-NLS-1$
         Files.write(file, "{not json".getBytes(StandardCharsets.UTF_8)); //$NON-NLS-1$
-        InfobaseLease lease = store.find("task-C").orElseThrow(); //$NON-NLS-1$
+        InfobaseLease lease = store.find(keyOf("task-C")).orElseThrow(); //$NON-NLS-1$
         assertEquals("REGRESSION: an unreadable lease payload (mid-write race, corruption) must " //$NON-NLS-1$
                 + "read as HELD by an unknown holder — reading it as free would let a second " //$NON-NLS-1$
                 + "stack claim a lease whose file already exists", //$NON-NLS-1$
@@ -187,6 +192,32 @@ public class InfobaseLeaseStoreTest {
         String b = InfobaseLeaseStore.fileNameFor("feature_x"); //$NON-NLS-1$
         assertNotEquals("branches 'feature/x' and 'feature_x' must not share one lease file", a, b); //$NON-NLS-1$
         assertFalse("no path separators may survive sanitizing", a.contains("/")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void leaseIsKeyedByTheInfobase_phaseBranchesContendForOneFile() {
+        InfobaseLease phase1 = new InfobaseLease("BF-1-phase1", "C:\\db\\BF-1", //$NON-NLS-1$ //$NON-NLS-2$
+                "File=\"C:\\db\\BF-1\";", "stack-3", null, null, -1L, null, null); //$NON-NLS-1$ //$NON-NLS-2$
+        InfobaseLease phase2 = new InfobaseLease("BF-1-phase2", "C:\\db\\BF-1", //$NON-NLS-1$ //$NON-NLS-2$
+                "File=\"c:/db/bf-1/\";", "stack-4", null, null, -1L, null, null); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(store.take(phase1).taken());
+        InfobaseLeaseStore.TakeResult second = store.take(phase2);
+        assertFalse("REGRESSION: the lease claims the PHYSICAL infobase — another branch (or a " //$NON-NLS-1$
+                + "cosmetically different path spelling) of the same infobase must contend for " //$NON-NLS-1$
+                + "the same lease file, not silently coexist", second.taken()); //$NON-NLS-1$
+        assertEquals("stack-3", second.lease().stackId()); //$NON-NLS-1$
+        assertEquals(1, store.list().size());
+    }
+
+    @Test
+    public void resourceKeyPrefersIdentityAndFallsBackToBranch() {
+        assertEquals("identity variants must canonicalize to one key", //$NON-NLS-1$
+                InfobaseLeaseStore.resourceKey("File=\"C:\\db\\X\";", "a"), //$NON-NLS-1$ //$NON-NLS-2$
+                InfobaseLeaseStore.resourceKey("File=\"c:/db/x/\";", "b")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("task-C", InfobaseLeaseStore.resourceKey(null, "task-C")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNull("neither identity nor branch — not leasable", //$NON-NLS-1$
+                InfobaseLeaseStore.resourceKey(null, "  ")); //$NON-NLS-1$
+        assertNull(InfobaseLeaseStore.resourceKey(null, null));
     }
 
     @Test

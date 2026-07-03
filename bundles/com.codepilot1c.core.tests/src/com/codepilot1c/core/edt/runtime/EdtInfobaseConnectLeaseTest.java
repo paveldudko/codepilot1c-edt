@@ -100,14 +100,16 @@ public class EdtInfobaseConnectLeaseTest {
     }
 
     @Test
-    public void nonBranchContextSkipsEnforcement() {
+    public void nonBranchContextWithoutIdentitySkipsEnforcement() {
         InfobaseLeaseGuard stack3 = new InfobaseLeaseGuard(dir, "stack-3", null); //$NON-NLS-1$
         stack3.checkOrAcquire("task-C", null, null, null); //$NON-NLS-1$
-        // Detached HEAD: the provider reports a commit hash, not refs/heads/... — not leasable.
+        // Detached HEAD (commit hash, not refs/heads/...) AND no resolvable reference identity:
+        // nothing identifies a resource, so the guard stays out. With a real reference the
+        // infobase identity would key the lease regardless of the missing branch (guard test).
         TestableConnectService service = serviceFor("stack-4", "4dbf89f0aa3c5d2e"); //$NON-NLS-1$ //$NON-NLS-2$
 
         service.invokeEnforceLease(newProjectProxy("Polygon"), null, "C:\\db\\task-C"); //$NON-NLS-1$ //$NON-NLS-2$
-        // no exception — only branch contexts are leased
+        // no exception — neither a branch nor an infobase identity was available
     }
 
     @Test

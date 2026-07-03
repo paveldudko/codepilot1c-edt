@@ -160,4 +160,35 @@ public class ManageLeasesToolTest {
         assertFalse(result.isSuccess());
         assertEquals("INVALID_ARGUMENT", payload(result).get("error_code").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
     }
+
+    @Test
+    public void takeConflictsAcrossBranchesOnTheSameInfobase() {
+        stack3Tool.execute(Map.of("action", "take", "branch", "BF-1-phase1", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "ib_path", "C:\\db\\BF-1")).join(); //$NON-NLS-1$ //$NON-NLS-2$
+        // The lease is keyed by the infobase: another branch over the same folder must conflict.
+        ToolResult conflict = stack4Tool.execute(Map.of("action", "take", "branch", "BF-1-phase2", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "ib_path", "C:\\db\\BF-1")).join(); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(conflict.isSuccess());
+        assertEquals("EDT_LEASE_HELD", payload(conflict).get("error_code").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void releaseWithAmbiguousBranchDemandsIbPath() {
+        stack3Tool.execute(Map.of("action", "take", "branch", "task-C", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "ib_path", "C:\\db\\A")).join(); //$NON-NLS-1$ //$NON-NLS-2$
+        stack3Tool.execute(Map.of("action", "take", "branch", "task-C", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "ib_path", "C:\\db\\B")).join(); //$NON-NLS-1$ //$NON-NLS-2$
+
+        ToolResult ambiguous = stack3Tool.execute(Map.of("action", "release", "branch", "task-C")).join(); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        assertFalse("a branch attribute matching several leases must not release an arbitrary one", //$NON-NLS-1$
+                ambiguous.isSuccess());
+        JsonObject json = payload(ambiguous);
+        assertEquals("INVALID_ARGUMENT", json.get("error_code").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(2, json.getAsJsonArray("candidates").size()); //$NON-NLS-1$
+
+        ToolResult released = stack3Tool.execute(Map.of("action", "release", "branch", "task-C", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+                "ib_path", "C:\\db\\A")).join(); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(released.isSuccess());
+        assertTrue(payload(released).get("released").getAsBoolean()); //$NON-NLS-1$
+    }
 }
