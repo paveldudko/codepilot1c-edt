@@ -187,7 +187,7 @@ public class ConnectInfobaseTool extends AbstractTool {
                             applyAutoStopPhantom(asyncSuccess, autoStopPhantom, asyncResult);
                             return pretty(asyncSuccess);
                         } catch (EdtToolException e) {
-                            return pretty(errorPayload(opId, projectName, e.getCode(), e.getMessage()));
+                            return pretty(errorPayloadFrom(opId, projectName, e));
                         } catch (IllegalStateException e) {
                             return pretty(errorPayload(opId, projectName,
                                     EdtToolErrorCode.EDT_NOT_READY, detailFor(e)));
@@ -216,7 +216,7 @@ public class ConnectInfobaseTool extends AbstractTool {
                 LOG.warn(String.format("[%s] connect_infobase project=%s failed with %s: %s", //$NON-NLS-1$
                         opId, projectName, e.getCode() == null ? "<unknown>" : e.getCode().name(), //$NON-NLS-1$
                         e.getMessage() == null ? "" : e.getMessage()), e); //$NON-NLS-1$
-                return ToolResult.failure(pretty(errorPayload(opId, projectName, e.getCode(), e.getMessage())));
+                return ToolResult.failure(pretty(errorPayloadFrom(opId, projectName, e)));
             } catch (IllegalStateException e) {
                 LOG.error(String.format("[%s] connect_infobase project=%s EDT_NOT_READY", //$NON-NLS-1$
                         opId, projectName), e);
@@ -437,6 +437,50 @@ public class ConnectInfobaseTool extends AbstractTool {
         }
         json.add("infobase", infobase); //$NON-NLS-1$
         return json;
+    }
+
+    /**
+     * Error payload from a thrown {@link EdtToolException}, enriched with its machine-readable
+     * detail fields (e.g. the lease holder for {@code EDT_LEASE_HELD}) so callers read
+     * {@code holder.stack_id} instead of parsing the message.
+     */
+    private static JsonObject errorPayloadFrom(String opId, String projectName, EdtToolException e) {
+        JsonObject json = errorPayload(opId, projectName, e.getCode(), e.getMessage());
+        attachHolder(json, e.getDetails());
+        return json;
+    }
+
+    /** Renders the flat {@code holder_*} detail keys as the nested {@code holder} object manage_leases uses. */
+    private static void attachHolder(JsonObject json, java.util.Map<String, String> details) {
+        if (details == null || details.isEmpty()) {
+            return;
+        }
+        JsonObject holder = new JsonObject();
+        if (details.containsKey("holder_stack_id")) { //$NON-NLS-1$
+            holder.addProperty("stack_id", details.get("holder_stack_id")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (details.containsKey("holder_workspace")) { //$NON-NLS-1$
+            holder.addProperty("workspace", details.get("holder_workspace")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (details.containsKey("holder_host")) { //$NON-NLS-1$
+            holder.addProperty("host", details.get("holder_host")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (details.containsKey("holder_pid")) { //$NON-NLS-1$
+            try {
+                holder.addProperty("pid", Long.valueOf(details.get("holder_pid"))); //$NON-NLS-1$ //$NON-NLS-2$
+            } catch (NumberFormatException ignored) {
+                holder.addProperty("pid", details.get("holder_pid")); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+        }
+        if (holder.size() > 0) {
+            json.add("holder", holder); //$NON-NLS-1$
+        }
+        if (details.containsKey("acquired_at")) { //$NON-NLS-1$
+            json.addProperty("acquired_at", details.get("acquired_at")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (details.containsKey("branch")) { //$NON-NLS-1$
+            json.addProperty("branch", details.get("branch")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
     }
 
     private static JsonObject errorPayload(String opId, String projectName, EdtToolErrorCode code, String message) {

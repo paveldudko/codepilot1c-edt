@@ -65,6 +65,33 @@ public final class InfobaseLease {
         return stackId != null && !UNKNOWN_HOLDER.equals(stackId) && stackId.equals(candidateStackId);
     }
 
+    /**
+     * Flat, machine-readable holder fields for an error payload (blank fields omitted), so a
+     * caller reads {@code holder_stack_id} etc. instead of parsing {@link #describeHolder()} prose.
+     */
+    public java.util.Map<String, String> holderFields() {
+        java.util.Map<String, String> m = new java.util.LinkedHashMap<>();
+        if (stackId != null && !stackId.isBlank()) {
+            m.put("holder_stack_id", stackId); //$NON-NLS-1$
+        }
+        if (workspace != null && !workspace.isBlank()) {
+            m.put("holder_workspace", workspace); //$NON-NLS-1$
+        }
+        if (host != null && !host.isBlank()) {
+            m.put("holder_host", host); //$NON-NLS-1$
+        }
+        if (pid > 0) {
+            m.put("holder_pid", Long.toString(pid)); //$NON-NLS-1$
+        }
+        if (acquiredAt != null && !acquiredAt.isBlank()) {
+            m.put("acquired_at", acquiredAt); //$NON-NLS-1$
+        }
+        if (branch != null && !branch.isBlank()) {
+            m.put("branch", branch); //$NON-NLS-1$
+        }
+        return m;
+    }
+
     /** Short human-readable holder description for error messages and logs. */
     public String describeHolder() {
         StringBuilder sb = new StringBuilder();

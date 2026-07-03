@@ -218,7 +218,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 }
                 return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
             } catch (EdtToolException e) {
-                return ToolResult.failure(pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage())));
+                return ToolResult.failure(pretty(errorPayloadFrom(opId, projectName, workspaceRoot, e)));
             } catch (Exception e) {
                 if (isBlockedByLockedIB(e)) {
                     return ToolResult.failure(pretty(lockedIbPayload(opId, projectName, workspaceRoot, ibPath)));
@@ -277,7 +277,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             }
             return pretty(result);
         } catch (EdtToolException e) {
-            return pretty(errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage()));
+            return pretty(errorPayloadFrom(opId, projectName, workspaceRoot, e));
         } catch (Exception e) {
             if (isBlockedByLockedIB(e)) {
                 return pretty(lockedIbPayload(opId, projectName, workspaceRoot, ibPath));
@@ -456,6 +456,47 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         result.addProperty("message", message == null ? "" : message); //$NON-NLS-1$ //$NON-NLS-2$
         result.add("details", new JsonObject()); //$NON-NLS-1$
         return result;
+    }
+
+    /**
+     * Error payload from a thrown {@link EdtToolException}, enriched with its detail fields — for
+     * {@code EDT_LEASE_HELD} this surfaces the same structured {@code holder} object manage_leases
+     * returns, so the caller reads {@code holder.stack_id} instead of parsing the message.
+     */
+    private static JsonObject errorPayloadFrom(String opId, String projectName, File workspaceRoot,
+            EdtToolException e) {
+        JsonObject json = errorPayload(opId, projectName, workspaceRoot, e.getCode(), e.getMessage());
+        java.util.Map<String, String> details = e.getDetails();
+        if (details == null || details.isEmpty()) {
+            return json;
+        }
+        JsonObject holder = new JsonObject();
+        if (details.containsKey("holder_stack_id")) { //$NON-NLS-1$
+            holder.addProperty("stack_id", details.get("holder_stack_id")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (details.containsKey("holder_workspace")) { //$NON-NLS-1$
+            holder.addProperty("workspace", details.get("holder_workspace")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (details.containsKey("holder_host")) { //$NON-NLS-1$
+            holder.addProperty("host", details.get("holder_host")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (details.containsKey("holder_pid")) { //$NON-NLS-1$
+            try {
+                holder.addProperty("pid", Long.valueOf(details.get("holder_pid"))); //$NON-NLS-1$ //$NON-NLS-2$
+            } catch (NumberFormatException ignored) {
+                holder.addProperty("pid", details.get("holder_pid")); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+        }
+        if (holder.size() > 0) {
+            json.add("holder", holder); //$NON-NLS-1$
+        }
+        if (details.containsKey("acquired_at")) { //$NON-NLS-1$
+            json.addProperty("acquired_at", details.get("acquired_at")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (details.containsKey("branch")) { //$NON-NLS-1$
+            json.addProperty("branch", details.get("branch")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        return json;
     }
 
     protected File getWorkspaceRoot() {

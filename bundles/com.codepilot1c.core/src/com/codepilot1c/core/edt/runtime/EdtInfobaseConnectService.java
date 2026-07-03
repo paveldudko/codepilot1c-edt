@@ -1087,7 +1087,8 @@ public class EdtInfobaseConnectService {
                         + (holder == null ? "another stack" : holder.describeHolder()) //$NON-NLS-1$
                         + ". Two EDT instances must not work the same file infobase. " //$NON-NLS-1$
                         + "Release the lease on the holding stack (manage_leases action=release), " //$NON-NLS-1$
-                        + "or steal a stale one with manage_leases action=take force=true, then retry."); //$NON-NLS-1$
+                        + "or steal a stale one with manage_leases action=take force=true, then retry.", //$NON-NLS-1$
+                holder == null ? null : holder.holderFields());
     }
 
     // -- Helpers --------------------------------------------------------------------------------

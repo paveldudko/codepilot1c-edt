@@ -298,6 +298,32 @@ public class ConnectInfobaseToolTest {
     }
 
     @Test
+    public void leaseHeldRendersStructuredHolder() {
+        RecordingConnectService service = new RecordingConnectService();
+        service.responseBuilder = req -> { throw new EdtToolException(EdtToolErrorCode.EDT_LEASE_HELD,
+                "lease_held: infobase … is leased by stack 'stack-3', …", //$NON-NLS-1$
+                java.util.Map.of("holder_stack_id", "stack-3", //$NON-NLS-1$ //$NON-NLS-2$
+                        "holder_pid", "4242", "branch", "task-C")); }; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        ConnectInfobaseTool tool = new ConnectInfobaseTool(service);
+
+        Map<String, Object> params = new HashMap<>();
+        params.put("project_name", "Demo"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("database_path", "/tmp/demo-ib"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("kind", "file"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        ToolResult result = tool.execute(params).join();
+
+        assertFalse(result.isSuccess());
+        JsonObject json = JsonParser.parseString(result.getErrorMessage()).getAsJsonObject();
+        assertEquals(EdtToolErrorCode.EDT_LEASE_HELD.name(), json.get("error_code").getAsString()); //$NON-NLS-1$
+        assertEquals("the escalation command reads holder.stack_id — it must be structured, not " //$NON-NLS-1$
+                + "parsed out of the message", //$NON-NLS-1$
+                "stack-3", json.getAsJsonObject("holder").get("stack_id").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertEquals(4242L, json.getAsJsonObject("holder").get("pid").getAsLong()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("task-C", json.get("branch").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
     public void pathAlreadyAssociatedAsCarriesMachineReadableRetry() {
         RecordingConnectService service = new RecordingConnectService();
         service.responseBuilder = req -> { throw new EdtToolException(

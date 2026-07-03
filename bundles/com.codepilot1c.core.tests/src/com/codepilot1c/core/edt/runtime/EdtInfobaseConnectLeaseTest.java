@@ -79,6 +79,24 @@ public class EdtInfobaseConnectLeaseTest {
     }
 
     @Test
+    public void foreignLeaseErrorCarriesStructuredHolderDetails() {
+        new InfobaseLeaseGuard(dir, "stack-3", "C:\\stacks\\stack-3\\workspace") //$NON-NLS-1$ //$NON-NLS-2$
+                .checkOrAcquire("task-C", "C:\\db\\task-C", //$NON-NLS-1$ //$NON-NLS-2$
+                        "File=\"C:\\db\\task-C\";", null); //$NON-NLS-1$
+        TestableConnectService service = serviceFor("stack-4", "refs/heads/task-C"); //$NON-NLS-1$ //$NON-NLS-2$
+        try {
+            service.invokeEnforceLease(newProjectProxy("Polygon"), null, "C:\\db\\task-C"); //$NON-NLS-1$ //$NON-NLS-2$
+            fail("expected EDT_LEASE_HELD"); //$NON-NLS-1$
+        } catch (EdtToolException e) {
+            assertEquals("REGRESSION: the escalation command is built from holder.stack_id — the " //$NON-NLS-1$
+                    + "connect/update lease error must carry the holder as machine-readable details, " //$NON-NLS-1$
+                    + "not only in the message prose", //$NON-NLS-1$
+                    "stack-3", e.getDetails().get("holder_stack_id")); //$NON-NLS-1$ //$NON-NLS-2$
+            assertEquals("task-C", e.getDetails().get("branch")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    @Test
     public void freeLeaseIsAutoTakenByTheBind() {
         TestableConnectService service = serviceFor("stack-4", "refs/heads/task-D"); //$NON-NLS-1$ //$NON-NLS-2$
 
