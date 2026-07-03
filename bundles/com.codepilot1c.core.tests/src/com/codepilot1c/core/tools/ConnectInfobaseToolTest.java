@@ -292,6 +292,36 @@ public class ConnectInfobaseToolTest {
         assertEquals("primary_exists", json.get("error").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
         assertEquals("OldBase", json.get("current_primary").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue(json.get("hint").getAsString().contains("force=true")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("retry_with must let a script re-issue the call mechanically (merge + retry), " //$NON-NLS-1$
+                + "without parsing the hint text", //$NON-NLS-1$
+                json.getAsJsonObject("retry_with").get("force").getAsBoolean()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void pathAlreadyAssociatedAsCarriesMachineReadableRetry() {
+        RecordingConnectService service = new RecordingConnectService();
+        service.responseBuilder = req -> { throw new EdtToolException(
+                EdtToolErrorCode.PATH_ALREADY_ASSOCIATED_AS,
+                "path_already_associated_as: this path is already bound to the project " //$NON-NLS-1$
+                        + "under name 'task-C'; retry with infobase_name=\"task-C\""); }; //$NON-NLS-1$
+        ConnectInfobaseTool tool = new ConnectInfobaseTool(service);
+
+        Map<String, Object> params = new HashMap<>();
+        params.put("project_name", "Demo"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("database_path", "/tmp/demo-ib"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("kind", "file"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("infobase_name", "polygon-task-C"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        ToolResult result = tool.execute(params).join();
+
+        assertFalse(result.isSuccess());
+        JsonObject json = JsonParser.parseString(result.getErrorMessage()).getAsJsonObject();
+        assertEquals(EdtToolErrorCode.PATH_ALREADY_ASSOCIATED_AS.name(),
+                json.get("error_code").getAsString()); //$NON-NLS-1$
+        assertEquals("task-C", json.get("existing_name").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("retry_with must carry the existing binding name so the reconnect dance " //$NON-NLS-1$
+                + "is one mechanical retry, not hint parsing", //$NON-NLS-1$
+                "task-C", json.getAsJsonObject("retry_with").get("infobase_name").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
     }
 
     @Test

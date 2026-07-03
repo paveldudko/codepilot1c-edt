@@ -186,7 +186,11 @@ public class ManageLeasesTool extends AbstractTool {
             return success(payload);
         }
         JsonObject payload = errorPayload(opId, EdtToolErrorCode.EDT_LEASE_HELD,
-                "lease for branch '" + branch + "' is held by " //$NON-NLS-1$ //$NON-NLS-2$
+                "lease conflict: requested " //$NON-NLS-1$
+                        + (ibPath != null ? "infobase " + ibPath //$NON-NLS-1$
+                                + (branch == null ? "" : " (branch '" + branch + "')") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                                : "branch '" + branch + "'") //$NON-NLS-1$ //$NON-NLS-2$
+                        + " is held by " //$NON-NLS-1$
                         + (holder == null ? "another stack" : holder.describeHolder())); //$NON-NLS-1$
         if (holder != null) {
             payload.add("holder", leaseJson(holder)); //$NON-NLS-1$

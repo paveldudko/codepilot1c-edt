@@ -456,6 +456,11 @@ public class ConnectInfobaseTool extends AbstractTool {
                     json.addProperty("current_primary", currentPrimary); //$NON-NLS-1$
                 }
                 json.addProperty("hint", "pass force=true to replace"); //$NON-NLS-1$ //$NON-NLS-2$
+                // Machine-readable retry: merge these fields into the ORIGINAL arguments and
+                // re-issue the call — no hint parsing (consumer feedback 2026-07-03, A1/C1).
+                JsonObject retryWith = new JsonObject();
+                retryWith.addProperty("force", true); //$NON-NLS-1$
+                json.add("retry_with", retryWith); //$NON-NLS-1$
             }
             case INVALID_PATH -> {
                 json.addProperty("error", "invalid_path"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -495,6 +500,11 @@ public class ConnectInfobaseTool extends AbstractTool {
                             "this path is already bound under '" + suggested //$NON-NLS-1$
                                     + "'; retry with infobase_name=\"" + suggested //$NON-NLS-1$
                                     + "\" (or omit infobase_name to reuse it silently)"); //$NON-NLS-1$
+                    // Machine-readable retry: merge into the original arguments and re-issue
+                    // (consumer feedback 2026-07-03, A1/C1).
+                    JsonObject retryWith = new JsonObject();
+                    retryWith.addProperty("infobase_name", suggested); //$NON-NLS-1$
+                    json.add("retry_with", retryWith); //$NON-NLS-1$
                 } else {
                     json.addProperty("hint", //$NON-NLS-1$
                             "this path is already bound under another name; omit infobase_name or retry with the existing one"); //$NON-NLS-1$
