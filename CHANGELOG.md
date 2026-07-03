@@ -9,6 +9,18 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### MCP host — multi-endpoint profiles
+
+- **`CODEPILOT1C_PORT`: launch-time port override for the forced profile.**
+  (`2fdd263`, 2026-07-03) Profile definitions are machine-shared; the port was the
+  only per-workspace piece and required a GUI preference step per stack. The new
+  env `CODEPILOT1C_PORT` (or `-Dcodepilot.mcp.host.profile.port`, which wins)
+  overrides the port of the endpoint forced by `CODEPILOT1C_PROFILE`, so a stack's
+  start script fully describes its identity (profile + port + stack id + lease
+  dir) with no GUI steps. Ephemeral by design: applied at server start only, never
+  persisted into the instance's port map; invalid values degrade to the stored
+  port with a warning; ignored (with a warning) when no single profile is forced.
+
 ### Infobase leases — consumer-review fixes (stack pool, phase 5)
 
 - **`connect_infobase` reconnect errors carry a machine-readable `retry_with{}`.**
