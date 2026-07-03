@@ -977,13 +977,43 @@ public class EdtRuntimeService {
         }
         InfobaseLease holder = decision.lease();
         throw new EdtToolException(EdtToolErrorCode.EDT_LEASE_HELD,
-                "lease_held: branch '" + branch + "'" //$NON-NLS-1$ //$NON-NLS-2$
-                        + (identity == null ? "" : " (infobase " + identity + ")") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                "lease_held: " //$NON-NLS-1$
+                        + (identity == null ? "branch '" + branch + "'" //$NON-NLS-1$ //$NON-NLS-2$
+                                : "infobase " + identity //$NON-NLS-1$
+                                        + (branch == null ? "" : " (branch '" + branch + "')")) //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                         + " is leased by " //$NON-NLS-1$
                         + (holder == null ? "another stack" : holder.describeHolder()) //$NON-NLS-1$
                         + ". Two EDT instances must not work the same file infobase. " //$NON-NLS-1$
                         + "Release the lease on the holding stack (manage_leases action=release), " //$NON-NLS-1$
                         + "or steal a stale one with manage_leases action=take force=true, then retry."); //$NON-NLS-1$
+    }
+
+    /**
+     * Early lease gate for {@code update_infobase}, meant to run BEFORE every other pre-flight —
+     * notably the webserver guard: on live pools a web server is ALWAYS running, so checking it
+     * first would mask the more specific {@code EDT_LEASE_HELD} from a non-holder behind
+     * {@code UPDATE_BLOCKED_BY_WEBSERVER} (consumer feedback 2026-07-03). Resolution failures are
+     * swallowed on purpose: the main update path surfaces its own canonical error for a missing
+     * project/infobase, and the in-path {@link #enforceUpdateLease} still guards the update itself.
+     */
+    public void checkUpdateLease(String projectName) {
+        if (leaseGuard == null || !leaseGuard.isEnabled()) {
+            return;
+        }
+        IProject project;
+        InfobaseReference infobase;
+        try {
+            project = gateway.resolveProject(projectName);
+            if (project == null) {
+                return;
+            }
+            infobase = resolveDefaultInfobase(projectName);
+        } catch (RuntimeException e) {
+            LOG.warn("update_infobase: early lease check skipped — could not resolve project/infobase: %s", //$NON-NLS-1$
+                    e.getMessage());
+            return;
+        }
+        enforceUpdateLease(project, infobase);
     }
 
     public void applyAccessSettings(RuntimeExecutionCommandBuilder builder, AccessSettings settings) {

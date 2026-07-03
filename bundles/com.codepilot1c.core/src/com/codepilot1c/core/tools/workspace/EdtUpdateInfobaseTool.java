@@ -193,6 +193,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                     result.addProperty("updated", false); //$NON-NLS-1$
                     return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
                 }
+                // Lease first: on live pools a web server is ALWAYS up, so the webserver guard
+                // would mask the more specific EDT_LEASE_HELD from a non-holder.
+                runtimeService.checkUpdateLease(projectName);
                 preflightWebserverGuard(allowWebserverRunning, ibPath);
                 killPhantomsIfRequested(result, killAgentMode, ibPath);
                 EdtRuntimeService.UpdateInfobaseStatus status =
@@ -251,6 +254,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             }
             result.add("details", details); //$NON-NLS-1$
             applyRuntimeControls(result, projectName, runtimeVersion, false);
+            // Lease first — see the synchronous path for why this precedes the webserver guard.
+            runtimeService.checkUpdateLease(projectName);
             preflightWebserverGuard(allowWebserverRunning, ibPath);
             killPhantomsIfRequested(result, killAgentMode, ibPath);
             EdtRuntimeService.UpdateInfobaseStatus status =

@@ -98,6 +98,17 @@ public class EdtRuntimeServiceUpdateLeaseTest {
         // no exception, no files — ordinary single-instance setups keep today's behavior
     }
 
+    @Test
+    public void earlyCheckSwallowsResolutionFailures() {
+        // checkUpdateLease runs BEFORE the tool's webserver pre-flight; when the project or its
+        // infobase cannot be resolved (headless test = no workspace at all) it must stay silent
+        // and leave error reporting to the main update path.
+        TestableRuntimeService service = serviceFor("stack-4", "refs/heads/task-C"); //$NON-NLS-1$ //$NON-NLS-2$
+        service.checkUpdateLease("Polygon"); //$NON-NLS-1$
+        // no exception — and nothing was claimed for an unresolvable project
+        assertTrue(new InfobaseLeaseGuard(dir, "stack-4", null).store().list().isEmpty()); //$NON-NLS-1$
+    }
+
     // ---- support -------------------------------------------------------------------------------
 
     private TestableRuntimeService serviceFor(String stackId, String contextValue) {
