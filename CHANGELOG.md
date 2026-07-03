@@ -23,6 +23,15 @@ commit hash in parentheses where useful.
 
 ### Infobase leases — consumer-review fixes (stack pool, phase 5)
 
+- **`EDT_LEASE_HELD` from connect_infobase/update_infobase carries a structured
+  `holder{}`.** (`5f709e5`, 2026-07-03) Previously the holder was only in the message
+  text there (manage_leases already returned it structured), so an orchestrator
+  building an escalation command had to parse prose for `holder.stack_id`.
+  `EdtToolException` now carries an optional flat details map; the two lease guards
+  fill it from the holder lease (`InfobaseLease.holderFields()`) and both tools render
+  the nested `holder{stack_id,workspace,host,pid}` + `acquired_at`/`branch`. Closes the
+  C1 gap for the enforcement tools (consumer feedback 2026-07-03, Q5).
+
 - **`connect_infobase` reconnect errors carry a machine-readable `retry_with{}`.**
   (`aed451b`, 2026-07-03) The migration re-entry dance — `PRIMARY_EXISTS` (add
   `force=true`) followed by `PATH_ALREADY_ASSOCIATED_AS` (reuse the existing
