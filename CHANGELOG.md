@@ -11,6 +11,18 @@ commit hash in parentheses where useful.
 
 ### Infobase leases — consumer-review fixes (stack pool, phase 5)
 
+- **`connect_infobase` reconnect errors carry a machine-readable `retry_with{}`.**
+  (`aed451b`, 2026-07-03) The migration re-entry dance — `PRIMARY_EXISTS` (add
+  `force=true`) followed by `PATH_ALREADY_ASSOCIATED_AS` (reuse the existing
+  binding name) — forced orchestrator scripts to parse hint prose. Both error
+  payloads now include `retry_with` (`{"force": true}` / `{"infobase_name":
+  "<existing>"}`): merge it into the original arguments and re-issue. A silent
+  `reconnect=true` mega-flag was considered and rejected — auto-adopting a
+  conflicting name would mask exactly the naming drift that produced duplicate
+  `ibases.v8i` rows on the polygon. Also: the `manage_leases take` refusal now
+  names the requested infobase, not only the branch, when the conflict is
+  identity-keyed. Consumer review 2026-07-03, items A1/C1.
+
 - **Leases are keyed by the canonical infobase identity; the branch is an
   attribute.** (`e85d77d`, 2026-07-03) The leased resource is the PHYSICAL
   infobase: phase branches of one task (which share a single per-task IB) now
