@@ -47,6 +47,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
     /** Hard cap on the platform update so a held infobase / EDT modal can never hang the call forever. */
     private static final long UPDATE_JOIN_TIMEOUT_MS = 300_000L;
 
+    /** EDT {@code InfobaseEqualityState.EQUAL} constant name — the skip_if_current trigger. */
+    private static final String EQUALITY_EQUAL = "EQUAL"; //$NON-NLS-1$
+
     private static final String SCHEMA = """
             {
               "type": "object",
@@ -78,6 +81,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 "allow_webserver_running": {
                   "type": "boolean",
                   "description": "По умолчанию update_infobase для ФАЙЛОВОЙ ИБ отказывается работать, если запущен веб-сервер (Apache wsap/httpd): эксклюзивный (схемный) апдейт завис бы намертво на удержанной ИБ. Поставьте true, чтобы всё равно попробовать — безопасно для динамического BSL-апдейта или если веб-сервер публикует ДРУГУЮ ИБ (default: false → fail-fast с подсказкой остановить Apache)."
+                },
+                "skip_if_current": {
+                  "type": "boolean",
+                  "description": "Skip the update when the infobase already equals the project configuration (EDT getEqualityState == EQUAL, an in-memory state query — no configurator/DESIGNER spawned, no lease taken). Default: false. If the state cannot be determined the tool falls back to a normal update."
                 }
               },
               "required": ["project_name"]
@@ -132,6 +139,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         boolean killAgentMode = asBoolean(parameters == null ? null : parameters.get("kill_agent_mode"), false) //$NON-NLS-1$
                 || asBoolean(parameters == null ? null : parameters.get("auto_kill_phantoms"), false); //$NON-NLS-1$
         boolean allowWebserverRunning = asBoolean(parameters == null ? null : parameters.get("allow_webserver_running"), false); //$NON-NLS-1$
+        boolean skipIfCurrent = asBoolean(parameters == null ? null : parameters.get("skip_if_current"), false); //$NON-NLS-1$
         String runtimeVersionRaw = asString(parameters == null ? null : parameters.get("runtime_version")); //$NON-NLS-1$
         String runtimeVersion = runtimeVersionRaw == null || runtimeVersionRaw.isBlank() ? null : runtimeVersionRaw;
 
@@ -145,7 +153,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 String jobId = BackgroundJobRegistry.getInstance().startJob(
                         "edt_update_infobase", //$NON-NLS-1$
                         () -> runUpdateAndRenderResult(opId, projectName, keepConnected, workspaceRoot,
-                                runtimeVersion, killAgentMode, allowWebserverRunning));
+                                runtimeVersion, killAgentMode, allowWebserverRunning, skipIfCurrent));
                 LOG.info("[%s] edt_update_infobase scheduled async job=%s", opId, jobId); //$NON-NLS-1$
                 JsonObject accepted = basePayload(opId, "scheduled", projectName, false, workspaceRoot); //$NON-NLS-1$
                 accepted.addProperty("async", true); //$NON-NLS-1$
@@ -188,6 +196,17 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                             infobase.getConnectionString().asConnectionString()); //$NON-NLS-1$
                 }
                 result.add("details", details); //$NON-NLS-1$
+                // Opt-in equality pre-check: short-circuit a redundant update BEFORE any pin/
+                // lease/webserver side effect. getEqualityState is an in-memory EDT query.
+                String equalityState = null;
+                if (!dryRun && skipIfCurrent) {
+                    equalityState = runtimeService.readInfobaseEqualityState(projectName);
+                    if (EQUALITY_EQUAL.equals(equalityState)) {
+                        fillSkippedEqual(result);
+                        LOG.info("[%s] edt_update_infobase skip_if_current: EQUAL, update skipped", opId); //$NON-NLS-1$
+                        return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
+                    }
+                }
                 applyRuntimeControls(result, projectName, runtimeVersion, dryRun);
                 if (dryRun) {
                     result.addProperty("updated", false); //$NON-NLS-1$
@@ -201,6 +220,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 EdtRuntimeService.UpdateInfobaseStatus status =
                         runUpdateWithGuiProgress(projectName, keepConnected);
                 result.addProperty("updated", status.updated()); //$NON-NLS-1$
+                if (skipIfCurrent) {
+                    annotateEqualityProceeding(result, equalityState);
+                }
                 annotateWebserverConsistency(result, ibPath, status);
                 if (status.dynamicOnly()) {
                     // EDT could not acquire an exclusive lock (existing client/test sessions hold
@@ -240,7 +262,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
      * synchronous output.
      */
     private String runUpdateAndRenderResult(String opId, String projectName, boolean keepConnected,
-            File workspaceRoot, String runtimeVersion, boolean killAgentMode, boolean allowWebserverRunning) {
+            File workspaceRoot, String runtimeVersion, boolean killAgentMode, boolean allowWebserverRunning,
+            boolean skipIfCurrent) {
         LOG.info("[%s] START edt_update_infobase (async)", opId); //$NON-NLS-1$
         String ibPath = null;
         try {
@@ -253,6 +276,16 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                         infobase.getConnectionString().asConnectionString());
             }
             result.add("details", details); //$NON-NLS-1$
+            // Opt-in equality pre-check — mirrors the synchronous path.
+            String equalityState = null;
+            if (skipIfCurrent) {
+                equalityState = runtimeService.readInfobaseEqualityState(projectName);
+                if (EQUALITY_EQUAL.equals(equalityState)) {
+                    fillSkippedEqual(result);
+                    LOG.info("[%s] edt_update_infobase (async) skip_if_current: EQUAL, update skipped", opId); //$NON-NLS-1$
+                    return pretty(result);
+                }
+            }
             applyRuntimeControls(result, projectName, runtimeVersion, false);
             // Lease first — see the synchronous path for why this precedes the webserver guard.
             runtimeService.checkUpdateLease(projectName);
@@ -262,6 +295,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                     runUpdateWithGuiProgress(projectName, keepConnected);
             boolean updated = status.updated();
             result.addProperty("updated", updated); //$NON-NLS-1$
+            if (skipIfCurrent) {
+                annotateEqualityProceeding(result, equalityState);
+            }
             annotateWebserverConsistency(result, ibPath, status);
             if (status.dynamicOnly()) {
                 result.addProperty("dynamic_only", true); //$NON-NLS-1$
@@ -435,6 +471,31 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             throw failure;
         }
         return statusRef.get();
+    }
+
+    /**
+     * Rewrites {@code result} into an EQUAL-skip outcome: {@code status=skipped},
+     * {@code skipped=true}, {@code updated=false}, {@code equality_state=EQUAL}, plus a human
+     * message. Used by both the synchronous and async paths when {@code skip_if_current} matched.
+     */
+    private static void fillSkippedEqual(JsonObject result) {
+        result.addProperty("status", "skipped"); //$NON-NLS-1$ //$NON-NLS-2$
+        result.addProperty("skipped", true); //$NON-NLS-1$
+        result.addProperty("updated", false); //$NON-NLS-1$
+        result.addProperty("equality_state", EQUALITY_EQUAL); //$NON-NLS-1$
+        result.addProperty("message", //$NON-NLS-1$
+                "Infobase already equals the project configuration (getEqualityState=EQUAL); " //$NON-NLS-1$
+                        + "update skipped because skip_if_current=true. No configurator was spawned."); //$NON-NLS-1$
+    }
+
+    /**
+     * Annotates a proceeding (non-skip) update payload with the opt-in {@code skip_if_current}
+     * fields: {@code skipped=false} and the observed {@code equality_state} (the enum name, or JSON
+     * {@code null} when EDT could not determine it and the tool fell back to a normal update).
+     */
+    private static void annotateEqualityProceeding(JsonObject result, String equalityState) {
+        result.addProperty("skipped", false); //$NON-NLS-1$
+        result.addProperty("equality_state", equalityState); //$NON-NLS-1$
     }
 
     private static JsonObject basePayload(String opId, String status, String projectName, boolean dryRun,

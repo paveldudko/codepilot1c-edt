@@ -948,6 +948,54 @@ public class EdtRuntimeService {
     }
 
     /**
+     * Reads EDT's in-memory equality state between the project configuration and its target
+     * infobase, WITHOUT spawning a configurator/DESIGNER. Resolves the same project + infobase pair
+     * {@link #updateInfobaseWithStatus} uses and reflectively invokes
+     * {@code IInfobaseSynchronizationManager.getEqualityState(project, infobase)} — kept reflective
+     * to match how this class already binds the sync manager (no hard compile dependency on the
+     * {@code InfobaseEqualityState} enum).
+     *
+     * <p>Backs the {@code edt_update_infobase} {@code skip_if_current} pre-check. It is best-effort:
+     * it never throws. Returns the enum constant name ({@code "EQUAL"}, {@code "NOT_EQUAL"},
+     * {@code "LOADING"}), or {@code null} when the state cannot be determined — the project or
+     * infobase does not resolve, the method is absent on this EDT version, or the call throws. A
+     * {@code null} result must make the caller fall back to a normal update, never fail it.</p>
+     */
+    public String readInfobaseEqualityState(String projectName) {
+        try {
+            IProject project = gateway.resolveProject(projectName);
+            if (project == null) {
+                return null;
+            }
+            InfobaseReference infobase = resolveDefaultInfobase(projectName);
+            if (infobase == null) {
+                return null;
+            }
+            Object manager = gateway.getInfobaseSynchronizationManager();
+            Method method = findMethod(manager.getClass(), "getEqualityState", 2); //$NON-NLS-1$
+            if (method == null) {
+                LOG.warn("IInfobaseSynchronizationManager.getEqualityState(project, infobase) not found on %s;" //$NON-NLS-1$
+                        + " skipping equality pre-check for project %s", manager.getClass().getName(), projectName); //$NON-NLS-1$
+                return null;
+            }
+            Object state = method.invoke(manager, project, infobase);
+            if (state == null) {
+                return null;
+            }
+            return state instanceof Enum<?> enumState ? enumState.name() : String.valueOf(state);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            LOG.warn("getEqualityState threw for project %s: %s — falling back to a normal update", //$NON-NLS-1$
+                    projectName, cause.getMessage());
+            return null;
+        } catch (Exception | NoSuchMethodError e) {
+            LOG.warn("Failed to read infobase equality state for project %s: %s — falling back to a normal update", //$NON-NLS-1$
+                    projectName, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Pool-exclusivity gate before the configurator writes into the infobase (multi-EDT stack
      * pools): refuses the update when another stack holds the lease for the project's current
      * branch or for this physical infobase, and auto-claims a free lease (working the task claims

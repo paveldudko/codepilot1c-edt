@@ -9,6 +9,22 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### update_infobase — opt-in skip when already current
+
+- **`skip_if_current` skips the update when the infobase already equals the
+  project configuration.** New optional boolean param (default `false`, so the
+  default path is byte-for-byte unchanged). When set, the tool reads EDT's
+  in-memory `IInfobaseSynchronizationManager.getEqualityState(project, infobase)`
+  BEFORE any pin/lease/webserver side effect; on `EQUAL` it returns
+  `{"status":"skipped","skipped":true,"updated":false,"equality_state":"EQUAL"}`
+  with a human message and spawns no configurator. Otherwise the normal update
+  runs and the success payload carries `skipped:false` plus the observed
+  `equality_state` (`NOT_EQUAL`/`LOADING`, or JSON `null` when EDT could not
+  determine it). The equality read is best-effort and reflective (matching how
+  the service already binds the sync manager); if `getEqualityState` is absent or
+  throws, it logs a warning and falls back to a normal update — the pre-check can
+  never fail the call.
+
 ### MCP host — multi-endpoint profiles
 
 - **`CODEPILOT1C_PORT`: launch-time port override for the forced profile.**
