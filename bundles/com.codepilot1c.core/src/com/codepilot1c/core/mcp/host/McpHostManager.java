@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Set;
 
 import com.codepilot1c.core.logging.VibeLogger;
+import com.codepilot1c.core.tools.surface.ToolGroupVisibility;
 
 /**
  * Singleton manager for MCP host lifecycle. One EDT instance can bring up several
@@ -20,6 +21,14 @@ public class McpHostManager {
 
     private final List<IMcpHostServer> servers = new ArrayList<>();
 
+    /**
+     * Content signature of the config the running servers were last (re)started
+     * from. A watcher compares this against {@link #signatureOf(McpHostConfig)} of
+     * the on-disk shared profiles to tell a real external/cross-instance edit apart
+     * from this instance's own save (which restarts and so keeps the two in sync).
+     */
+    private volatile String lastStartedSignature = ""; //$NON-NLS-1$
+
     public static synchronized McpHostManager getInstance() {
         if (instance == null) {
             instance = new McpHostManager();
@@ -29,6 +38,9 @@ public class McpHostManager {
 
     public synchronized void startIfEnabled() {
         McpHostConfig cfg = McpHostConfigStore.getInstance().load();
+        // Record the config we are about to bring up (even when disabled, so a later
+        // "was disabled, now enabled" file edit is detected as drift).
+        lastStartedSignature = signatureOf(cfg);
         if (!cfg.isEnabled()) {
             LOG.info("MCP host is disabled by preference"); //$NON-NLS-1$
             return;
@@ -162,5 +174,53 @@ public class McpHostManager {
     /** First running endpoint (or {@code null}) — back-compat for single-endpoint callers. */
     public synchronized IMcpHostServer getServer() {
         return servers.isEmpty() ? null : servers.get(0);
+    }
+
+    /**
+     * Signature of the config the running servers were last started from. A
+     * profiles-file watcher compares this with {@link #signatureOf(McpHostConfig)}
+     * of a fresh {@code load()} to decide whether the shared file drifted from what
+     * is actually live (and thus whether to offer a reload).
+     */
+    public String getLastStartedSignature() {
+        return lastStartedSignature;
+    }
+
+    /**
+     * Stable, content-based signature of a host config's profile set, plus the
+     * host enabled flag, selected-profile override, and the env tool-surface
+     * override state — everything that changes the served tool surface. Two configs
+     * with the same signature bring up the same endpoints with the same tools.
+     */
+    public static String signatureOf(McpHostConfig cfg) {
+        if (cfg == null) {
+            return ""; //$NON-NLS-1$
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append(cfg.isEnabled()).append('|');
+        sb.append(ToolGroupVisibility.isEnvironmentConfigured()).append('|');
+        sb.append(nz(cfg.getSelectedProfileName())).append('\n');
+        List<ProfileEndpoint> profiles = cfg.getProfiles();
+        if (profiles != null) {
+            for (ProfileEndpoint p : profiles) {
+                if (p == null) {
+                    continue;
+                }
+                sb.append(nz(p.getName())).append('\u0001')
+                  .append(p.isEnabled()).append('\u0001')
+                  .append(p.getPort()).append('\u0001')
+                  .append(nz(p.getBearerToken())).append('\u0001')
+                  .append(nz(p.getEnableGroups())).append('\u0001')
+                  .append(nz(p.getEnableTools())).append('\u0001')
+                  .append(nz(p.getDisableGroups())).append('\u0001')
+                  .append(nz(p.getDisableTools())).append('\u0001')
+                  .append(nz(p.getExposedToolsFilter())).append('\u0002');
+            }
+        }
+        return sb.toString();
+    }
+
+    private static String nz(String s) {
+        return s == null ? "" : s; //$NON-NLS-1$
     }
 }

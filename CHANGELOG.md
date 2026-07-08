@@ -154,6 +154,20 @@ commit hash in parentheses where useful.
 
 ### MCP host — multi-endpoint profiles
 
+- **Live reload of the shared profiles file + a server-only restart.** (2026-06-29)
+  A running server captures its profile snapshot at start and never re-read the
+  shared file, so a direct edit of `~/.codepilot1c/mcp-profiles.json` — or an edit
+  made in another EDT instance (the file is shared) — only took effect on the next
+  full EDT restart, while the preference page preview already showed the new (lower)
+  tool count. Two fixes: (1) a background watcher (`McpProfilesChangeMonitor`,
+  owned by `VibeUiPlugin`) polls the file and, when it drifts from the live surface,
+  prompts to reread + restart the MCP server(s); drift is judged by
+  `McpHostManager.signatureOf` vs the last-started signature, so this instance's own
+  saves don't nag. (2) A **"Перезапустить MCP-сервер"** action — a button on the
+  endpoints preference page and a `1C Copilot ▸ Перезапустить MCP-сервер` command
+  (`RestartMcpHandler`) — restarts only the embedded MCP server(s) from saved
+  settings, no EDT restart. Backs the "needs EDT restart after a settings change"
+  feedback.
 - **Profiles are now shared across all plugin instances; only the port is
   per-instance.** (`e58ca92`, 2026-06-29) The profile set — name, tool set, bearer
   token, enabled flag — lives in a per-user file `~/.codepilot1c/mcp-profiles.json`

@@ -361,6 +361,8 @@ public class Messages extends NLS {
     public static String McpHostPreferencePage_RegenerateToken;
     public static String McpHostPreferencePage_CopyConnection;
     public static String McpHostPreferencePage_CheckStatus;
+    public static String McpHostPreferencePage_RestartServer;
+    public static String McpHostPreferencePage_RestartServerTooltip;
     public static String McpHostPreferencePage_StatusUnknown;
     public static String McpHostPreferencePage_StatusDisabled;
     public static String McpHostPreferencePage_StatusUp;

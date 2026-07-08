@@ -206,7 +206,29 @@ public class McpHostPreferencePage extends PreferencePage implements IWorkbenchP
         regenButton = rowButton(buttons, Messages.McpHostPreferencePage_RegenerateToken, e -> regenerateSelected());
         copyButton = rowButton(buttons, Messages.McpHostPreferencePage_CopyConnection, e -> copyConnection());
         checkStatusButton = rowButton(buttons, Messages.McpHostPreferencePage_CheckStatus, e -> checkStatus());
+        Button restartButton = rowButton(buttons, Messages.McpHostPreferencePage_RestartServer, e -> restartServer());
+        restartButton.setToolTipText(Messages.McpHostPreferencePage_RestartServerTooltip);
         addButton.setEnabled(true);
+    }
+
+    /**
+     * Restart the running MCP server(s) from the saved settings — re-reads the
+     * shared profiles file and rebinds every enabled endpoint, without restarting
+     * EDT. Useful to apply an out-of-band edit (or an edit from another instance)
+     * to the live surface. Operates on persisted state, not unsaved page edits.
+     */
+    private void restartServer() {
+        McpHostManager.getInstance().restart();
+        TableItem[] items = table.getItems();
+        for (int i = 0; i < items.length && i < profiles.size(); i++) {
+            ProfileEndpoint p = profiles.get(i);
+            String status = !p.isEnabled()
+                    ? Messages.McpHostPreferencePage_StatusDisabled
+                    : checkHealth(p.getPort())
+                            ? Messages.McpHostPreferencePage_StatusUp
+                            : Messages.McpHostPreferencePage_StatusDown;
+            items[i].setText(4, status);
+        }
     }
 
     private void createInstallHints(Composite parent) {

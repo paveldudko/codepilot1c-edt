@@ -19,6 +19,7 @@ import org.osgi.framework.ServiceRegistration;
 
 import com.codepilot1c.core.tools.ToolRegistry;
 import com.codepilot1c.core.remote.IRemoteWorkbenchBridge;
+import com.codepilot1c.ui.mcp.McpProfilesChangeMonitor;
 import com.codepilot1c.ui.theme.ThemeManager;
 import com.codepilot1c.ui.tools.GetDiagnosticsDetailsTool;
 import com.codepilot1c.ui.tools.GetDiagnosticsTool;
@@ -34,6 +35,7 @@ public class VibeUiPlugin extends AbstractUIPlugin {
 
     private static VibeUiPlugin plugin;
     private ServiceRegistration<IRemoteWorkbenchBridge> remoteWorkbenchBridgeRegistration;
+    private McpProfilesChangeMonitor mcpProfilesMonitor;
 
     @Override
     public void start(BundleContext context) throws Exception {
@@ -80,6 +82,12 @@ public class VibeUiPlugin extends AbstractUIPlugin {
                         log("UI tools registered"); //$NON-NLS-1$
 
                         registerRemoteWorkbenchBridge();
+
+                        // Watch the shared MCP profiles file for out-of-band edits
+                        // (direct JSON edit / another EDT instance) and offer reload.
+                        mcpProfilesMonitor = new McpProfilesChangeMonitor();
+                        mcpProfilesMonitor.start();
+                        log("MCP profiles change monitor started"); //$NON-NLS-1$
                     }
                 } catch (Exception e) {
                     log(e);
@@ -91,6 +99,15 @@ public class VibeUiPlugin extends AbstractUIPlugin {
     @Override
     public void stop(BundleContext context) throws Exception {
         log("1C Copilot UI plugin stopping"); //$NON-NLS-1$
+
+        if (mcpProfilesMonitor != null) {
+            try {
+                mcpProfilesMonitor.stop();
+            } catch (Exception e) {
+                log(e);
+            }
+            mcpProfilesMonitor = null;
+        }
 
         // Dispose theme manager resources
         try {
