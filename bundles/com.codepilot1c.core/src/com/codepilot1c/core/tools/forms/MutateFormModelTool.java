@@ -78,7 +78,7 @@ public class MutateFormModelTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Вносит точечные изменения в модель уже существующей управляемой формы через EDT BM API."; //$NON-NLS-1$
+        return "Applies targeted changes to the model of an existing managed form via the EDT BM API."; //$NON-NLS-1$
     }
 
     @Override

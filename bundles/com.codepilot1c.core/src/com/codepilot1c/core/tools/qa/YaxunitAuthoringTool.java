@@ -168,7 +168,7 @@ public class YaxunitAuthoringTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Создает или обновляет YAxUnit тесты в общем модуле и синхронизирует регистрацию ИсполняемыеСценарии. Используй для unit or integration-style тестов на встроенном языке. Для BDD feature-пайплайна Vanessa prefer qa_plan_scenario, qa_generate, qa_validate_feature, qa_run."; //$NON-NLS-1$
+        return "Creates or updates YAxUnit tests in a common module and syncs the ИсполняемыеСценарии registration. Use for unit or integration-style tests in the embedded language. For the Vanessa BDD feature pipeline prefer qa_plan_scenario, qa_generate, qa_validate_feature, qa_run."; //$NON-NLS-1$
     }
 
     @Override

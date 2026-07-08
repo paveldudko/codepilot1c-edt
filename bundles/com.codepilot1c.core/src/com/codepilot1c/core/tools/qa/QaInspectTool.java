@@ -75,7 +75,7 @@ public class QaInspectTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Читает состояние QA без изменений файлов: объясняет qa-config, проверяет окружение и ищет доступные шаги Vanessa Automation."; //$NON-NLS-1$
+        return "Reads QA state without changing files: explains the qa-config, checks the environment, and searches available Vanessa Automation steps."; //$NON-NLS-1$
     }
 
     @Override

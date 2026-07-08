@@ -93,7 +93,7 @@ public class ImportProjectFromInfobaseTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Создает новый EDT project из связанной инфобазы: поднимает standalone server, выгружает конфигурацию и выполняет import. Используй, когда источник истины сейчас в базе, а не в локальном проекте или git-репозитории."; //$NON-NLS-1$
+        return "Creates a new EDT project from a linked infobase: starts a standalone server, dumps the configuration, and imports it. Use when the source of truth is currently the infobase rather than a local project or git repository."; //$NON-NLS-1$
     }
 
     @Override

@@ -91,7 +91,7 @@ public class DiscoverToolsTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Показывает скрытые domain tools по категории, когда текущей поверхности недостаточно. Сам работу не выполняет, только раскрывает инструменты."; //$NON-NLS-1$
+        return "Reveals hidden domain tools by category when the current surface is not enough. Does no work itself; it only exposes tools."; //$NON-NLS-1$
     }
 
     @Override

@@ -71,9 +71,9 @@ public class UpdateInfobaseStatusTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Опрашивает статус фоновой задачи по job_id: state, время запуска/завершения, результат или ошибка. " //$NON-NLS-1$
-                + "Generic poller — работает с любым job из async-режима (update_infobase, connect_infobase, qa_run). " //$NON-NLS-1$
-                + "wait_for_completion=true блокирует до терминала (без клиентских опросов)."; //$NON-NLS-1$
+        return "Polls the status of a background job by job_id: state, start/finish time, result, or error. " //$NON-NLS-1$
+                + "Generic poller — works with any job from async mode (update_infobase, connect_infobase, qa_run). " //$NON-NLS-1$
+                + "wait_for_completion=true blocks until terminal (no client-side polling)."; //$NON-NLS-1$
     }
 
     @Override

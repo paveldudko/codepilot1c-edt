@@ -64,7 +64,7 @@ public class QaValidateFeatureTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Проверяет feature file по structured QA registry и Vanessa steps catalog до qa_run. Используй как preflight после qa_generate(command=compile_feature) и перед выполнением тестов. Не запускает feature."; //$NON-NLS-1$
+        return "Validates a feature file against the structured QA registry and the Vanessa steps catalog before qa_run. Use as a preflight after qa_generate(command=compile_feature) and before running tests. Does not run the feature."; //$NON-NLS-1$
     }
 
     @Override

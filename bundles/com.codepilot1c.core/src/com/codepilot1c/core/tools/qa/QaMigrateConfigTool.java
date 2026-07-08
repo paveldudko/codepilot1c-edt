@@ -62,7 +62,7 @@ public class QaMigrateConfigTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Нормализует legacy qa-config.json, сохраняет совместимые поля и добавляет недостающие настройки Vanessa Automation."; //$NON-NLS-1$
+        return "Normalizes a legacy qa-config.json, keeps compatible fields, and adds missing Vanessa Automation settings."; //$NON-NLS-1$
     }
 
     @Override

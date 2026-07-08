@@ -39,7 +39,7 @@ public class ScanMetadataIndexTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Возвращает индекс верхнеуровневых объектов метаданных EDT по проекту с широкими фильтрами."; //$NON-NLS-1$
+        return "Returns an index of top-level EDT metadata objects for a project with broad filters."; //$NON-NLS-1$
     }
 
     @Override

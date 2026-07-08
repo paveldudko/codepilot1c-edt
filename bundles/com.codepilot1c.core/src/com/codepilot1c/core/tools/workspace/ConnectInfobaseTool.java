@@ -123,9 +123,9 @@ public class ConnectInfobaseTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Подключает файловую или standalone-инфобазу к EDT проекту и, по желанию, делает её основной. " //$NON-NLS-1$
-                + "ВАЖНО: login/password — это admin-credentials для EDT (сохраняются EDT как credentials проекта); " //$NON-NLS-1$
-                + "test-credentials (например AutotestDataInput) передавайте отдельно в yaxunit_run, а не сюда."; //$NON-NLS-1$
+        return "Connects a file or standalone infobase to an EDT project and, optionally, makes it the default. " //$NON-NLS-1$
+                + "IMPORTANT: login/password are admin credentials for EDT (stored by EDT as project credentials); " //$NON-NLS-1$
+                + "pass test credentials (e.g. AutotestDataInput) separately to yaxunit_run, not here."; //$NON-NLS-1$
     }
 
     @Override

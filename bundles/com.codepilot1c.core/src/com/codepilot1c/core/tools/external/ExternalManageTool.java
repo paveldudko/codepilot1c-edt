@@ -118,7 +118,7 @@ public class ExternalManageTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Управляет внешними отчётами и обработками: показывает проекты и объекты, читает детали и создаёт новый внешний отчёт или обработку."; //$NON-NLS-1$
+        return "Manages external reports and data processors: lists projects and objects, reads details, and creates a new external report or data processor."; //$NON-NLS-1$
     }
 
     @Override

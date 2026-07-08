@@ -106,8 +106,8 @@ public class AddMetadataChildTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Создаёт дочерний объект метаданных под существующим владельцем через EDT BM API. " //$NON-NLS-1$
-                + "Поддерживает Attribute, Tabular_Section, Command, Form, Template, Dimension, Resource, Requisite, EnumValue."; //$NON-NLS-1$
+        return "Creates a child metadata object under an existing owner via the EDT BM API. " //$NON-NLS-1$
+                + "Supports Attribute, Tabular_Section, Command, Form, Template, Dimension, Resource, Requisite, EnumValue."; //$NON-NLS-1$
     }
 
     @Override

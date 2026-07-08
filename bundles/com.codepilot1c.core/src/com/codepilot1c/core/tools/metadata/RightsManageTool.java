@@ -75,7 +75,7 @@ public class RightsManageTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Изменяет права роли на объекты метаданных (матрица право×объект) через EDT BM model."; //$NON-NLS-1$
+        return "Changes a role's rights on metadata objects (a right×object matrix) via the EDT BM model."; //$NON-NLS-1$
     }
 
     @Override

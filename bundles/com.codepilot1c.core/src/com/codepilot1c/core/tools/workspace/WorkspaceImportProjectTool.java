@@ -58,7 +58,7 @@ public class WorkspaceImportProjectTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Импортирует уже существующий локальный Eclipse or EDT project в текущий workspace. Используй, когда проект уже лежит на диске. Не клонирует git и не создает проект из инфобазы; для этого есть git_clone_and_import_project и import_project_from_infobase."; //$NON-NLS-1$
+        return "Imports an existing local Eclipse or EDT project into the current workspace. Use when the project is already on disk. Does not clone git or create a project from an infobase; use git_clone_and_import_project and import_project_from_infobase for that."; //$NON-NLS-1$
     }
 
     @Override

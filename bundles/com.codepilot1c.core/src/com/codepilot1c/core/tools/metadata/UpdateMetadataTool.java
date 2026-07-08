@@ -65,7 +65,7 @@ public class UpdateMetadataTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Обновляет свойства уже существующего объекта метаданных EDT через BM API."; //$NON-NLS-1$
+        return "Updates the properties of an existing EDT metadata object via the BM API."; //$NON-NLS-1$
     }
 
     @Override

@@ -47,7 +47,7 @@ public class BslSymbolAtPositionTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Определяет семантический BSL-символ в указанной позиции: вид, имя и владелец."; //$NON-NLS-1$
+        return "Resolves the semantic BSL symbol at a given position: kind, name, and owner."; //$NON-NLS-1$
     }
 
     @Override

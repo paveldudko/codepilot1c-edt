@@ -156,8 +156,8 @@ public class YaxunitRunTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Запускает YAxUnit unit-тесты проекта EDT через тонкий клиент (RunUnitTests, без TestManager) " //$NON-NLS-1$
-                + "и возвращает структурированный jUnit-результат."; //$NON-NLS-1$
+        return "Runs a project's YAxUnit unit tests in EDT via the thin client (RunUnitTests, no TestManager) " //$NON-NLS-1$
+                + "and returns a structured jUnit result."; //$NON-NLS-1$
     }
 
     @Override

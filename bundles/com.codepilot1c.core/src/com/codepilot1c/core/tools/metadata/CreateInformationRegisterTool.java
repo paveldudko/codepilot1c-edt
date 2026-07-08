@@ -111,8 +111,8 @@ public class CreateInformationRegisterTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Создаёт РегистрСведений с измерениями и ресурсами за один вызов. " //$NON-NLS-1$
-                + "Заменяет: create_metadata + N×add_metadata_child + N×update_metadata."; //$NON-NLS-1$
+        return "Creates an InformationRegister with dimensions and resources in one call. " //$NON-NLS-1$
+                + "Replaces: create_metadata + N×add_metadata_child + N×update_metadata."; //$NON-NLS-1$
     }
 
     @Override

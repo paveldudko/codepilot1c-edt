@@ -59,7 +59,7 @@ public class EdtValidateRequestTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Проверяет запрос на изменение метаданных и выдаёт одноразовый validation_token. Обязателен перед metadata/forms/DCS/extension/external мутациями. Не используй для read-only tools."; //$NON-NLS-1$
+        return "Validates a metadata-change request and issues a one-time validation_token. Required before metadata/forms/DCS/extension/external mutations. Not for read-only tools."; //$NON-NLS-1$
     }
 
     @Override

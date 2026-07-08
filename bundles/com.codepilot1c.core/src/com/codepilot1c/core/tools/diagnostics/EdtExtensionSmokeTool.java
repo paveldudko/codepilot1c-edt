@@ -76,7 +76,7 @@ public class EdtExtensionSmokeTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Прогоняет end-to-end smoke для EDT extension runtime: create, list, adopt, set_property_state и cleanup. Используй для проверки работоспособности extension API или после изменений в extension tooling. Не используй для обычной разработки расширения; для нее есть extension_manage."; //$NON-NLS-1$
+        return "Runs an end-to-end smoke for the EDT extension runtime: create, list, adopt, set_property_state, and cleanup. Use to verify the extension API works or after changes to the extension tooling. Not for normal extension development; use extension_manage for that."; //$NON-NLS-1$
     }
 
     @Override

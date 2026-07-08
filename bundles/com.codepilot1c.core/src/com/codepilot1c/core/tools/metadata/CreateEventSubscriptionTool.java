@@ -85,8 +85,8 @@ public class CreateEventSubscriptionTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Создаёт ПодпискуНаСобытие с источниками и обработчиком за один вызов через EDT BM API. " //$NON-NLS-1$
-                + "Заменяет ручное редактирование .mdo файла."; //$NON-NLS-1$
+        return "Creates an EventSubscription with sources and a handler in one call via the EDT BM API. " //$NON-NLS-1$
+                + "Replaces hand-editing the .mdo file."; //$NON-NLS-1$
     }
 
     @Override

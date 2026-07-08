@@ -120,7 +120,7 @@ public class QaPlanScenarioTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Строит structured QA scenario plan из цели и контекста без ручного написания Gherkin. Используй, когда нужно сначала спланировать шаги, а потом передать результат в qa_generate(command=compile_feature). Не запускает тесты."; //$NON-NLS-1$
+        return "Builds a structured QA scenario plan from a goal and context without hand-writing Gherkin. Use when you want to plan steps first, then pass the result to qa_generate(command=compile_feature). Does not run tests."; //$NON-NLS-1$
     }
 
     @Override

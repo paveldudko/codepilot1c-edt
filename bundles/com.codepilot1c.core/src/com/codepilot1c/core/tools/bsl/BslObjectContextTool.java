@@ -74,7 +74,7 @@ public class BslObjectContextTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Aggregates object-level context (methods, attributes, tabular sections, forms, callers) for a single 1C metadata object in one call. Каждый include-флаг управляет ценой запроса."; //$NON-NLS-1$
+        return "Aggregates object-level context (methods, attributes, tabular sections, forms, callers) for a single 1C metadata object in one call. Each include flag controls the request cost."; //$NON-NLS-1$
     }
 
     @Override

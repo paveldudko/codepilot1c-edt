@@ -56,7 +56,7 @@ public class QaExplainConfigTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Объясняет контракт qa-config.json, effective значения и источники путей Vanessa Automation без запуска тестов."; //$NON-NLS-1$
+        return "Explains the qa-config.json contract, effective values, and the sources of Vanessa Automation paths without running tests."; //$NON-NLS-1$
     }
 
     @Override

@@ -78,7 +78,7 @@ public class InspectFormLayoutTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Читает структуру уже существующей управляемой формы через EDT BM API: дерево элементов, dataPath, команды и свойства. Используй перед mutate_form_model или apply_form_recipe, когда нужно понять текущий layout. Не создает новую форму; для этого есть create_form."; //$NON-NLS-1$
+        return "Reads the structure of an existing managed form via the EDT BM API: item tree, dataPath, commands, and properties. Use before mutate_form_model or apply_form_recipe when you need to understand the current layout. Does not create a form; use create_form for that."; //$NON-NLS-1$
     }
 
     @Override

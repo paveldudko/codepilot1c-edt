@@ -68,7 +68,7 @@ public class WriteTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Перезаписывает содержимое существующего файла целиком. Используй, когда нужен осознанный full overwrite без patch-логики. Предпочитай edit_file для точечных правок и не используй этот tool как основной путь изменения EDT metadata или .mdo файлов."; //$NON-NLS-1$
+        return "Overwrites an existing file entirely. Use for a deliberate full overwrite without patch logic. Prefer edit_file for targeted changes, and do not use this as the primary way to change EDT metadata or .mdo files."; //$NON-NLS-1$
     }
 
     @Override

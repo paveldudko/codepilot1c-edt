@@ -78,7 +78,7 @@ public class QaGenerateTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Генерирует QA-артефакты: создаёт или мигрирует qa-config и собирает feature-файл из структурированного сценарного плана."; //$NON-NLS-1$
+        return "Generates QA artifacts: creates or migrates the qa-config and assembles a feature file from a structured scenario plan."; //$NON-NLS-1$
     }
 
     @Override

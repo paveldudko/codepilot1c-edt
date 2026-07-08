@@ -125,7 +125,7 @@ public class ApplyFormRecipeTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Применяет декларативный recipe к управляемой форме: создание, поиск, атрибуты и layout."; //$NON-NLS-1$
+        return "Applies a declarative recipe to a managed form: creation, lookups, attributes, and layout."; //$NON-NLS-1$
     }
 
     @Override

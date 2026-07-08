@@ -68,7 +68,7 @@ public class DeleteMetadataTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Удаляет существующий metadata object или child element через EDT BM API после edt_validate_request. Используй только когда действительно нужен delete, а не update_metadata. После удаления обязательно проверь diagnostics и impact на ссылки и формы."; //$NON-NLS-1$
+        return "Deletes an existing metadata object or child element via the EDT BM API after edt_validate_request. Use only when a delete is truly needed rather than update_metadata. After deleting, check diagnostics and the impact on references and forms."; //$NON-NLS-1$
     }
 
     @Override

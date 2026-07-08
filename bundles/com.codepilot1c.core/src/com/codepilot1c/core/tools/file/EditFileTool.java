@@ -129,7 +129,7 @@ public class EditFileTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Редактирует существующий файл workspace через replace, SEARCH/REPLACE или fuzzy-патч."; //$NON-NLS-1$
+        return "Edits an existing workspace file via replace, SEARCH/REPLACE, or a fuzzy patch."; //$NON-NLS-1$
     }
 
     @Override

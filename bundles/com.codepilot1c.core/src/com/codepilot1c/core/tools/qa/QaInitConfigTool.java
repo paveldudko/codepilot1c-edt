@@ -60,7 +60,7 @@ public class QaInitConfigTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Создаёт начальный qa-config.json для проекта и может сразу заполнить путь к VanessaAutomation.epf и базовому VA JSON."; //$NON-NLS-1$
+        return "Creates an initial qa-config.json for a project and can fill in the path to VanessaAutomation.epf and the base VA JSON."; //$NON-NLS-1$
     }
 
     @Override

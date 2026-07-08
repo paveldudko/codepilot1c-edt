@@ -57,7 +57,7 @@ public class ListFilesTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Показывает файлы и папки в каталоге workspace. Используй для обзора структуры проекта."; //$NON-NLS-1$
+        return "Lists files and folders in a workspace directory. Use to survey the project structure."; //$NON-NLS-1$
     }
 
     @Override

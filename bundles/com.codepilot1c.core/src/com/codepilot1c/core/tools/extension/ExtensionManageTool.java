@@ -134,7 +134,7 @@ public class ExtensionManageTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Управляет расширениями EDT: показывает проекты и объекты, создаёт расширение, заимствует объект из базы и меняет состояние свойства."; //$NON-NLS-1$
+        return "Manages EDT extensions: lists projects and objects, creates an extension, adopts an object from the base configuration, and changes a property state."; //$NON-NLS-1$
     }
 
     @Override

@@ -58,7 +58,7 @@ public class AnalyzeToolErrorTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Разбирает конкретный failed tool result, извлекает error_code и предлагает вероятные причины и recovery steps. Используй после неуспешного tool-вызова, когда нужен структурированный разбор ошибки. Не заменяет get_diagnostics, metadata_smoke или повторный запуск самого доменного инструмента."; //$NON-NLS-1$
+        return "Parses a specific failed tool result, extracts the error_code, and suggests likely causes and recovery steps. Use after a failed tool call when you need a structured error analysis. Does not replace get_diagnostics, metadata_smoke, or re-running the domain tool itself."; //$NON-NLS-1$
     }
 
     @Override

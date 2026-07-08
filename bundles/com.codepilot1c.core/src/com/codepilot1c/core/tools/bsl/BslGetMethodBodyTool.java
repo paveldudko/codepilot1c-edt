@@ -50,7 +50,7 @@ public class BslGetMethodBodyTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Возвращает тело конкретной процедуры или функции BSL с точным диапазоном строк."; //$NON-NLS-1$
+        return "Returns the body of a specific BSL procedure or function with its exact line range."; //$NON-NLS-1$
     }
 
     @Override

@@ -101,7 +101,7 @@ public class RenderTemplateTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Генерирует макет печатной формы из секционного JSON. Полная замена содержимого .mxl файла."; //$NON-NLS-1$
+        return "Generates a print-form template from sectioned JSON. Fully replaces the .mxl file content."; //$NON-NLS-1$
     }
 
     @Override

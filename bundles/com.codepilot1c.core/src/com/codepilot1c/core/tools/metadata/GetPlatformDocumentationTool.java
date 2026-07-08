@@ -50,7 +50,7 @@ public class GetPlatformDocumentationTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Возвращает встроенную EDT-справку по типам встроенного языка 1С: методы, свойства, параметры и типы возврата. Используй для platform types вроде Query или DocumentObject. Не используй для project metadata; для него есть edt_metadata_details."; //$NON-NLS-1$
+        return "Returns the built-in EDT help for 1C platform language types: methods, properties, parameters, and return types. Use for platform types such as Query or DocumentObject. Not for project metadata; use edt_metadata_details for that."; //$NON-NLS-1$
     }
 
     @Override

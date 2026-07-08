@@ -41,7 +41,7 @@ public class EdtContentAssistTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Возвращает EDT content assist для позиции в BSL. Используй, когда нужны варианты автодополнения."; //$NON-NLS-1$
+        return "Returns EDT content assist for a position in BSL. Use when you need autocompletion candidates."; //$NON-NLS-1$
     }
 
     @Override

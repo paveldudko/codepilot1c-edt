@@ -80,7 +80,7 @@ public class GlobTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Находит файлы по path-based glob паттерну. Используй, когда известна форма пути или расширение файла. Не ищет по содержимому: для текста используй grep, а для простой навигации по одной директории list_files."; //$NON-NLS-1$
+        return "Finds files by a path-based glob pattern. Use when you know the path shape or file extension. Does not search content: use grep for text, or list_files to browse a single directory."; //$NON-NLS-1$
     }
 
     @Override

@@ -71,10 +71,10 @@ public class EdtIndexStatusTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Быстрый неблокирующий пробник готовности индекса EDT (derived-data). " //$NON-NLS-1$
-                + "Отвечает мгновенно даже во время переиндексации после большого мерджа/branch-switch — " //$NON-NLS-1$
-                + "когда обычные tool-вызовы таймаутят, а /health всё равно возвращает ok. " //$NON-NLS-1$
-                + "is_indexing=true означает: не доверяй 0 диагностик (индекс ещё строится), подожди и повтори."; //$NON-NLS-1$
+        return "Fast non-blocking probe of EDT index (derived-data) readiness. " //$NON-NLS-1$
+                + "Responds instantly even during reindexing after a large merge or branch switch — " //$NON-NLS-1$
+                + "when ordinary tool calls time out but /health still returns ok. " //$NON-NLS-1$
+                + "is_indexing=true means: do not trust 0 diagnostics (the index is still building), wait and retry."; //$NON-NLS-1$
     }
 
     @Override

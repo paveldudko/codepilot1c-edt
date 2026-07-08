@@ -79,7 +79,7 @@ public class QaStatusTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Проверяет наличие конфигурации и окружения для запуска тестов Vanessa Automation."; //$NON-NLS-1$
+        return "Checks that the configuration and environment for running Vanessa Automation tests are present."; //$NON-NLS-1$
     }
 
     @Override

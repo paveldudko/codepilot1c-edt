@@ -70,7 +70,7 @@ public class EdtExternalSmokeTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Прогоняет end-to-end smoke для EDT external object runtime: create, list, get_details и cleanup. Используй для проверки external tooling или после изменений в runtime внешних отчетов и обработок. Не используй для обычного authoring; для него есть external_manage."; //$NON-NLS-1$
+        return "Runs an end-to-end smoke for the EDT external-object runtime: create, list, get_details, and cleanup. Use to verify the external tooling or after changes to the external report/processor runtime. Not for normal authoring; use external_manage for that."; //$NON-NLS-1$
     }
 
     @Override

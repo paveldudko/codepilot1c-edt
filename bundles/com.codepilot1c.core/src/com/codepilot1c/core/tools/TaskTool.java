@@ -113,7 +113,7 @@ public class TaskTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Запускает подагента для многошаговой задачи через профиль или auto routing. Для явного выбора домена предпочитай delegate_to_agent."; //$NON-NLS-1$
+        return "Runs a subagent for a multi-step task via a profile or auto routing. To pick a domain explicitly prefer delegate_to_agent."; //$NON-NLS-1$
     }
 
     @Override

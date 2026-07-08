@@ -46,7 +46,7 @@ public class EdtFieldTypeCandidatesTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Возвращает допустимые EDT-типы для поля существующего объекта метаданных. Используй перед add_metadata_child или update_metadata, когда тип неочевиден. Не изменяет модель и не заменяет саму мутацию."; //$NON-NLS-1$
+        return "Returns valid EDT types for a field of an existing metadata object. Use before add_metadata_child or update_metadata when the type is not obvious. Does not change the model and does not replace the mutation itself."; //$NON-NLS-1$
     }
 
     @Override

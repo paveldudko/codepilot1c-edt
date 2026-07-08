@@ -75,7 +75,7 @@ public class ExtensionSetPropertyStateTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Устанавливает MdPropertyState для свойства адаптированного объекта расширения."; //$NON-NLS-1$
+        return "Sets the MdPropertyState for a property of an adopted extension object."; //$NON-NLS-1$
     }
 
     @Override

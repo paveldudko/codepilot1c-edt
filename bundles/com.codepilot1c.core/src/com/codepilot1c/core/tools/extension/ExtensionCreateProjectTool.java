@@ -83,7 +83,7 @@ public class ExtensionCreateProjectTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Создает проект расширения конфигурации EDT на основе основной конфигурации."; //$NON-NLS-1$
+        return "Creates an EDT configuration-extension project based on the base configuration."; //$NON-NLS-1$
     }
 
     @Override

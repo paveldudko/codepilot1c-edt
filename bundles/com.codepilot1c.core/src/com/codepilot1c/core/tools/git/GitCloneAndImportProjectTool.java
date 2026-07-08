@@ -72,7 +72,7 @@ public class GitCloneAndImportProjectTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Клонирует git-репозиторий и сразу импортирует лежащий в нем Eclipse or EDT project в workspace. Используй, когда исходная точка еще не находится локально. Если репозиторий уже клонирован, предпочитай workspace_import_project."; //$NON-NLS-1$
+        return "Clones a git repository and immediately imports the Eclipse or EDT project it contains into the workspace. Use when the source is not yet local. If the repository is already cloned, prefer workspace_import_project."; //$NON-NLS-1$
     }
 
     @Override

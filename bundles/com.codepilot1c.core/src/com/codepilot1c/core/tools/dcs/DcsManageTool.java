@@ -168,7 +168,7 @@ public class DcsManageTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Управляет схемой компоновки данных через один tool: читает состояние, создаёт основную схему и обновляет наборы данных, параметры и вычисляемые поля."; //$NON-NLS-1$
+        return "Manages a data composition schema through one tool: reads state, creates the main schema, and updates datasets, parameters, and calculated fields."; //$NON-NLS-1$
     }
 
     @Override

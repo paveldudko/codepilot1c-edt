@@ -35,7 +35,7 @@ public class EdtFindReferencesTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Находит семантические ссылки на объект метаданных EDT через модель проекта."; //$NON-NLS-1$
+        return "Finds semantic references to an EDT metadata object through the project model."; //$NON-NLS-1$
     }
 
     @Override

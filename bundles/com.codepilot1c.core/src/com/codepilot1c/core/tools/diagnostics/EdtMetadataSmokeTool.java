@@ -66,7 +66,7 @@ public class EdtMetadataSmokeTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Прогоняет smoke-сценарии create/add_child/duplicate/readiness для EDT metadata API."; //$NON-NLS-1$
+        return "Runs create/add_child/duplicate/readiness smoke scenarios for the EDT metadata API."; //$NON-NLS-1$
     }
 
     @Override

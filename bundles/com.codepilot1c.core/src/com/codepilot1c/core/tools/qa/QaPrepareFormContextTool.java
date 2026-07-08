@@ -108,7 +108,7 @@ public class QaPrepareFormContextTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Готовит form context для QA: при необходимости создает default form и возвращает ее inspected layout. Используй перед qa_plan_scenario или qa_generate, когда сценарий зависит от формы. Не заменяет обычные form design tools create_form, mutate_form_model, apply_form_recipe."; //$NON-NLS-1$
+        return "Prepares form context for QA: creates a default form if needed and returns its inspected layout. Use before qa_plan_scenario or qa_generate when the scenario depends on a form. Does not replace the normal form-design tools create_form, mutate_form_model, apply_form_recipe."; //$NON-NLS-1$
     }
 
     @Override

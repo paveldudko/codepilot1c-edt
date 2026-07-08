@@ -57,8 +57,8 @@ public class ConnectInfobaseStatusTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Опрашивает статус фонового подключения инфобазы к EDT (connect_infobase async=true): " //$NON-NLS-1$
-                + "state, время запуска/завершения, результат или ошибка."; //$NON-NLS-1$
+        return "Polls the status of a background infobase connection to EDT (connect_infobase async=true): " //$NON-NLS-1$
+                + "state, start/finish time, result, or error."; //$NON-NLS-1$
     }
 
     @Override

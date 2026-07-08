@@ -125,10 +125,10 @@ public class WebPublicationTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Управляет публикациями инфобаз на веб-сервере через EDT API (Apache, портативный включительно). " //$NON-NLS-1$
-                + "Перед первым publish зарегистрируйте сервер (register_server). " //$NON-NLS-1$
-                + "publish идемпотентен (re-point alias на другую ИБ = повторный publish); " //$NON-NLS-1$
-                + "restart=true обязателен, чтобы изменения conf вступили в силу."; //$NON-NLS-1$
+        return "Manages infobase publications on a web server via the EDT API (Apache, portable included). " //$NON-NLS-1$
+                + "Register the server (register_server) before the first publish. " //$NON-NLS-1$
+                + "publish is idempotent (re-pointing an alias to another infobase = re-publish); " //$NON-NLS-1$
+                + "restart=true is required for conf changes to take effect."; //$NON-NLS-1$
     }
 
     @Override

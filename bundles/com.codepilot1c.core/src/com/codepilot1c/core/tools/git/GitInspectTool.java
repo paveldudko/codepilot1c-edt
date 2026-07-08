@@ -68,7 +68,7 @@ public class GitInspectTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Показывает состояние git-репозитория через безопасные read-only операции. Для EDT проекта предпочитай project_name; repo_path используй только как явный override."; //$NON-NLS-1$
+        return "Shows git repository state via safe read-only operations. For an EDT project prefer project_name; use repo_path only as an explicit override."; //$NON-NLS-1$
     }
 
     @Override

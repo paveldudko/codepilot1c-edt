@@ -72,7 +72,7 @@ public class EnsureModuleArtifactTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Материализует файл модуля (*.bsl) для существующего объекта метаданных и возвращает путь для дальнейшего edit_file. Используй после edt_validate_request и перед текстовой правкой кода. Не создает сам metadata object и не заменяет edit_file."; //$NON-NLS-1$
+        return "Materializes the module file (*.bsl) for an existing metadata object and returns its path for a later edit_file. Use after edt_validate_request and before editing code as text. Does not create the metadata object itself and does not replace edit_file."; //$NON-NLS-1$
     }
 
     @Override

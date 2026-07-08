@@ -49,7 +49,7 @@ public class BslAnalyzeMethodTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Анализирует один BSL-метод: сложность, вызовы, неиспользуемые параметры и рискованные ветки."; //$NON-NLS-1$
+        return "Analyzes a single BSL method: complexity, calls, unused parameters, and risky branches."; //$NON-NLS-1$
     }
 
     @Override

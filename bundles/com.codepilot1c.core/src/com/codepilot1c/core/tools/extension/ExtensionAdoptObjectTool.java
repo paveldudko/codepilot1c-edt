@@ -70,7 +70,7 @@ public class ExtensionAdoptObjectTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Добавляет объект основной конфигурации в проект расширения EDT (adoptAndAttach)."; //$NON-NLS-1$
+        return "Adopts a base-configuration object into an EDT extension project (adoptAndAttach)."; //$NON-NLS-1$
     }
 
     @Override

@@ -90,7 +90,7 @@ public class GrepTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Ищет текст или regex по файлам workspace. Используй для строк, ошибок, обработчиков и литералов."; //$NON-NLS-1$
+        return "Searches workspace files by text or regex. Use to locate strings, errors, handlers, and literals."; //$NON-NLS-1$
     }
 
     @Override

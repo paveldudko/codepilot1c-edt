@@ -93,7 +93,7 @@ public class GitMutateTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Выполняет разрешённые git-изменения. Для существующего репозитория используй project_name или repo_path, либо текущий EDT-контекст; для init/create/clone обязательно указывай repo_path."; //$NON-NLS-1$
+        return "Performs allowed git changes. For an existing repository use project_name, repo_path, or the current EDT context; for init/create/clone you must pass repo_path."; //$NON-NLS-1$
     }
 
     @Override

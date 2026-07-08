@@ -120,9 +120,9 @@ public class EdtLaunchAppTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Запускает приложение EDT проекта через EDT runtime и RuntimeClient launch configuration. " //$NON-NLS-1$
-                + "Версия платформы: runtime_version > pin в .launch проекта > auto (НОВЕЙШАЯ установленная, " //$NON-NLS-1$
-                + "включая пре-релизы) — проверяйте runtime_used в dry_run."; //$NON-NLS-1$
+        return "Launches an EDT project's application via the EDT runtime and the RuntimeClient launch configuration. " //$NON-NLS-1$
+                + "Platform version: runtime_version > pin in the project .launch > auto (NEWEST installed, " //$NON-NLS-1$
+                + "including pre-releases) — check runtime_used in dry_run."; //$NON-NLS-1$
     }
 
     @Override

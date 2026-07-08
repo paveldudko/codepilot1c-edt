@@ -98,9 +98,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Обновляет инфобазу, связанную с EDT проектом, через EDT runtime. " //$NON-NLS-1$
-                + "Версия платформы: pin в EDT (runtime_version пинит persistent) > auto " //$NON-NLS-1$
-                + "(НОВЕЙШАЯ установленная, включая пре-релизы) — проверяйте runtime_used в dry_run."; //$NON-NLS-1$
+        return "Updates the infobase linked to an EDT project via the EDT runtime. " //$NON-NLS-1$
+                + "Platform version: EDT pin (runtime_version pins persistently) > auto " //$NON-NLS-1$
+                + "(NEWEST installed, including pre-releases) — check runtime_used in dry_run."; //$NON-NLS-1$
     }
 
     @Override

@@ -49,7 +49,7 @@ public class BslListMethodsTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Перечисляет процедуры и функции одного BSL-модуля с сигнатурами и диапазонами строк."; //$NON-NLS-1$
+        return "Lists the procedures and functions of a single BSL module with signatures and line ranges."; //$NON-NLS-1$
     }
 
     @Override

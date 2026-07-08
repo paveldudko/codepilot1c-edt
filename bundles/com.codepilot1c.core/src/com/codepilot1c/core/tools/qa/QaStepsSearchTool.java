@@ -71,7 +71,7 @@ public class QaStepsSearchTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Ищет подходящие шаги Vanessa Automation по каталогу стандартных шагов."; //$NON-NLS-1$
+        return "Searches the standard-steps catalog for matching Vanessa Automation steps."; //$NON-NLS-1$
     }
 
     @Override

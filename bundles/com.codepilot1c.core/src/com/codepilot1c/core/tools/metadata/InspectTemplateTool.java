@@ -60,7 +60,7 @@ public class InspectTemplateTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Читает содержимое макета: ячейки, параметры, именованные области. Только чтение."; //$NON-NLS-1$
+        return "Reads a template's content: cells, parameters, and named areas. Read-only."; //$NON-NLS-1$
     }
 
     @Override

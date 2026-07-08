@@ -51,7 +51,7 @@ public class BslScopeMembersTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Показывает методы, свойства и доступные элементы в текущей области видимости BSL."; //$NON-NLS-1$
+        return "Lists the methods, properties, and members available in the current BSL scope."; //$NON-NLS-1$
     }
 
     @Override

@@ -85,7 +85,7 @@ public class QaCompileFeatureTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Компилирует структурированный QA plan в канонический Vanessa feature и сохраняет его на диск."; //$NON-NLS-1$
+        return "Compiles a structured QA plan into a canonical Vanessa feature and saves it to disk."; //$NON-NLS-1$
     }
 
     @Override

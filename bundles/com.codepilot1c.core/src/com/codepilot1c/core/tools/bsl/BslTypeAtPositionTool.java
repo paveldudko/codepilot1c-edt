@@ -47,7 +47,7 @@ public class BslTypeAtPositionTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Определяет выведенный BSL-тип выражения в указанной позиции."; //$NON-NLS-1$
+        return "Resolves the inferred BSL type of the expression at a given position."; //$NON-NLS-1$
     }
 
     @Override

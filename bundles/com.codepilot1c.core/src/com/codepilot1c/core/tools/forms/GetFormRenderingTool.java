@@ -69,7 +69,7 @@ public class GetFormRenderingTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Возвращает PNG-рендер формы (schematic, AWT-based, headless) + items[] с bbox. Гарантия: без SWT и без EDT-designer'а. Используй highlight чтобы обвести интересующие элементы. return_png:false экономит токены если PNG не нужен."; //$NON-NLS-1$
+        return "Returns a PNG render of a form (schematic, AWT-based, headless) plus items[] with bounding boxes. Guaranteed: no SWT and no EDT designer. Use highlight to outline elements of interest. return_png:false saves tokens when the PNG is not needed."; //$NON-NLS-1$
     }
 
     @Override

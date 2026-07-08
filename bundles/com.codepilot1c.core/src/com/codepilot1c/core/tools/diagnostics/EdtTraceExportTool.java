@@ -72,7 +72,7 @@ public class EdtTraceExportTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Глубокая диагностика EDT export pipeline: forceExport, derived-data и запись в Configuration.mdo. Используй при проблемах асинхронного экспорта, когда metadata_smoke или get_diagnostics уже показали сбой, но причина неясна. Не заменяет обычную пост-проверку после мутаций."; //$NON-NLS-1$
+        return "Deep diagnostics of the EDT export pipeline: forceExport, derived-data, and writes to Configuration.mdo. Use for async-export problems when metadata_smoke or get_diagnostics already showed a failure but the cause is unclear. Does not replace the routine post-mutation check."; //$NON-NLS-1$
     }
 
     @Override

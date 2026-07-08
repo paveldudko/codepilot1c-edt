@@ -174,7 +174,7 @@ public class QaRunTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Запускает E2E тесты Vanessa Automation. Используй только после подготовки QA окружения и валидации feature. Для проверки конфигурации сначала вызывай qa_inspect, для генерации feature qa_generate, а для preflight конкретного feature qa_validate_feature."; //$NON-NLS-1$
+        return "Runs Vanessa Automation E2E tests. Use only after the QA environment is prepared and the feature is validated. To check configuration call qa_inspect first, to generate a feature use qa_generate, and to preflight a specific feature use qa_validate_feature."; //$NON-NLS-1$
     }
 
     @Override

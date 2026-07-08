@@ -128,7 +128,7 @@ public class CreateMetadataTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Создаёт новый верхнеуровневый объект метаданных 1С в EDT-проекте через BM API."; //$NON-NLS-1$
+        return "Creates a new top-level 1C metadata object in an EDT project via the BM API."; //$NON-NLS-1$
     }
 
     @Override

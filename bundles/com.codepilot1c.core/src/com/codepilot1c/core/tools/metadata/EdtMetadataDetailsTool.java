@@ -43,7 +43,7 @@ public class EdtMetadataDetailsTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Читает структурированные сведения об объекте метаданных EDT: свойства, детей, формы и модули."; //$NON-NLS-1$
+        return "Reads structured details of an EDT metadata object: properties, children, forms, and modules."; //$NON-NLS-1$
     }
 
     @Override

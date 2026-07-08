@@ -35,9 +35,9 @@ public class ValidateQueryTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Проверяет текст запроса 1С на синтаксические и семантические ошибки в контексте проекта: " //$NON-NLS-1$
-                + "разрешает имена таблиц и полей по метаданным конфигурации. Используй перед вставкой запроса в BSL " //$NON-NLS-1$
-                + "или в макет СКД (dcsMode=true для запросов системы компоновки данных)."; //$NON-NLS-1$
+        return "Validates a 1C query for syntax and semantic errors in the project context: " //$NON-NLS-1$
+                + "resolves table and field names against the configuration metadata. Use before inserting a query into BSL " //$NON-NLS-1$
+                + "or into a DCS template (dcsMode=true for data composition system queries)."; //$NON-NLS-1$
     }
 
     @Override

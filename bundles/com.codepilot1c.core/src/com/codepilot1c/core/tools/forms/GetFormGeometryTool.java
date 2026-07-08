@@ -65,7 +65,7 @@ public class GetFormGeometryTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Возвращает schematic bounding-box раскладку формы: items[].bbox [x,y,w,h] для каждого видимого элемента. Headless, без PNG. Подходит чтобы проверить пространственные отношения и обнаружить наложения."; //$NON-NLS-1$
+        return "Returns a schematic bounding-box layout of a form: items[].bbox [x,y,w,h] for each visible element. Headless, no PNG. Good for checking spatial relationships and detecting overlaps."; //$NON-NLS-1$
     }
 
     @Override

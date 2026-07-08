@@ -45,7 +45,7 @@ public class BslModuleContextTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Возвращает контекст BSL-модуля: владелец, вид модуля, прагмы и число методов."; //$NON-NLS-1$
+        return "Returns a BSL module's context: owner, module kind, pragmas, and method count."; //$NON-NLS-1$
     }
 
     @Override

@@ -90,7 +90,7 @@ public class CreateFormTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Создаёт новую управляемую форму для существующего объекта метаданных EDT."; //$NON-NLS-1$
+        return "Creates a new managed form for an existing EDT metadata object."; //$NON-NLS-1$
     }
 
     @Override

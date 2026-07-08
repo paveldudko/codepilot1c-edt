@@ -48,7 +48,7 @@ public class BslModuleExportsTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Перечисляет только экспортные процедуры и функции одного BSL-модуля."; //$NON-NLS-1$
+        return "Lists only the exported procedures and functions of a single BSL module."; //$NON-NLS-1$
     }
 
     @Override

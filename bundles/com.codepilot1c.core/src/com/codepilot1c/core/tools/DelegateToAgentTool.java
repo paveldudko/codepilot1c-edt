@@ -63,7 +63,7 @@ public final class DelegateToAgentTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Делегирует подзадачу профильному подагенту по явному домену или через auto routing. Используй для крупных или изолированных задач."; //$NON-NLS-1$
+        return "Delegates a subtask to a specialized subagent by explicit domain or via auto routing. Use for large or isolated tasks."; //$NON-NLS-1$
     }
 
     @Override

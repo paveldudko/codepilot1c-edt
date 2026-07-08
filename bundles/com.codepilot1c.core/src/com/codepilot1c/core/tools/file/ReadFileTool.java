@@ -68,7 +68,7 @@ public class ReadFileTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Читает текст существующего файла workspace, при необходимости по диапазону строк."; //$NON-NLS-1$
+        return "Reads the text of an existing workspace file, optionally by line range."; //$NON-NLS-1$
     }
 
     @Override
