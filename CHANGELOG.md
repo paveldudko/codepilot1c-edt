@@ -9,6 +9,21 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### get_workspace_state — on-demand stack-state snapshot
+
+- **New read-only MCP tool `get_workspace_state`.** (this commit) A thin, non-mutating
+  facade over `EdtWorkspaceStateService` that returns THIS EDT stack's live state in one
+  call — the same snapshot the periodic state-beacon writes to its shared file, but on
+  demand over the MCP port. Payload: `beacon_version`, `plugin_version`, `stack_id`,
+  `workspace`, `pid`/`host`/`updated_at`, `port`/`profile`, `endpoints`, `index`
+  readiness and (optionally) `bound_infobases`. One optional param
+  `include_bound_infobases` (default `true`; pass `false` for a faster identity+index-only
+  snapshot). Best-effort like the underlying service — it degrades to a partial snapshot
+  and never throws when EDT is cold. Carries the same `ToolMeta`
+  (`category=diagnostics`, `surfaceCategory=smoke_runtime_recovery`) as `edt_index_status`,
+  so it lands on the same tool profiles. For an external orchestrator's stack-pool
+  liveness/coordination checks without opening files or the workbench.
+
 ### state-beacon — periodic shared stack-state file
 
 - **Opt-in state beacon + a reusable `EdtWorkspaceStateService`.** (this commit) A
