@@ -92,6 +92,22 @@ commit hash in parentheses where useful.
   throws, it logs a warning and falls back to a normal update — the pre-check can
   never fail the call.
 
+### fix — expose skip_if_current via edt_diagnostics
+
+- **`skip_if_current` is now reachable from the MCP surface.** (this commit) F1's
+  opt-in equality short-circuit was added to `EdtUpdateInfobaseTool`, but that tool
+  is not a standalone MCP tool — it is dispatched only through the `edt_diagnostics`
+  composite (`command=update_infobase`). The dispatcher forwards the raw parameter
+  map to the delegate verbatim, but its own JSON schema did not declare
+  `skip_if_current`; MCP clients strip arguments not advertised on the called tool's
+  schema (the same root cause as the 2026-05-29 `launch_app` `dry_run` regression),
+  so the flag never reached the delegate and the whole feature was unreachable.
+  Declared `skip_if_current` (boolean) on the `edt_diagnostics` schema alongside the
+  other update-only pass-through params (`keep_connected`, `async`,
+  `kill_agent_mode`, `allow_webserver_running`). No forwarding code changed — the
+  delegate already reads it and returns the `skipped`/`equality_state` fields
+  verbatim. Guarded by an extended `EdtDiagnosticsToolSchemaTest`.
+
 ### MCP host — multi-endpoint profiles
 
 - **`CODEPILOT1C_PORT`: launch-time port override for the forced profile.**

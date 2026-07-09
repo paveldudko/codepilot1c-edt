@@ -106,6 +106,10 @@ public class EdtDiagnosticsTool extends AbstractTool {
                 "allow_webserver_running": {
                   "type": "boolean",
                   "description": "Только для update_infobase: по умолчанию апдейт файловой ИБ отказывается работать при запущенном веб-сервере (fail-fast вместо зависания на удержанной ИБ). true — попробовать всё равно (динамический BSL-апдейт / другая ИБ в публикации). Объявлен здесь для pass-through через диспетчер."
+                },
+                "skip_if_current": {
+                  "type": "boolean",
+                  "description": "Только для update_infobase: пропустить обновление, если ИБ уже равна конфигурации проекта (getEqualityState==EQUAL) — избегает лишней Designer-сессии/lease/webserver-guard. По умолчанию false. Объявлен здесь для pass-through через диспетчер."
                 }
               },
               "required": ["command"],
