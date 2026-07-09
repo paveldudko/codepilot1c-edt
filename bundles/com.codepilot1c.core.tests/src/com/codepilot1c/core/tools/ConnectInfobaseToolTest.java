@@ -567,10 +567,11 @@ public class ConnectInfobaseToolTest {
     }
 
     /**
-     * Regression for GH issue #31: when {@code storeSettings} throws an exception whose
-     * {@code getMessage()} returns {@code null} (historically an NPE from inside EDT), the
-     * service must wrap it with a message that includes the exception class name so
-     * operators no longer see the literal {@code ": null"} tail.
+     * Regression for GH issue #31 in the BF-13140 best-effort world: when EDT's credential flush
+     * throws an exception whose {@code getMessage()} is {@code null} (historically an NPE from inside
+     * EDT), the credential save must NOT throw — that would unwind the already-committed primary
+     * pointer (see {@link EdtInfobaseConnectService#finishBind}). It returns a not-persisted outcome
+     * whose warning still surfaces the exception class name (never a bare {@code ": null"} tail).
      */
     @Test
     public void storeAccessSettingsSurfacesClassNameWhenMessageNull() {
@@ -582,18 +583,81 @@ public class ConnectInfobaseToolTest {
 
         InfobaseReference reference = stubReferenceWithState(UUID.randomUUID(), "ib-name"); //$NON-NLS-1$
 
-        try {
-            service.invokeStoreAccessSettings(reference, "Admin", "secret"); //$NON-NLS-1$ //$NON-NLS-2$
-            fail("expected EdtToolException"); //$NON-NLS-1$
-        } catch (EdtToolException e) {
-            assertEquals(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE, e.getCode());
-            String message = e.getMessage();
-            assertNotNull(message);
-            assertFalse("message must not tail with ': null' when cause has null getMessage()", //$NON-NLS-1$
-                    message.endsWith(": null")); //$NON-NLS-1$
-            assertTrue("message must include the exception class name, was: " + message, //$NON-NLS-1$
-                    message.contains("NullPointerException")); //$NON-NLS-1$
-        }
+        EdtInfobaseConnectService.CredentialOutcome outcome =
+                service.invokeStoreAccessSettings(reference, "Admin", "secret"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertFalse("a failing credential flush must be reported, not thrown (would unwind the primary)", //$NON-NLS-1$
+                outcome.persisted());
+        assertEquals("a non-secure-storage failure keeps the generic service code", //$NON-NLS-1$
+                EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE, outcome.errorCode());
+        String warning = outcome.warning();
+        assertNotNull(warning);
+        assertFalse("warning must not tail with ': null' when cause has null getMessage()", //$NON-NLS-1$
+                warning.endsWith(": null")); //$NON-NLS-1$
+        assertTrue("warning must include the exception class name, was: " + warning, //$NON-NLS-1$
+                warning.contains("NullPointerException")); //$NON-NLS-1$
+    }
+
+    /**
+     * BF-13140: the multi-EDT-instance "secure storage modified by another program" flush failure must
+     * be classified as {@link EdtToolErrorCode#SECURE_STORAGE_CONFLICT} (distinct from the slow-handler
+     * / generic service failure) and carry the machine token in its warning.
+     */
+    @Test
+    public void storeAccessSettingsClassifiesSecureStorageConflict() {
+        StubInfobaseManager manager = new StubInfobaseManager(true);
+        ThrowingAccessManager accessManager = new ThrowingAccessManager(
+                new IllegalStateException(
+                        "The secure storage file has been modified by another program")); //$NON-NLS-1$
+        StubGateway gateway = new StubGateway(manager, accessManager);
+        TestableConnectService service = new TestableConnectService(gateway);
+
+        InfobaseReference reference = stubReferenceWithState(UUID.randomUUID(), "ib-name"); //$NON-NLS-1$
+
+        EdtInfobaseConnectService.CredentialOutcome outcome =
+                service.invokeStoreAccessSettings(reference, "Admin", "secret"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertFalse(outcome.persisted());
+        assertEquals("the multi-instance modal failure must be SECURE_STORAGE_CONFLICT, not generic", //$NON-NLS-1$
+                EdtToolErrorCode.SECURE_STORAGE_CONFLICT, outcome.errorCode());
+        assertTrue("warning must carry the machine token secure_storage_conflict, was: " //$NON-NLS-1$
+                + outcome.warning(), outcome.warning().contains("secure_storage_conflict")); //$NON-NLS-1$
+    }
+
+    /**
+     * BF-13140 ordering invariant: {@code finishBind} must commit the association/primary pointer
+     * (associate) BEFORE flushing credentials (storeAccessSettings). Previously the flush ran first,
+     * so a blocked "secure storage modified by another program" modal left the v8i entry + lease
+     * correct but the primary pointer stale.
+     */
+    @Test
+    public void finishBindCommitsPrimaryBeforeCredentials() {
+        OrderSpyService spy = new OrderSpyService();
+
+        EdtInfobaseConnectService.BindCommit commit = spy.invokeFinishBind();
+
+        assertEquals("REGRESSION: the primary pointer (associate) must be committed BEFORE the " //$NON-NLS-1$
+                + "credential flush, so a blocked/failed secure-storage flush can never leave a " //$NON-NLS-1$
+                + "stale primary.", //$NON-NLS-1$
+                List.of("associate", "storeAccessSettings"), spy.calls); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(commit.primary());
+        assertTrue(commit.credentials().persisted());
+    }
+
+    /**
+     * BF-13140: a credential save that THROWS must not unwind the just-committed primary — the binding
+     * stands, only credential persistence is degraded (reported, not fatal).
+     */
+    @Test
+    public void finishBindKeepsPrimaryWhenCredentialSaveThrows() {
+        OrderSpyService spy = new OrderSpyService();
+        spy.credentialThrow = new IllegalStateException("boom"); //$NON-NLS-1$
+
+        EdtInfobaseConnectService.BindCommit commit = spy.invokeFinishBind();
+
+        assertTrue("a thrown credential save must NOT unwind the committed primary", commit.primary()); //$NON-NLS-1$
+        assertFalse(commit.credentials().persisted());
+        assertEquals(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE, commit.credentials().errorCode());
     }
 
     /**
@@ -856,8 +920,9 @@ public class ConnectInfobaseToolTest {
             persistReference(reference, force);
         }
 
-        void invokeStoreAccessSettings(InfobaseReference reference, String login, String password) {
-            storeAccessSettings(reference, login, password);
+        EdtInfobaseConnectService.CredentialOutcome invokeStoreAccessSettings(
+                InfobaseReference reference, String login, String password) {
+            return storeAccessSettings(reference, login, password);
         }
 
         void invokeAdoptExistingAssociationName(org.eclipse.core.resources.IProject project,
@@ -869,6 +934,40 @@ public class ConnectInfobaseToolTest {
                 org.eclipse.core.resources.IProject project, ConnectRequest request,
                 InfobaseReference reference) {
             return evaluatePrimary(project, request, reference);
+        }
+    }
+
+    /**
+     * Spy that records the order of {@code associate} vs {@code storeAccessSettings} and lets each be
+     * stubbed, so the BF-13140 ordering + best-effort invariants can be asserted without a live EDT.
+     */
+    private static final class OrderSpyService extends EdtInfobaseConnectService {
+        final List<String> calls = new java.util.ArrayList<>();
+        RuntimeException credentialThrow;
+
+        OrderSpyService() {
+            super(new EdtRuntimeGateway());
+        }
+
+        @Override
+        protected boolean associate(org.eclipse.core.resources.IProject project,
+                InfobaseReference reference, boolean setPrimary) {
+            calls.add("associate"); //$NON-NLS-1$
+            return true;
+        }
+
+        @Override
+        protected CredentialOutcome storeAccessSettings(InfobaseReference reference, String login,
+                String password) {
+            calls.add("storeAccessSettings"); //$NON-NLS-1$
+            if (credentialThrow != null) {
+                throw credentialThrow;
+            }
+            return new CredentialOutcome(true, null, null);
+        }
+
+        BindCommit invokeFinishBind() {
+            return finishBind(null, null, true, "Admin", "secret"); //$NON-NLS-1$ //$NON-NLS-2$
         }
     }
 

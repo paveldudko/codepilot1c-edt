@@ -436,6 +436,19 @@ public class ConnectInfobaseTool extends AbstractTool {
             infobase.addProperty("port", result.serverPort().intValue()); //$NON-NLS-1$
         }
         json.add("infobase", infobase); //$NON-NLS-1$
+        // Credential persistence is decoupled from the primary commit (BF-13140): the bind can succeed
+        // (primary pointer committed) while EDT could not flush the credentials — surface it so callers
+        // don't assume creds landed. False means: binding is good, re-run connect_infobase (or clear the
+        // multi-instance secure-storage conflict / use a per-instance -eclipse.keyring) to persist creds.
+        json.addProperty("credentials_persisted", result.credentialsPersisted()); //$NON-NLS-1$
+        if (!result.credentialsPersisted()) {
+            if (result.credentialsErrorCode() != null) {
+                json.addProperty("credentials_error_code", result.credentialsErrorCode()); //$NON-NLS-1$
+            }
+            if (result.credentialsWarning() != null && !result.credentialsWarning().isBlank()) {
+                json.addProperty("credentials_warning", result.credentialsWarning()); //$NON-NLS-1$
+            }
+        }
         return json;
     }
 

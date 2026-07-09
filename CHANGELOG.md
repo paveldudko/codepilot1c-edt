@@ -9,6 +9,30 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-13140 — connect_infobase: decouple credential save from the primary commit
+
+- **A blocked/failed secure-storage flush can no longer leave a stale primary pointer.**
+  (this commit) In a multi-EDT-instance host (the stack model runs N EDT instances sharing
+  the per-user Eclipse secure storage), `connect_infobase(set_primary,force)` could trip
+  Eclipse's interactive *"secure storage has been modified by another program"* modal on the
+  UI thread while EDT flushed the infobase credentials. Because the credential flush ran
+  **before** the `associate()`+`setDefaultInfobase()` primary-pointer commit, a blocked modal
+  left the `ibases.v8i` entry and the pool lease correct but the project's **primary pointer
+  stale** — breaking headless bind (`Provision-Task` Step-Bind, `Move-TaskStack` rebind_dst)
+  which cannot dismiss a modal (live-observed on the SLC-1 stack lifecycle test). The connect
+  paths (`file`/`standalone`/`server`) now **commit the primary FIRST**, via a shared
+  `finishBind()`, then persist credentials **best-effort**: a failed/blocked flush is reported,
+  never thrown, so the bind's primary contract is durable regardless. `storeAccessSettings`
+  returns a `CredentialOutcome` and classifies the Equinox contention as the new
+  `SECURE_STORAGE_CONFLICT` error code (distinct from the slow-handler / generic case). The
+  success payload now carries `credentials_persisted` (+ `credentials_error_code` /
+  `credentials_warning` when false) so a caller can tell "bound, creds pending" apart from a
+  bare timeout. **Residual (not in this change):** a live modal that no one dismisses still
+  occupies the handler until EDT's flush unblocks — the source-level cure is a per-instance
+  keyring (`-eclipse.keyring <workspace>\.secure_keyring` on each `1cedt.exe` launch); an
+  optional async/bounded-flush follow-up is deferred pending live EDT validation. From the AM
+  feedback note `2026-07-09-connect-infobase-secure-storage-modal-blocks-headless-multiinstance.md`.
+
 ### BF-13140 — file-IB test-client cred default
 
 - **File-IB test runs default the test-client login to `Admin`/`1` instead of the cached

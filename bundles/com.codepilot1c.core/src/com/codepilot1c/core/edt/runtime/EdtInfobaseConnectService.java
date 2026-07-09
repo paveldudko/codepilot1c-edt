@@ -145,6 +145,29 @@ public class EdtInfobaseConnectService {
         public String serverRef() { return serverRef; }
     }
 
+    /**
+     * Outcome of the best-effort infobase-credential persistence, decoupled from the primary-pointer
+     * commit. In a multi-EDT-instance host EDT's credential flush hits the shared default secure
+     * storage and can fail or block on the "secure storage modified by another program" modal; the
+     * binding + primary pointer are committed regardless (see {@link #finishBind}). Feedback
+     * 2026-07-09 (BF-13140).
+     */
+    public record CredentialOutcome(boolean persisted, EdtToolErrorCode errorCode, String warning) {
+        // NB: no static persisted() factory — it would clash with the record's own persisted()
+        // accessor. Build the "ok" outcome via the canonical constructor: new CredentialOutcome(true, ...).
+        static CredentialOutcome ok() {
+            return new CredentialOutcome(true, null, null);
+        }
+
+        static CredentialOutcome failed(EdtToolErrorCode errorCode, String warning) {
+            return new CredentialOutcome(false, errorCode, warning);
+        }
+    }
+
+    /** Result of committing the association/primary pointer plus the best-effort credential save. */
+    public record BindCommit(boolean primary, CredentialOutcome credentials) {
+    }
+
     public static final class ConnectResult {
         private final ConnectionKind kind;
         private final String resolvedPath;
@@ -154,6 +177,9 @@ public class EdtInfobaseConnectService {
         private final boolean primary;
         private final String replacedPrevious;
         private final boolean idempotent;
+        private final boolean credentialsPersisted;
+        private final String credentialsErrorCode;
+        private final String credentialsWarning;
 
         public ConnectResult(ConnectionKind kind, String resolvedPath, String infobaseName, String login,
                 Integer serverPort, boolean primary) {
@@ -167,6 +193,13 @@ public class EdtInfobaseConnectService {
 
         public ConnectResult(ConnectionKind kind, String resolvedPath, String infobaseName, String login,
                 Integer serverPort, boolean primary, String replacedPrevious, boolean idempotent) {
+            this(kind, resolvedPath, infobaseName, login, serverPort, primary, replacedPrevious, idempotent,
+                    true, null, null);
+        }
+
+        public ConnectResult(ConnectionKind kind, String resolvedPath, String infobaseName, String login,
+                Integer serverPort, boolean primary, String replacedPrevious, boolean idempotent,
+                boolean credentialsPersisted, String credentialsErrorCode, String credentialsWarning) {
             this.kind = kind;
             this.resolvedPath = resolvedPath;
             this.infobaseName = infobaseName;
@@ -175,6 +208,9 @@ public class EdtInfobaseConnectService {
             this.primary = primary;
             this.replacedPrevious = replacedPrevious;
             this.idempotent = idempotent;
+            this.credentialsPersisted = credentialsPersisted;
+            this.credentialsErrorCode = credentialsErrorCode;
+            this.credentialsWarning = credentialsWarning;
         }
 
         public ConnectionKind kind() { return kind; }
@@ -186,6 +222,15 @@ public class EdtInfobaseConnectService {
         public String replacedPrevious() { return replacedPrevious; }
         /** True when the requested binding was already the project's primary (no change applied). */
         public boolean idempotent() { return idempotent; }
+        /**
+         * False when the binding + primary pointer committed but EDT could not persist the infobase
+         * credentials (e.g. a multi-instance secure-storage conflict). The bind still succeeded.
+         */
+        public boolean credentialsPersisted() { return credentialsPersisted; }
+        /** Machine-readable code when {@link #credentialsPersisted()} is false, else {@code null}. */
+        public String credentialsErrorCode() { return credentialsErrorCode; }
+        /** Human-readable detail when {@link #credentialsPersisted()} is false, else {@code null}. */
+        public String credentialsWarning() { return credentialsWarning; }
     }
 
     private final EdtRuntimeGateway gateway;
@@ -284,14 +329,18 @@ public class EdtInfobaseConnectService {
             infobaseName = reference.getName();
         }
         persistReference(reference, request.force());
-        storeAccessSettings(reference, request.login(), request.password());
-        boolean primary = associate(project, reference, request.setPrimary());
+        BindCommit commit = finishBind(project, reference, request.setPrimary(),
+                request.login(), request.password());
+        boolean primary = commit.primary();
 
-        LOG.info("connect_infobase(server) project=%s srvr=%s ref=%s primary=%s", //$NON-NLS-1$
-                request.projectName(), server, ref, Boolean.valueOf(primary));
+        LOG.info("connect_infobase(server) project=%s srvr=%s ref=%s primary=%s creds_persisted=%s", //$NON-NLS-1$
+                request.projectName(), server, ref, Boolean.valueOf(primary),
+                Boolean.valueOf(commit.credentials().persisted()));
 
         return new ConnectResult(ConnectionKind.SERVER, connectionString, infobaseName,
-                sanitizeLogin(request.login()), null, primary, replacedPrevious);
+                sanitizeLogin(request.login()), null, primary, replacedPrevious, false,
+                commit.credentials().persisted(), credentialErrorName(commit.credentials()),
+                commit.credentials().warning());
     }
 
     private IProject resolveProject(String projectName) {
@@ -344,14 +393,18 @@ public class EdtInfobaseConnectService {
             infobaseName = reference.getName();
         }
         persistReference(reference, request.force());
-        storeAccessSettings(reference, request.login(), request.password());
-        boolean primary = associate(project, reference, request.setPrimary());
+        BindCommit commit = finishBind(project, reference, request.setPrimary(),
+                request.login(), request.password());
+        boolean primary = commit.primary();
 
-        LOG.info("connect_infobase(file) project=%s path=%s primary=%s", //$NON-NLS-1$
-                request.projectName(), filePathArg, Boolean.valueOf(primary));
+        LOG.info("connect_infobase(file) project=%s path=%s primary=%s creds_persisted=%s", //$NON-NLS-1$
+                request.projectName(), filePathArg, Boolean.valueOf(primary),
+                Boolean.valueOf(commit.credentials().persisted()));
 
         return new ConnectResult(ConnectionKind.FILE, filePathArg, infobaseName,
-                sanitizeLogin(request.login()), null, primary, replacedPrevious);
+                sanitizeLogin(request.login()), null, primary, replacedPrevious, false,
+                commit.credentials().persisted(), credentialErrorName(commit.credentials()),
+                commit.credentials().warning());
     }
 
     // Visible for testing.
@@ -453,14 +506,18 @@ public class EdtInfobaseConnectService {
             boundReference.setName(infobaseName);
         }
 
-        storeAccessSettings(boundReference, request.login(), request.password());
-        boolean primary = associate(project, boundReference, request.setPrimary());
+        BindCommit commit = finishBind(project, boundReference, request.setPrimary(),
+                request.login(), request.password());
+        boolean primary = commit.primary();
 
-        LOG.info("connect_infobase(standalone) project=%s path=%s port=%d primary=%s", //$NON-NLS-1$
-                request.projectName(), filePathArg, Integer.valueOf(port), Boolean.valueOf(primary));
+        LOG.info("connect_infobase(standalone) project=%s path=%s port=%d primary=%s creds_persisted=%s", //$NON-NLS-1$
+                request.projectName(), filePathArg, Integer.valueOf(port), Boolean.valueOf(primary),
+                Boolean.valueOf(commit.credentials().persisted()));
 
         return new ConnectResult(ConnectionKind.STANDALONE, filePathArg, boundReference.getName(),
-                sanitizeLogin(request.login()), Integer.valueOf(port), primary, replacedPrevious);
+                sanitizeLogin(request.login()), Integer.valueOf(port), primary, replacedPrevious, false,
+                commit.credentials().persisted(), credentialErrorName(commit.credentials()),
+                commit.credentials().warning());
     }
 
     /**
@@ -794,13 +851,49 @@ public class EdtInfobaseConnectService {
         return InfobaseIdentity.canonical(connectionString);
     }
 
-    protected void storeAccessSettings(InfobaseReference reference, String login, String password) {
-        // Guard against EDT's storeSettings NPE when the reference has no UUID. persistReference()
-        // is responsible for assigning one; bail early with a clear diagnostic if it didn't so the
-        // failure doesn't surface as an opaque ": null" message. See GH issue #31.
+    /**
+     * Commits the association/primary pointer, THEN persists credentials best-effort. The ORDER is the
+     * fix for BF-13140 (2026-07-09): EDT's credential flush writes the SHARED default secure storage
+     * and, in a multi-EDT-instance host, can fail or block on the interactive "secure storage modified
+     * by another program" modal a headless bind cannot answer. Committing the primary FIRST guarantees
+     * the bind's primary contract is durable even if that flush later blocks/fails — previously the
+     * flush ran first, so a blocked modal left the v8i entry + lease correct but the primary pointer
+     * stale (live-observed on the SLC-1 stack lifecycle test).
+     */
+    protected BindCommit finishBind(IProject project, InfobaseReference reference, boolean setPrimary,
+            String login, String password) {
+        boolean primary = associate(project, reference, setPrimary);
+        CredentialOutcome credentials;
+        try {
+            credentials = storeAccessSettings(reference, login, password);
+        } catch (RuntimeException e) {
+            // storeAccessSettings is already best-effort; this is defense-in-depth so no unexpected
+            // throw can ever unwind the just-committed primary — the binding stands, only credential
+            // persistence is degraded.
+            LOG.warn("connect_infobase: unexpected error persisting credentials (%s) — binding + primary committed", //$NON-NLS-1$
+                    e.getMessage());
+            credentials = CredentialOutcome.failed(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
+                    "credentials_not_persisted: " + credentialFailureDetail(e)); //$NON-NLS-1$
+        }
+        return new BindCommit(primary, credentials);
+    }
+
+    /**
+     * Persists infobase access credentials — BEST-EFFORT. Called by {@link #finishBind} only AFTER the
+     * association/primary pointer is committed, because EDT's credential flush writes the SHARED default
+     * secure-storage file and, in a multi-EDT-instance host, can fail or block on the interactive
+     * "secure storage modified by another program" modal. A failed flush must NOT fail the connect, so
+     * this reports the outcome instead of throwing; callers surface {@code credentials_persisted}.
+     * Never returns {@code null}. The skip-if-unchanged / reuse-stored fast paths count as
+     * {@link CredentialOutcome#persisted()} (the stored credentials are already correct — no flush).
+     */
+    protected CredentialOutcome storeAccessSettings(InfobaseReference reference, String login, String password) {
         if (reference.getUuid() == null) {
-            throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
-                    "Cannot store access settings: infobase reference has no UUID " //$NON-NLS-1$
+            // persistReference() (or the standalone create) assigns a UUID before we get here; without
+            // one EDT's updateSettings NPEs. This is an internal-invariant miss, not a storage conflict
+            // — report it best-effort so it never unwinds a committed primary. See GH issue #31.
+            return CredentialOutcome.failed(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
+                    "credentials_not_persisted: infobase reference has no UUID " //$NON-NLS-1$
                             + "(persistReference did not assign one)"); //$NON-NLS-1$
         }
         IInfobaseAccessManager accessManager = gateway.getInfobaseAccessManager();
@@ -816,7 +909,7 @@ public class EdtInfobaseConnectService {
                 IInfobaseAccessSettings existing = accessManager.resolveSettings(reference);
                 if (existing != null && existing != IInfobaseAccessSettings.NOT_DEFINED) {
                     LOG.info("Reusing stored access settings for infobase (no credentials passed)"); //$NON-NLS-1$
-                    return;
+                    return CredentialOutcome.ok();
                 }
             } catch (Exception | NoSuchMethodError e) {
                 // resolution failed — fall through to the default OS-auth store (best-effort)
@@ -844,7 +937,7 @@ public class EdtInfobaseConnectService {
                     && Objects.equals(current.userName(), effectiveUser)
                     && Objects.equals(current.password(), effectivePwd)) {
                 LOG.info("Infobase access settings unchanged — skipping store (avoids a shared secure-storage flush)"); //$NON-NLS-1$
-                return;
+                return CredentialOutcome.ok();
             }
         } catch (Exception | NoSuchMethodError e) {
             // best-effort comparison; fall through to the write
@@ -854,13 +947,80 @@ public class EdtInfobaseConnectService {
             // updateSettings(ref, settings) — same signature. storeSettings is gone from the 21.x
             // API entirely, so the prior 20.x/21.x runtime fallback no longer compiles against this
             // target; call updateSettings directly.
-            accessManager.updateSettings(reference, settings);
-        } catch (Exception e) {
-            String detail = e.getMessage() != null && !e.getMessage().isBlank()
-                    ? e.getMessage() : e.getClass().getSimpleName();
-            throw new EdtToolException(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
-                    "Failed to store infobase access settings: " + detail, e); //$NON-NLS-1$
+            updateAccessSettings(accessManager, reference, settings);
+            return CredentialOutcome.ok();
+        } catch (Exception | LinkageError e) {
+            // BEST-EFFORT: the binding + primary pointer are already committed (finishBind runs this
+            // last), so a failed credential flush must NOT fail the connect. The dominant multi-instance
+            // failure is EDT's shared secure-storage flush tripping the "modified by another program"
+            // modal (Cancel -> a StorageException here, or a fully-headless build with no UI to answer
+            // it). Classify it so callers can tell it apart from the slow-handler case, and never
+            // rethrow. Feedback 2026-07-09 (BF-13140).
+            String detail = credentialFailureDetail(e);
+            if (isSecureStorageConflict(e)) {
+                LOG.warn("connect_infobase: secure-storage conflict persisting credentials (%s) — " //$NON-NLS-1$
+                        + "binding + primary committed, credentials deferred", detail); //$NON-NLS-1$
+                return CredentialOutcome.failed(EdtToolErrorCode.SECURE_STORAGE_CONFLICT,
+                        "secure_storage_conflict: EDT could not flush infobase credentials (" + detail //$NON-NLS-1$
+                                + "). The binding and primary pointer ARE committed; credentials were " //$NON-NLS-1$
+                                + "not persisted. This is the multi-EDT-instance 'secure storage " //$NON-NLS-1$
+                                + "modified by another program' contention — retry connect_infobase " //$NON-NLS-1$
+                                + "once it clears, or launch each EDT instance with its own " //$NON-NLS-1$
+                                + "-eclipse.keyring."); //$NON-NLS-1$
+            }
+            LOG.warn("connect_infobase: failed to persist credentials (%s) — binding + primary committed", //$NON-NLS-1$
+                    detail);
+            return CredentialOutcome.failed(EdtToolErrorCode.EDT_SERVICE_UNAVAILABLE,
+                    "credentials_not_persisted: failed to store infobase access settings (" + detail //$NON-NLS-1$
+                            + "). The binding and primary pointer ARE committed; re-run " //$NON-NLS-1$
+                            + "connect_infobase to retry credential persistence."); //$NON-NLS-1$
         }
+    }
+
+    /**
+     * The actual EDT credential write, isolated so tests can simulate a failing/blocking secure-storage
+     * flush without a live EDT and so the failure classification stays in one place.
+     */
+    protected void updateAccessSettings(IInfobaseAccessManager accessManager, InfobaseReference reference,
+            InfobaseAccessSettings settings) throws org.eclipse.core.runtime.CoreException {
+        accessManager.updateSettings(reference, settings);
+    }
+
+    private static String credentialErrorName(CredentialOutcome outcome) {
+        return outcome == null || outcome.errorCode() == null ? null : outcome.errorCode().name();
+    }
+
+    /** Non-empty detail for a credential-flush failure (class name when the message is null/blank). */
+    private static String credentialFailureDetail(Throwable t) {
+        if (t == null) {
+            return "unknown"; //$NON-NLS-1$
+        }
+        String message = t.getMessage();
+        return (message != null && !message.isBlank()) ? message : t.getClass().getSimpleName();
+    }
+
+    /**
+     * True when a credential-flush failure is the Equinox secure-storage cross-process contention (the
+     * "secure storage modified by another program" modal). Detected by the Equinox
+     * {@code StorageException} type or the modal's message text anywhere in the cause chain (bounded
+     * against cause cycles).
+     */
+    private static boolean isSecureStorageConflict(Throwable t) {
+        int guard = 0;
+        for (Throwable c = t; c != null && guard < 25; c = c.getCause(), guard++) {
+            if (c.getClass().getName().contains("StorageException")) { //$NON-NLS-1$
+                return true;
+            }
+            String message = c.getMessage();
+            if (message != null) {
+                String low = message.toLowerCase(java.util.Locale.ROOT);
+                if (low.contains("secure storage") //$NON-NLS-1$
+                        || low.contains("modified by another program")) { //$NON-NLS-1$
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
