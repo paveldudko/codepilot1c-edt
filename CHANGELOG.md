@@ -9,6 +9,40 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### state-beacon — periodic shared stack-state file
+
+- **Opt-in state beacon + a reusable `EdtWorkspaceStateService`.** (this commit) A
+  multi-EDT "stack pool" is coordinated by an external orchestrator; each stack's
+  plugin now periodically writes a small JSON *beacon* file to a shared directory
+  so the orchestrator can read each stack's liveness and basic state WITHOUT
+  calling its MCP port. Two pieces:
+  - `EdtWorkspaceStateService.buildSnapshot(includeSlowFields)` assembles a
+    best-effort snapshot: `beacon_version`, `plugin_version`, `stack_id` (reused
+    from `InfobaseLeaseGuard`), `workspace`, `pid`, `host`, `updated_at`, `port` /
+    `profile` (from `CODEPILOT1C_PORT` / `CODEPILOT1C_PROFILE`), `endpoints`
+    (name/port/enabled per MCP profile), and `index` (derived-data readiness,
+    mirroring `edt_index_status`). With `includeSlowFields` it also adds
+    `bound_infobases` (each open project's current-context infobases). Every
+    sub-part is guarded — a missing service / cold EDT / no-OSGi yields an omitted
+    field or an `index:{ready:false,state:"UNKNOWN"}` placeholder, and the builder
+    never throws, so a partial beacon appears before the workspace index is ready.
+    The EDT-touching probes are gated by a non-blocking service peek so a cold EDT
+    never stalls the beacon on the 30 s service-tracker wait.
+  - `EdtStateBeacon` (singleton) schedules a 45 s tick on a single daemon thread;
+    the first tick fires immediately (partial beacon). `bound_infobases` is
+    gathered only on a slow sub-cadence (every 4th tick). The snapshot is written
+    atomically (temp file in the same dir + `ATOMIC_MOVE` with a plain-replace
+    fallback, copied from `InfobaseLeaseStore.forceTake`) to
+    `<state-dir>/<InfobaseLeaseStore.fileNameFor(stackId)>`. On a clean `stop()`
+    the scheduler is shut down and the beacon file is deleted, so a stopped stack
+    leaves no stale beacon.
+  - **Hard opt-in** (mirrors the lease guard): the state dir resolves from env
+    `CODEPILOT1C_STATE_DIR`, then the `edt.state.dir` instance preference, else a
+    sibling `edt-state` directory next to the pool's lease directory when the
+    lease guard is configured. With none set the beacon is a no-op — ordinary
+    single-instance users see zero behavior change. Wired into
+    `VibeCorePlugin.start()` (async, after the MCP host) and `stop()`.
+
 ### update_infobase — opt-in skip when already current
 
 - **`skip_if_current` skips the update when the infobase already equals the

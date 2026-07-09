@@ -55,6 +55,7 @@ import com.codepilot1c.core.provider.config.LlmProviderConfig;
 import com.codepilot1c.core.provider.config.ProviderType;
 import com.codepilot1c.core.provider.LlmProviderRegistry;
 import com.codepilot1c.core.remote.IRemoteWorkbenchBridge;
+import com.codepilot1c.core.state.EdtStateBeacon;
 import com.codepilot1c.core.state.VibeStateService;
 import com.codepilot1c.core.tools.workspace.BackgroundJobRegistry;
 
@@ -160,6 +161,15 @@ public class VibeCorePlugin extends Plugin {
             }
         });
 
+        // Start the shared state beacon if a stack-pool state dir is configured (opt-in).
+        CompletableFuture.runAsync(() -> {
+            try {
+                EdtStateBeacon.getInstance().startIfConfigured();
+            } catch (Exception e) {
+                vibeLogger.error("Core", "Failed to start state beacon", e); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+        });
+
         // EDT runtime services for AST/BM integrations.
         configurationProviderTracker = new ServiceTracker<>(context, IConfigurationProvider.class, null);
         configurationProviderTracker.open();
@@ -232,6 +242,11 @@ public class VibeCorePlugin extends Plugin {
             McpHostManager.getInstance().stopAll();
         } catch (Exception e) {
             logWarn("Error stopping MCP host", e); //$NON-NLS-1$
+        }
+        try {
+            EdtStateBeacon.getInstance().stop();
+        } catch (Exception e) {
+            logWarn("Error stopping state beacon", e); //$NON-NLS-1$
         }
         try {
             EdtLaunchProcessRegistry.getInstance().cleanupAll();
