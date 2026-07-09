@@ -9,6 +9,24 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-13140 — file-IB test-client cred default
+
+- **File-IB test runs default the test-client login to `Admin`/`1` instead of the cached
+  last-user.** (this commit) When `yaxunit_run` or `qa_run` launches the 1C test client
+  against a **file** infobase with NO explicit `test_client_login`/`test_client_password`
+  (and no `VANESSA_TEST_CLIENT_*` env), EDT previously fell through to the `.1CD`'s cached
+  last-user — inherited via robocopy from the live `File_am`, often a real employee who
+  cannot run tests. The client then silently produced no artifacts (`no_report`: no
+  `junit.xml` / `yaxunit.log` / `exitcode.txt`) — the root cause of BF-12562. Both tools
+  now detect a file infobase and default to the documented file-IB test account
+  (`Admin`/`1`, per `test-runners.md`) with a loud `WARN`, so an omitted credential fails
+  visibly-correct rather than silently-wrong. **Server infobases are unchanged**: they keep
+  using the association's EDT-stored owner credentials (the intended path), and no server
+  test credentials are hardcoded. Explicit `test_client_login`/`password` always win, and a
+  partially-supplied pair keeps the existing incomplete-creds warning. New shared helpers
+  `EdtRuntimeService.isFileInfobase(projectName)` (best-effort, never throws) and the
+  package-visible static `isFileConnectionString(connectionString)` back both tools.
+
 ### get_workspace_state — on-demand stack-state snapshot
 
 - **New read-only MCP tool `get_workspace_state`.** (this commit) A thin, non-mutating

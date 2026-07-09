@@ -298,6 +298,18 @@ public class YaxunitRunTool extends AbstractTool {
         if (hasLogin || hasPassword) {
             LOG.warn("[%s] yaxunit_run creds incomplete (login=%s, password=%s); using EDT access settings", //$NON-NLS-1$
                     opId, Boolean.valueOf(hasLogin), Boolean.valueOf(hasPassword));
+            return null;
+        }
+        // Neither login nor password provided. For a FILE infobase an empty TestClient login makes the
+        // thin client log in as the .1CD's cached last-user (inherited via robocopy from the live
+        // File_am — often a real employee) who cannot run tests → silent no_report (BF-12562). Default
+        // to the documented file-IB test account instead of falling through to that cached user. SERVER
+        // IBs keep the current behaviour (return null → EDT-stored owner creds), which is intended.
+        String projectName = asString(parameters == null ? null : parameters.get("project_name")); //$NON-NLS-1$
+        if (runtimeService.isFileInfobase(projectName)) {
+            LOG.warn("[%s] yaxunit_run: no test_client creds for a FILE infobase — defaulting to Admin/1 per test-runners.md (pass test_client_login/password to override).", //$NON-NLS-1$
+                    opId);
+            return EdtRuntimeService.AccessSettings.infobaseAuthentication("Admin", "1", null); //$NON-NLS-1$ //$NON-NLS-2$
         }
         return null;
     }

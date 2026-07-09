@@ -1279,10 +1279,22 @@ public class QaRunTool extends AbstractTool {
             EdtRuntimeService.AccessSettings accessSettings, String platformVersion, File runDir)
             throws IOException {
         List<Process> processes = new ArrayList<>();
-        EdtRuntimeService.AccessSettings clientAccess = testClientCreds != null
-                ? EdtRuntimeService.AccessSettings.infobaseAuthentication(
-                        testClientCreds.login(), testClientCreds.password(), null)
-                : accessSettings;
+        EdtRuntimeService.AccessSettings clientAccess;
+        if (testClientCreds != null) {
+            clientAccess = EdtRuntimeService.AccessSettings.infobaseAuthentication(
+                    testClientCreds.login(), testClientCreds.password(), null);
+        } else if (runtimeService.isFileInfobase(projectName)) {
+            // No explicit test_client creds + a FILE infobase: an empty TestClient login logs the
+            // client in as the .1CD's cached last-user (inherited via robocopy from the live File_am —
+            // often a real employee) who cannot run tests → silent no_report (BF-12562). Default to the
+            // documented file-IB test account instead of that cached user. SERVER IBs keep the
+            // EDT-stored owner creds (accessSettings), which is the intended path.
+            LOG.warn("[%s] qa_run: no test_client creds for a FILE infobase — defaulting to Admin/1 per test-runners.md (pass test_client_login/password to override).", //$NON-NLS-1$
+                    opId);
+            clientAccess = EdtRuntimeService.AccessSettings.infobaseAuthentication("Admin", "1", null); //$NON-NLS-1$ //$NON-NLS-2$
+        } else {
+            clientAccess = accessSettings;
+        }
         int index = 0;
         for (QaConfig.TestClient client : config.test_clients) {
             if (client == null || client.port == null) {

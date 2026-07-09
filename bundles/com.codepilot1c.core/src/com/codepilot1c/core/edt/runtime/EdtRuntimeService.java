@@ -5,6 +5,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import com._1c.g5.v8.dt.core.platform.IExtensionProject;
@@ -199,6 +200,38 @@ public class EdtRuntimeService {
             failure.addSuppressed(primaryFailure);
         }
         throw failure;
+    }
+
+    /**
+     * Best-effort predicate: {@code true} when the project's default infobase is a FILE infobase.
+     * Never throws — a resolution failure, a missing association or a blank/absent connection string
+     * all yield {@code false} (unknown is treated as non-file so server/unknown callers keep their
+     * existing behaviour). Backs the BF-13140 file-IB test-client credential default in
+     * {@code yaxunit_run} / {@code qa_run}: a file-IB test client launched with no explicit login logs
+     * in as the {@code .1CD}'s cached last-user, silently producing {@code no_report} (BF-12562).
+     */
+    public boolean isFileInfobase(String projectName) {
+        try {
+            InfobaseReference ib = resolveDefaultInfobase(projectName);
+            if (ib == null || ib.getConnectionString() == null) {
+                return false;
+            }
+            return isFileConnectionString(ib.getConnectionString().asConnectionString());
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
+     * True iff a 1C infobase connection string denotes a FILE infobase (starts with {@code File=}).
+     * Server/standalone connections ({@code Srvr="...";Ref="...";}) and null/blank strings return
+     * {@code false}. Package-visible for unit testing.
+     */
+    static boolean isFileConnectionString(String connectionString) {
+        if (connectionString == null) {
+            return false;
+        }
+        return connectionString.trim().toLowerCase(Locale.ROOT).startsWith("file="); //$NON-NLS-1$
     }
 
     /**
