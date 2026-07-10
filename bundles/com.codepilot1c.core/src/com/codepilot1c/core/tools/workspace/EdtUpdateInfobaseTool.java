@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -46,6 +48,20 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
 
     /** Hard cap on the platform update so a held infobase / EDT modal can never hang the call forever. */
     private static final long UPDATE_JOIN_TIMEOUT_MS = 300_000L;
+
+    /**
+     * Process-wide guard against a second concurrent (schema) update of the SAME project while one is
+     * in flight. EDT applies an update through a Designer thick-client session that is single-connection
+     * per infobase — a re-fired update on the same IB does not run twice, it collides ("Infobase … is
+     * already connected") and can wedge the platform. Live finding BF-12705 (2026-07-10): a caller
+     * re-fired an async update while the first job was still RUNNING; the two Designer sessions contended
+     * and the update hung ~51 min. Keyed by project name; value holds the in-flight {@code job_id} (or a
+     * sentinel while it is being registered / for a synchronous run) so a rejected caller is told which
+     * job to poll instead of piling on. Static so it is shared across tool instances, matching EDT's
+     * per-infobase single-connection reality. Dry runs never acquire it (no Designer session).
+     */
+    private static final ConcurrentMap<String, AtomicReference<String>> IN_FLIGHT_UPDATES =
+            new ConcurrentHashMap<>();
 
     /** EDT {@code InfobaseEqualityState.EQUAL} constant name — the skip_if_current trigger. */
     private static final String EQUALITY_EQUAL = "EQUAL"; //$NON-NLS-1$
@@ -149,11 +165,29 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             // flag so the caller knows the async request was intentionally ignored.
             LOG.info("[%s] edt_update_infobase async+dry_run: running sync (async_ignored)", opId); //$NON-NLS-1$
         } else if (async) {
+            String updateKey = updateKey(projectName);
+            AtomicReference<String> slot = new AtomicReference<>("starting"); //$NON-NLS-1$
+            String inFlight = tryAcquireUpdate(updateKey, slot);
+            if (inFlight != null) {
+                LOG.warn("[%s] edt_update_infobase async rejected: update already in flight for project %s", //$NON-NLS-1$
+                        opId, projectName);
+                return CompletableFuture.completedFuture(
+                        ToolResult.failure(pretty(alreadyRunningPayload(opId, projectName, workspaceRoot, inFlight))));
+            }
             try {
                 String jobId = BackgroundJobRegistry.getInstance().startJob(
                         "edt_update_infobase", //$NON-NLS-1$
-                        () -> runUpdateAndRenderResult(opId, projectName, keepConnected, workspaceRoot,
-                                runtimeVersion, killAgentMode, allowWebserverRunning, skipIfCurrent));
+                        () -> {
+                            try {
+                                return runUpdateAndRenderResult(opId, projectName, keepConnected, workspaceRoot,
+                                        runtimeVersion, killAgentMode, allowWebserverRunning, skipIfCurrent);
+                            } finally {
+                                // Release only our own slot (identity-checked) so a fast job that finished
+                                // before the caller upgraded the value below can never leak the key.
+                                releaseUpdate(updateKey, slot);
+                            }
+                        });
+                slot.set(jobId); // upgrade "starting" -> real job_id so a concurrent caller polls it
                 LOG.info("[%s] edt_update_infobase scheduled async job=%s", opId, jobId); //$NON-NLS-1$
                 JsonObject accepted = basePayload(opId, "scheduled", projectName, false, workspaceRoot); //$NON-NLS-1$
                 accepted.addProperty("async", true); //$NON-NLS-1$
@@ -164,6 +198,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 return CompletableFuture.completedFuture(
                         ToolResult.success(pretty(accepted), ToolResult.ToolResultType.CODE));
             } catch (RejectedExecutionException e) {
+                releaseUpdate(updateKey, slot);
                 LOG.warn("[%s] edt_update_infobase async rejected: %s", opId, e.getMessage()); //$NON-NLS-1$
                 JsonObject rejected = basePayload(opId, "error", projectName, false, workspaceRoot); //$NON-NLS-1$
                 rejected.addProperty("updated", false); //$NON-NLS-1$
@@ -180,6 +215,21 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         return CompletableFuture.supplyAsync(() -> {
             LOG.info("[%s] START edt_update_infobase", opId); //$NON-NLS-1$
             String ibPath = null;
+            // Guard a synchronous (schema) update the same way as the async path: refuse a second
+            // concurrent update of this project rather than let two Designer sessions collide. Dry runs
+            // spawn no Designer session, so they never acquire the guard. BF-12705 (2026-07-10).
+            String updateKey = updateKey(projectName);
+            AtomicReference<String> slot = null;
+            if (!dryRun) {
+                slot = new AtomicReference<>("sync"); //$NON-NLS-1$
+                String inFlight = tryAcquireUpdate(updateKey, slot);
+                if (inFlight != null) {
+                    LOG.warn("[%s] edt_update_infobase rejected: update already in flight for project %s", //$NON-NLS-1$
+                            opId, projectName);
+                    return ToolResult.failure(
+                            pretty(alreadyRunningPayload(opId, projectName, workspaceRoot, inFlight)));
+                }
+            }
             try {
                 InfobaseReference infobase = projectResolver.resolveInfobase(projectName, workspaceRoot);
                 ibPath = fileIbPath(infobase);
@@ -252,8 +302,74 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 }
                 return ToolResult.failure(pretty(errorPayload(opId, projectName, workspaceRoot,
                         EdtToolErrorCode.UPDATE_FAILED, e.getMessage())));
+            } finally {
+                if (slot != null) {
+                    releaseUpdate(updateKey, slot);
+                }
             }
         });
+    }
+
+    /** Normalizes the in-flight-guard key for a project name (null/blank tolerated). Package-private for tests. */
+    static String updateKey(String projectName) {
+        return projectName == null ? "" : projectName.trim(); //$NON-NLS-1$
+    }
+
+    /**
+     * Reserves the single in-flight-update slot for {@code key}. Returns {@code null} when the slot was
+     * reserved (the caller now owns {@code mySlot} and MUST {@link #releaseUpdate release} it), otherwise
+     * the in-flight update's {@code job_id} (or a {@code "starting"}/{@code "sync"} sentinel) — meaning a
+     * concurrent update is already running and {@code mySlot} was NOT registered. Package-private for
+     * unit tests.
+     */
+    static String tryAcquireUpdate(String key, AtomicReference<String> mySlot) {
+        AtomicReference<String> held = IN_FLIGHT_UPDATES.putIfAbsent(key, mySlot);
+        return held == null ? null : held.get();
+    }
+
+    /**
+     * Releases the in-flight-update slot, but only when {@code mySlot} is still the registered holder
+     * (identity check) — so a caller can never evict another update's slot. Package-private for tests.
+     */
+    static void releaseUpdate(String key, AtomicReference<String> mySlot) {
+        IN_FLIGHT_UPDATES.remove(key, mySlot);
+    }
+
+    /** Visible for testing: true when an update is currently registered as in-flight for the project. */
+    static boolean hasInFlightUpdate(String projectName) {
+        return IN_FLIGHT_UPDATES.containsKey(updateKey(projectName));
+    }
+
+    /** Visible for testing: drop all in-flight-update reservations (isolation between test cases). */
+    static void clearInFlightUpdatesForTest() {
+        IN_FLIGHT_UPDATES.clear();
+    }
+
+    /**
+     * Builds the {@code UPDATE_ALREADY_RUNNING} rejection payload: a second concurrent update of the
+     * same project was refused because one is already in flight. Carries the in-flight {@code job_id}
+     * (when known) so the caller polls the existing job with {@code update_infobase_status} instead of
+     * re-firing — the re-fire is what wedged BF-12705.
+     */
+    private static JsonObject alreadyRunningPayload(String opId, String projectName, File workspaceRoot,
+            String inFlightJobId) {
+        JsonObject json = errorPayload(opId, projectName, workspaceRoot,
+                EdtToolErrorCode.UPDATE_ALREADY_RUNNING,
+                "An infobase update is already in progress for project '" + projectName //$NON-NLS-1$
+                        + "'. EDT applies updates through a single-connection Designer session, so a " //$NON-NLS-1$
+                        + "second concurrent update on the same infobase would collide and can wedge the " //$NON-NLS-1$
+                        + "platform. Poll the running job with update_infobase_status instead of re-firing."); //$NON-NLS-1$
+        json.addProperty("error", "update_already_running"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (inFlightJobId != null && !inFlightJobId.isBlank()) {
+            json.addProperty("in_flight_job_id", inFlightJobId); //$NON-NLS-1$
+        }
+        json.addProperty("hint", //$NON-NLS-1$
+                "Do NOT start another update for this project. Poll update_infobase_status" //$NON-NLS-1$
+                        + (inFlightJobId != null && !inFlightJobId.isBlank()
+                                ? "(job_id=\"" + inFlightJobId + "\", wait_for_completion=true)" //$NON-NLS-1$ //$NON-NLS-2$
+                                : "(job_id=…, wait_for_completion=true)") //$NON-NLS-1$
+                        + " until it reaches a terminal state, then re-check."); //$NON-NLS-1$
+        return json;
     }
 
     /**

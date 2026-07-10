@@ -9,6 +9,25 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-12705 — update_infobase: reject a second concurrent update of the same project (double-fire guard)
+
+- **`edt_update_infobase` now refuses a second concurrent (schema) update of the same project while
+  one is in flight**, returning a structured `UPDATE_ALREADY_RUNNING` error (with `in_flight_job_id`
+  and a hint to poll `update_infobase_status` instead of re-firing). (this commit) EDT applies an
+  update through a **single-connection Designer thick-client session**; a re-fired update on the same
+  infobase does not run twice — it collides (`Infobase … is already connected`) and can wedge the
+  platform. Live finding (BF-12705, 2026-07-10): a headless caller re-fired an async update while the
+  first job was still `RUNNING`; the two Designer sessions contended and the update hung ~51 min with
+  no clean terminal state. The guard is a process-wide reservation keyed by project name (static, so
+  it is shared across tool instances and matches EDT's per-infobase single-connection reality),
+  covering **both** the async and synchronous paths; dry runs spawn no Designer session and never
+  acquire it. Slot release is identity-checked so a rejected caller can never evict the real holder,
+  and a fast-completing async job can never leak the key. New error code
+  `EdtToolErrorCode.UPDATE_ALREADY_RUNNING`; unit-covered by `EdtUpdateInfobaseGuardTest` (5 tests,
+  green). NB: this addresses the double-fire *trigger*; the separate question of why the existing 300s
+  `UPDATE_JOIN_TIMEOUT_MS` cap did not fire under that contention is tracked in the feedback note and
+  is most plausibly a symptom of the double-fire itself.
+
 ### Q15 — get_infobase_sync_state (project↔IB readiness probe)
 
 - **New read-only MCP tool `get_infobase_sync_state`.** (this commit) Reports whether an EDT
