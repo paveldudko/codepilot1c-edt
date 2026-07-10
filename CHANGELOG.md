@@ -9,6 +9,22 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### Q15 — get_infobase_sync_state (project↔IB readiness probe)
+
+- **New read-only MCP tool `get_infobase_sync_state`.** (this commit) Reports whether an EDT
+  project is in sync with its primary infobase (`work_ready`) or needs an incremental
+  `update_infobase` (`needs_update`), by exposing EDT's in-memory equality state WITHOUT launching
+  a configurator/DESIGNER and without mutating anything. Thin facade over
+  `EdtRuntimeService.readInfobaseEqualityState` — the same read that backs `update_infobase`'s
+  `skip_if_current` (commit `027d623`). Payload: `equality_state`
+  (`EQUAL`/`NOT_EQUAL`/`LOADING`/null), `determinable`, `work_ready`, `needs_update`, `loading`,
+  plus an actionable `hint`. Best-effort: an undeterminable state (EDT cold / project or primary
+  infobase unresolved / API absent on this EDT build) returns `determinable=false` +
+  `work_ready=false` — the unknown case must never be read as "ready". Motivated by the
+  post-`Move-TaskStack` "Incremental change required" gap (SLC-1 F-MIG-7): lets an automated runner
+  gate a destination project on readiness before running tests. `mutating=false`,
+  `category=diagnostics`. Answers master Q15 (2026-07-10).
+
 ### BF-13140 — connect_infobase: decouple credential save from the primary commit
 
 - **A blocked/failed secure-storage flush can no longer leave a stale primary pointer.**

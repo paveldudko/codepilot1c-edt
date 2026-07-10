@@ -156,6 +156,7 @@ public class ToolRegistry {
         register(new com.codepilot1c.core.tools.workspace.UpdateInfobaseStatusTool());
         register(new com.codepilot1c.core.tools.workspace.EdtIndexStatusTool());
         register(new com.codepilot1c.core.tools.workspace.GetWorkspaceStateTool());
+        register(new com.codepilot1c.core.tools.workspace.GetInfobaseSyncStateTool());
         register(new com.codepilot1c.core.tools.workspace.WebPublicationTool());
         register(new QaRunTool());
         register(new YaxunitRunTool());
