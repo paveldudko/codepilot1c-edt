@@ -142,7 +142,16 @@ public class GetInfobaseSyncStateTool extends AbstractTool {
                     "EDT is still computing the comparison; poll again shortly before deciding."); //$NON-NLS-1$
         } else if (needsUpdate) {
             json.addProperty("hint", //$NON-NLS-1$
-                    "project differs from the infobase — run update_infobase (incremental) before tests."); //$NON-NLS-1$
+                    "project differs from the infobase — run update_infobase (incremental) before tests. " //$NON-NLS-1$
+                            + "IF update_infobase ALREADY returned updated:true and this still reports " //$NON-NLS-1$
+                            + "NOT_EQUAL, do NOT loop re-running the same update — it will not converge. That " //$NON-NLS-1$
+                            + "is a known non-convergence mode: the update most likely applied DYNAMICALLY " //$NON-NLS-1$
+                            + "(main<->DB config still diverged until an EXCLUSIVE update) or EDT's in-memory " //$NON-NLS-1$
+                            + "equality state has not refreshed. Remediation: run one EXCLUSIVE update " //$NON-NLS-1$
+                            + "(update_infobase with no other client/Designer session holding the IB), or " //$NON-NLS-1$
+                            + "treat work_ready as advisory for a change with no schema impact. NB: EDT exposes " //$NON-NLS-1$
+                            + "only this coarse equality state — no object-level list of WHAT differs is " //$NON-NLS-1$
+                            + "available without a full Designer comparison."); //$NON-NLS-1$
         }
         LOG.info("get_infobase_sync_state: project=%s equality_state=%s work_ready=%s", //$NON-NLS-1$
                 projectName, state, Boolean.valueOf(workReady));

@@ -9,6 +9,79 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-12705 — get_infobase_sync_state: actionable guidance for the update→still-NOT_EQUAL non-convergence mode
+
+- **The `needs_update` hint no longer sends an agent into a non-terminating `update_infobase` loop.** (this
+  commit) A live finding (BF-12705, 2026-07-13) showed a clean `update_infobase updated:true` (zero
+  contention, no phantom Designer, no Apache-wsap lock, not dynamic-only-reported) still leaving
+  `get_infobase_sync_state` at `NOT_EQUAL`/`work_ready:false` indefinitely — and the old hint ("run
+  update_infobase before tests") is not actionable there, so an agent either rabbit-holes or must be told
+  out-of-band to ignore `work_ready`. The hint now states that if `update_infobase` already returned
+  `updated:true` and the state is still `NOT_EQUAL`, re-running the same update will NOT converge; the
+  usual cause is a DYNAMIC apply (main↔DB config diverged until an EXCLUSIVE update) or a not-yet-refreshed
+  in-memory equality state; remediation is one exclusive update or treating `work_ready` as advisory for a
+  no-schema-impact change. **Honest scope on the "explain the residual delta" ask:** EDT's
+  `IInfobaseSynchronizationManager` exposes only the coarse 3-value `InfobaseEqualityState`
+  (`EQUAL`/`NOT_EQUAL`/`LOADING`) — there is no object-level "what differs" API at this layer without a
+  full Designer-style comparison (which would spawn a configurator and defeat the tool's read-only
+  purpose), so surfacing the delta itself is not implemented; the tool instead documents the limitation
+  and gives the actionable remediation. Ref:
+  `codepilot1c-feedback/2026-07-13-update-infobase-completes-but-equality-state-never-converges-third-mode.md`.
+
+### BF-12839 — mutate_form_model: new `add_form_parameter` op to declare a form-level Parameter
+
+- **`mutate_form_model` now supports an `add_form_parameter` operation** (`{op:"add_form_parameter",
+  name, type, [key_parameter], [comment]}`) that creates a `FormParameter` in the form's
+  `getParameters()` collection with a resolved value type. (this commit) It is the only tool path to
+  declare a form Parameter: `set_form_props` rejects `parameters` as a reference collection
+  (`applySimpleFeatureValue` → "Reference property updates are not supported directly"), and
+  `add_metadata_child` has no `Parameter` child_kind. Without it a correct
+  `OpenForm(..., New Structure("X", ...))` + `Parameters.Property("X")` still tripped the cosmetic
+  `unknown-form-parameter-access` diagnostic, which the dev pre-commit gate (0 warnings on touched
+  lines) could not clear through the tool surface. The op mirrors `add_command` (non-visual,
+  name-keyed, no form-item id); the value type reuses the attribute type-resolver, which was
+  generalized from `AbstractFormAttribute` to `EObject` (a `FormParameter`'s `valueType` lives on a
+  distinct EReference — `getFormParameter_ValueType()` — and `setTypeDescriptionOnEObject` now resolves
+  the generic `valueType` feature). No validation-layer change (the validate path passes `operations[]`
+  through verbatim). Source-contract-covered by `AddFormParameterContractTest` (the `Form`/`FormParameter`
+  EMF types resolve only in the OSGi runtime, so behavior is validated live).
+  Ref: `codepilot1c-feedback/2026-07-14-bf12839-mutate-form-model-no-way-to-declare-form-parameter.md`.
+
+### BF-12839 — connect_infobase: distinguish Designer-agent SSH auth failure from a credential prompt
+
+- **New error code `EDT_DESIGNER_AGENT_AUTH_FAILED`** and a synchronous-path classifier
+  (`ConnectInfobaseTool.findDesignerAuthFailureMessage` / `isDesignerAuthFailureMessage`) so a JSch
+  `Auth fail` when EDT opens an SSH session to its OWN locally-spawned Designer agent is no longer
+  collapsed into `EDT_AUTH_REQUIRED`. (this commit) The new code carries `retry_with:{force:true}` and
+  a hint that login/password will NOT help (a fresh `connect_infobase(force=true)` usually rewrites the
+  stale/OS-auth-only association and clears it). **Honest scope:** this classifier only fires when EDT
+  throws the failure *synchronously*; in the observed BF-12839 case it instead manifested as the 50s
+  bind timeout, where no exception reaches the tool and the sub-cause is indistinguishable from a real
+  credential prompt at the tool layer.
+- **Broadened the misleading `EDT_AUTH_REQUIRED` timeout message + hint.** (this commit) It used to tell
+  the caller to "pass login/password" even when login/password were already passed. It now enumerates
+  the three real causes (interactive credential prompt / Designer-agent SSH auth failure / unreachable
+  server), states that passing creds rules out (a) so (b) is the suspect, and tells the caller to verify
+  with `get_workspace_state` before re-binding — EDT's worker may finish the bind after the 50s cap, so
+  a reported timeout must not be misread as a broken bind. Addresses the note's "reported failure but the
+  bind actually registered" gap without flipping `success:false`→`true` (a stale pre-existing association
+  would falsely read as this call's success — worse for a gating agent than a clear "verify first" signal).
+- Unit-covered by new cases in `ConnectInfobaseLockDetectionTest` (classifier + enum distinctness).
+  Ref: `codepilot1c-feedback/2026-07-14-bf12839-launch-app-hangs-after-designer-agent-sshauth-fail-bind.md`.
+
+### discover_tools: reflect per-endpoint tool gating instead of an unconditional "now available"
+
+- **`discover_tools` now reports category tools the calling endpoint gates out** under an `unavailable`
+  array with `available:false` + a `reason`, marks exposed tools `available:true`, and replaces the flat
+  "These tools are now available. You can call them directly" note with an honest per-endpoint one. (this
+  commit) The announce (`tools/list`), call gate, and `discover_tools` already share one
+  `DefaultMcpToolExposurePolicy` per endpoint, so current tip is self-consistent — the infra observation
+  (`discover_tools` claimed `yaxunit_run` available while `tools/call` rejected it) was almost certainly a
+  **stale deployed build** (the note could not capture the plugin version). This change makes the tool's
+  own response unambiguous going forward so a caller never treats a gated tool as callable. Unit-covered by
+  `DiscoverToolsGatingTest`. Ref:
+  `codepilot1c-feedback/2026-07-14-yaxunit-run-discover-tools-claims-available-but-uncallable.md`.
+
 ### BF-12705 — update_infobase: reject a second concurrent update of the same project (double-fire guard)
 
 - **`edt_update_infobase` now refuses a second concurrent (schema) update of the same project while
