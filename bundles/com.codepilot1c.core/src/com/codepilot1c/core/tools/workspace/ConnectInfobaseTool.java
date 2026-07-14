@@ -273,9 +273,14 @@ public class ConnectInfobaseTool extends AbstractTool {
             }
             throw new EdtToolException(EdtToolErrorCode.EDT_AUTH_REQUIRED,
                     "Bind did not complete within " + CONNECT_TIMEOUT_SECONDS + "s and was aborted. " //$NON-NLS-1$ //$NON-NLS-2$
-                            + "EDT is most likely waiting on an interactive credential prompt for this " //$NON-NLS-1$
-                            + "infobase — pass login/password (a headless bind cannot answer the dialog). " //$NON-NLS-1$
-                            + "For a client/server IB also verify srvr/ref are reachable."); //$NON-NLS-1$
+                            + "This is one of: (a) EDT waiting on an interactive credential prompt — pass " //$NON-NLS-1$
+                            + "login/password (a headless bind cannot answer the dialog); (b) an SSH auth " //$NON-NLS-1$
+                            + "failure to EDT's own Designer agent (login/password will NOT help — a fresh " //$NON-NLS-1$
+                            + "connect_infobase(force=true) usually clears it); or (c) an unreachable " //$NON-NLS-1$
+                            + "client/server IB (verify srvr/ref). NB: if login/password were ALREADY passed, " //$NON-NLS-1$
+                            + "(a) is ruled out — suspect (b). EDT's worker may still finish the bind after this " //$NON-NLS-1$
+                            + "cap, so check get_workspace_state before re-binding to avoid misreading a " //$NON-NLS-1$
+                            + "completed bind as broken."); //$NON-NLS-1$
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             future.cancel(true);
@@ -294,6 +299,18 @@ public class ConnectInfobaseTool extends AbstractTool {
                         "The infobase is locked: " + lockMessage + ". This is a LOCK conflict, NOT a credential " //$NON-NLS-1$ //$NON-NLS-2$
                                 + "prompt. Stop the Designer/agent holding the lock (auto_stop_phantom=true here, or " //$NON-NLS-1$
                                 + "update_infobase(kill_agent_mode=true)) and retry."); //$NON-NLS-1$
+            }
+            // EDT's SSH session to its OWN Designer agent can be rejected ("Auth fail") on a fresh
+            // association — a distinct cause from a lock or a credential prompt. Surface it as its own
+            // code so the caller doesn't waste a round on login/password. Feedback 2026-07-14 (BF-12839).
+            String authFailure = findDesignerAuthFailureMessage(cause);
+            if (authFailure != null) {
+                throw new EdtToolException(EdtToolErrorCode.EDT_DESIGNER_AGENT_AUTH_FAILED,
+                        "EDT could not open an SSH session to its own Designer agent for this infobase (" //$NON-NLS-1$
+                                + authFailure + "). This is NOT an infobase credential prompt — login/password " //$NON-NLS-1$
+                                + "will not fix it. A stale/OS-auth-only association is the usual cause; a fresh " //$NON-NLS-1$
+                                + "connect_infobase(force=true) normally rewrites it and clears the failure. " //$NON-NLS-1$
+                                + "Verify with get_workspace_state."); //$NON-NLS-1$
             }
             if (cause instanceof RuntimeException re) {
                 throw re;
@@ -360,6 +377,44 @@ public class ConnectInfobaseTool extends AbstractTool {
         return m.contains("cannot lock the infobase") //$NON-NLS-1$
                 || m.contains("open in designer") //$NON-NLS-1$
                 || m.contains("-33554432"); //$NON-NLS-1$
+    }
+
+    /**
+     * Walks the cause chain for the JSch "Auth fail" signature EDT throws when its OWN
+     * locally-spawned Designer agent rejects the SSH session (distinct from an infobase-lock
+     * disconnect and from an interactive credential prompt). Returns the first matching message, or
+     * {@code null}. Bounded against cause-chain cycles. Feedback 2026-07-14 (BF-12839): this failure
+     * used to collapse into {@code EDT_AUTH_REQUIRED}, sending the caller down a fruitless
+     * login/password path. NB: it only fires when EDT throws the failure SYNCHRONOUSLY; the same
+     * failure often manifests instead as a 50s bind timeout (handled in the TimeoutException branch),
+     * where no exception reaches this tool.
+     */
+    static String findDesignerAuthFailureMessage(Throwable t) {
+        int guard = 0;
+        for (Throwable c = t; c != null && guard < 25; c = c.getCause(), guard++) {
+            if (isDesignerAuthFailureMessage(c.getMessage())) {
+                return c.getMessage().trim();
+            }
+        }
+        return null;
+    }
+
+    /** True when an exception message is the JSch/SSH Designer-agent auth-rejection signature. */
+    static boolean isDesignerAuthFailureMessage(String message) {
+        if (message == null) {
+            return false;
+        }
+        String m = message.toLowerCase(java.util.Locale.ROOT);
+        if (m.contains("com.jcraft.jsch") || m.contains("jschexception")) { //$NON-NLS-1$ //$NON-NLS-2$
+            return true;
+        }
+        if (m.contains("auth fail")) { //$NON-NLS-1$
+            return true;
+        }
+        boolean authWord = m.contains("authentication") || m.contains("auth "); //$NON-NLS-1$ //$NON-NLS-2$
+        boolean designerSsh = m.contains("designer agent") //$NON-NLS-1$
+                || (m.contains("ssh") && m.contains("session")); //$NON-NLS-1$ //$NON-NLS-2$
+        return authWord && designerSsh;
     }
 
     /**
@@ -536,9 +591,24 @@ public class ConnectInfobaseTool extends AbstractTool {
             case EDT_AUTH_REQUIRED -> {
                 json.addProperty("error", "auth_required"); //$NON-NLS-1$ //$NON-NLS-2$
                 json.addProperty("hint", //$NON-NLS-1$
-                        "EDT could not bind without credentials — pass login/password " //$NON-NLS-1$
-                        + "(admin-level). If the path is also open in Designer you will get " //$NON-NLS-1$
-                        + "EDT_INFOBASE_LOCKED instead."); //$NON-NLS-1$
+                        "the bind timed out at the 50s cap. If login/password were NOT passed, pass them " //$NON-NLS-1$
+                        + "(admin-level). If they WERE already passed, a credential prompt is ruled out — " //$NON-NLS-1$
+                        + "suspect an SSH auth failure to EDT's Designer agent (EDT_DESIGNER_AGENT_AUTH_FAILED); " //$NON-NLS-1$
+                        + "try connect_infobase(force=true). If the path is also open in Designer you get " //$NON-NLS-1$
+                        + "EDT_INFOBASE_LOCKED instead. EDT may complete the bind on its worker after the cap — " //$NON-NLS-1$
+                        + "verify with get_workspace_state before assuming the bind failed."); //$NON-NLS-1$
+            }
+            case EDT_DESIGNER_AGENT_AUTH_FAILED -> {
+                json.addProperty("error", "designer_agent_auth_failed"); //$NON-NLS-1$ //$NON-NLS-2$
+                json.addProperty("hint", //$NON-NLS-1$
+                        "EDT's SSH session to its own Designer agent was rejected (JSch Auth fail) — this is " //$NON-NLS-1$
+                        + "NOT an infobase credential prompt, so login/password will not help. A stale or " //$NON-NLS-1$
+                        + "OS-auth-only persisted association is the usual cause; a fresh " //$NON-NLS-1$
+                        + "connect_infobase(force=true) normally rewrites it and clears the failure. " //$NON-NLS-1$
+                        + "Verify with get_workspace_state."); //$NON-NLS-1$
+                JsonObject retryWith = new JsonObject();
+                retryWith.addProperty("force", true); //$NON-NLS-1$
+                json.add("retry_with", retryWith); //$NON-NLS-1$
             }
             case NAME_COLLISION -> {
                 json.addProperty("error", "name_collision"); //$NON-NLS-1$ //$NON-NLS-2$

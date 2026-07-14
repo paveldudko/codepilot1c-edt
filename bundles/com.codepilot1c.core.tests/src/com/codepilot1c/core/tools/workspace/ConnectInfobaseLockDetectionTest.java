@@ -71,4 +71,57 @@ public class ConnectInfobaseLockDetectionTest {
         assertFalse(com.codepilot1c.core.edt.runtime.EdtToolErrorCode.EDT_INFOBASE_LOCKED
                 == com.codepilot1c.core.edt.runtime.EdtToolErrorCode.EDT_AUTH_REQUIRED);
     }
+
+    // --- Designer-agent SSH auth-failure classifier (BF-12839, 2026-07-14) -----------------------
+
+    @Test
+    public void isDesignerAuthFailureMessage_matchesJSchAuthFail() {
+        assertTrue(ConnectInfobaseTool.isDesignerAuthFailureMessage(
+                "com.jcraft.jsch.JSchException: Auth fail")); //$NON-NLS-1$
+        assertTrue(ConnectInfobaseTool.isDesignerAuthFailureMessage(
+                "Authentication failure while establishing SSH session with Designer agent")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void isDesignerAuthFailureMessage_rejectsLockAndPlainMessages() {
+        // A lock disconnect is NOT an auth failure — the two classifiers must not overlap (in
+        // production the lock check runs first anyway).
+        assertFalse(ConnectInfobaseTool.isDesignerAuthFailureMessage(
+                "SSH_MSG_DISCONNECT: -33554432 Cannot lock the infobase because it is open in Designer.")); //$NON-NLS-1$
+        assertFalse(ConnectInfobaseTool.isDesignerAuthFailureMessage("waiting on a credential prompt")); //$NON-NLS-1$
+        assertFalse(ConnectInfobaseTool.isDesignerAuthFailureMessage(null));
+    }
+
+    @Test
+    public void findDesignerAuthFailureMessage_walksCauseChainToJSchRoot() {
+        // Top frame is a generic bind message (no auth signature) so the classifier must walk down
+        // to the JSch root to find the failure.
+        Throwable root = new RuntimeException("com.jcraft.jsch.JSchException: Auth fail"); //$NON-NLS-1$
+        Throwable top = new IllegalStateException("Bind failed for infobase File_am_X", root); //$NON-NLS-1$
+        String found = ConnectInfobaseTool.findDesignerAuthFailureMessage(top);
+        assertTrue(found != null && found.toLowerCase(java.util.Locale.ROOT).contains("auth fail")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void findDesignerAuthFailureMessage_matchesTopLevelDesignerAgentAuthError() {
+        // The real EDT chain surfaces "Authentication error while connecting to designer agent" at
+        // the top — that IS an auth failure and must classify as one (returned as-is).
+        Throwable top = new RuntimeException("Authentication error while connecting to designer agent."); //$NON-NLS-1$
+        assertTrue(ConnectInfobaseTool.findDesignerAuthFailureMessage(top) != null);
+    }
+
+    @Test
+    public void findDesignerAuthFailureMessage_returnsNullWhenNoAuthInChain() {
+        Throwable root = new RuntimeException("Connection refused"); //$NON-NLS-1$
+        Throwable top = new IllegalStateException("EDT service unavailable", root); //$NON-NLS-1$
+        assertNull(ConnectInfobaseTool.findDesignerAuthFailureMessage(top));
+    }
+
+    @Test
+    public void enum_designerAgentAuthFailedIsDistinct() {
+        assertEquals("EDT_DESIGNER_AGENT_AUTH_FAILED", //$NON-NLS-1$
+                com.codepilot1c.core.edt.runtime.EdtToolErrorCode.EDT_DESIGNER_AGENT_AUTH_FAILED.name());
+        assertFalse(com.codepilot1c.core.edt.runtime.EdtToolErrorCode.EDT_DESIGNER_AGENT_AUTH_FAILED
+                == com.codepilot1c.core.edt.runtime.EdtToolErrorCode.EDT_AUTH_REQUIRED);
+    }
 }
