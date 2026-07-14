@@ -148,6 +148,11 @@ public class DiscoverToolsTool extends AbstractTool {
                 ? ToolGroupVisibility.fromEnvironment() : null;
         int matchedInCategory = 0;
         int hiddenByConfig = 0;
+        // Tools that belong to this category but are gated out for the calling
+        // endpoint (group/per-tool config). Reported back with available:false so
+        // a caller never mistakes a gated tool for a callable one — the tool's own
+        // "now available" note used to imply every category tool was invokable.
+        List<String> gatedOut = new ArrayList<>();
 
         for (ITool tool : toolRegistry.getAllTools()) {
             ToolCategory toolCategory = BuiltinToolTaxonomy.categoryOf(tool);
@@ -158,6 +163,7 @@ public class DiscoverToolsTool extends AbstractTool {
                         : envVisibility.isToolVisible(tool.getName(), ToolGroupTaxonomy.groupOf(tool));
                 if (!visible) {
                     hiddenByConfig++;
+                    gatedOut.add(tool.getName());
                     continue;
                 }
                 ToolDefinition def = toolRegistry.getToolDefinition(tool, surfaceContext);
@@ -193,11 +199,31 @@ public class DiscoverToolsTool extends AbstractTool {
             toolObj.addProperty("name", summary.name); //$NON-NLS-1$
             toolObj.addProperty("description", summary.description); //$NON-NLS-1$
             toolObj.addProperty("has_parameters", summary.hasParameters); //$NON-NLS-1$
+            toolObj.addProperty("available", true); //$NON-NLS-1$
             toolsArray.add(toolObj);
         }
         result.add("tools", toolsArray); //$NON-NLS-1$
+
+        // Surface any category tools the calling endpoint gates out, so the caller
+        // sees the full picture instead of assuming everything listed is callable.
+        if (!gatedOut.isEmpty()) {
+            JsonArray unavailable = new JsonArray();
+            for (String hidden : gatedOut) {
+                JsonObject u = new JsonObject();
+                u.addProperty("name", hidden); //$NON-NLS-1$
+                u.addProperty("available", false); //$NON-NLS-1$
+                u.addProperty("reason", //$NON-NLS-1$
+                        "not enabled in this endpoint's profile (group/tool gate) — tools/call will reject it"); //$NON-NLS-1$
+                unavailable.add(u);
+            }
+            result.add("unavailable", unavailable); //$NON-NLS-1$
+            result.addProperty("unavailable_count", gatedOut.size()); //$NON-NLS-1$
+        }
+
         result.addProperty("note", //$NON-NLS-1$
-                "These tools are now available. You can call them directly in subsequent messages."); //$NON-NLS-1$
+                "Tools under 'tools' are exposed on THIS endpoint and callable directly. " //$NON-NLS-1$
+                + "Availability is per-endpoint/profile: any entries under 'unavailable' are gated " //$NON-NLS-1$
+                + "out here and a tools/call for them will be rejected as not exposed."); //$NON-NLS-1$
 
         return CompletableFuture.completedFuture(
                 ToolResult.success(GSON.toJson(result)));
