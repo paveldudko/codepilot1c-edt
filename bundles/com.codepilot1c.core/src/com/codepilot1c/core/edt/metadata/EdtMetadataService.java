@@ -96,6 +96,7 @@ import com._1c.g5.v8.dt.form.model.FormCommand;
 import com._1c.g5.v8.dt.form.model.FormCommandHandlerContainer;
 import com._1c.g5.v8.dt.form.model.FormFactory;
 import com._1c.g5.v8.dt.form.model.FormPackage;
+import com._1c.g5.v8.dt.form.model.FormParameter;
 import com._1c.g5.v8.dt.form.model.FieldExtInfo;
 import com._1c.g5.v8.dt.form.model.FormField;
 import com._1c.g5.v8.dt.form.model.InputFieldExtInfo;
@@ -718,7 +719,8 @@ public class EdtMetadataService {
                         "Form metadata not found: " + request.formFqn(), false); //$NON-NLS-1$
             }
             Form formModel = resolveManagedFormModel(basicForm, request.formFqn());
-            List<String> applied = applyFormModelOperations(formModel, request.operations(), txConfiguration);
+            List<String> applied = applyFormModelOperations(formModel, request.operations(), txConfiguration,
+                    transaction, new HashMap<>());
             ensureUuidsRecursively(basicForm, opId, request.formFqn());
             return applied;
         });
@@ -861,7 +863,8 @@ public class EdtMetadataService {
                     ? applyFormAttributeRecipe(formModel, request.attributes(), mode, transaction, preResolvedTypes, txConfiguration)
                     : new FormAttributeRecipeStats();
             List<String> summaries = hasLayoutOps
-                    ? applyFormModelOperations(formModel, request.layoutOperations(), txConfiguration)
+                    ? applyFormModelOperations(formModel, request.layoutOperations(), txConfiguration,
+                            transaction, preResolvedTypes)
                     : List.of();
             // Normalize platform-required defaults after both attribute and
             // layout passes — handles the attributes-only path that does
@@ -1086,7 +1089,8 @@ public class EdtMetadataService {
     }
 
     private List<String> applyFormModelOperations(Form formModel, List<Map<String, Object>> operations,
-            Configuration configuration) {
+            Configuration configuration, IBmPlatformTransaction transaction,
+            Map<String, TypeItem> preResolvedTypes) {
         List<String> summaries = new ArrayList<>();
         IFormItemManagementService itemManagementService = resolveOptionalFormItemManagementService();
         int operationIndex = 1;
@@ -1326,6 +1330,47 @@ public class EdtMetadataService {
                     }
                     summaries.add("add_command[" + operationIndex + "]: name=" + formCommand.getName() //$NON-NLS-1$ //$NON-NLS-2$
                             + ", id=" + formCommand.getId() + ", action=" + actionHandler); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                case "addformparameter", "addparameter", "createformparameter" -> { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    // Declare a form-level Parameter (Form.getParameters()). Unlike attributes/fields
+                    // this is a non-visual, name-keyed member (no form-item id) — the same shape as
+                    // add_command. set_form_props cannot create it (parameters is a reference
+                    // collection, rejected by applySimpleFeatureValue). Feedback 2026-07-14 (BF-12839):
+                    // needed so OpenForm(..., New Structure("X", ...)) callers and Parameters.Property("X")
+                    // stop tripping the unknown-form-parameter-access diagnostic.
+                    String name = asString(getMapValueIgnoreCase(operation, "name")); //$NON-NLS-1$
+                    if (!MetadataNameValidator.isValidName(name)) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_NAME,
+                                "Invalid form parameter name: " + name, false); //$NON-NLS-1$
+                    }
+                    for (FormParameter existing : formModel.getParameters()) {
+                        if (existing != null && name.equalsIgnoreCase(existing.getName())) {
+                            throw new MetadataOperationException(
+                                    MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                                    "Form parameter already exists: " + name, false); //$NON-NLS-1$
+                        }
+                    }
+                    FormParameter parameter = FormFactory.eINSTANCE.createFormParameter();
+                    parameter.setName(name);
+                    // Attach to the form BEFORE resolving the type — TypeProviderService xtext scoping
+                    // needs the parameter's form/config context (same ordering add_field's attribute uses).
+                    formModel.getParameters().add(parameter);
+                    Object typeValue = firstNonNull(
+                            getMapValueIgnoreCase(operation, "type"), //$NON-NLS-1$
+                            getMapValueIgnoreCase(extractOperationSet(operation), "type")); //$NON-NLS-1$
+                    if (typeValue != null) {
+                        applyFormAttributeType(parameter, typeValue, transaction, preResolvedTypes, configuration);
+                    }
+                    Boolean keyParameter = asOptionalBoolean(getMapValueIgnoreCase(operation, "key_parameter")); //$NON-NLS-1$
+                    if (keyParameter != null) {
+                        parameter.setKeyParameter(keyParameter.booleanValue());
+                    }
+                    Object comment = getMapValueIgnoreCase(operation, "comment"); //$NON-NLS-1$
+                    if (comment != null) {
+                        parameter.setComment(asString(comment));
+                    }
+                    summaries.add("add_form_parameter[" + operationIndex + "]: name=" + parameter.getName()); //$NON-NLS-1$ //$NON-NLS-2$
                 }
                 case "addbutton", "createbutton" -> {
                     FormItemContainer parentContainer = resolveButtonParentContainer(formModel, operation);
@@ -4354,7 +4399,7 @@ public class EdtMetadataService {
     }
 
     private void applyFormAttributeType(
-            AbstractFormAttribute attribute,
+            EObject attribute,
             Object typeValue,
             IBmPlatformTransaction transaction,
             Map<String, TypeItem> preResolvedTypes,
@@ -4523,6 +4568,11 @@ public class EdtMetadataService {
         EStructuralFeature typeFeature = resolveStructuralFeatureIgnoreCase(target, "type"); //$NON-NLS-1$
         if (typeFeature == null) {
             typeFeature = resolveStructuralFeatureIgnoreCase(target, "typeDescription"); //$NON-NLS-1$
+        }
+        if (typeFeature == null) {
+            // FormParameter (and other non-AbstractFormAttribute holders) expose the type as a
+            // containment "valueType" EReference rather than "type"/"typeDescription".
+            typeFeature = resolveStructuralFeatureIgnoreCase(target, "valueType"); //$NON-NLS-1$
         }
         if (!(typeFeature instanceof EReference reference) || !reference.isContainment()) {
             throw new MetadataOperationException(
@@ -4866,7 +4916,8 @@ public class EdtMetadataService {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Operation requires \"op\" field. Valid values: add_field, add_group, add_command, " //$NON-NLS-1$
-                            + "add_button, set_item, remove_item, move_item, rename_command, set_form_props", false); //$NON-NLS-1$
+                            + "add_button, add_form_parameter, set_item, remove_item, move_item, " //$NON-NLS-1$
+                            + "rename_command, set_form_props", false); //$NON-NLS-1$
         }
 
         // Detect "type":"field" hallucination — model should use op:"add_field"
@@ -9780,7 +9831,7 @@ public class EdtMetadataService {
      * so scoping has the surrounding form/configuration context.
      */
     private TypeItem resolveFormAttributeTypeViaTypeProvider(
-            AbstractFormAttribute attribute,
+            EObject attribute,
             EObject context,
             String typeQuery,
             IBmPlatformTransaction transaction
@@ -9788,9 +9839,14 @@ public class EdtMetadataService {
         if (attribute == null) {
             return null;
         }
+        // A FormParameter's value type lives on a different EReference than an AbstractFormAttribute's;
+        // pick the right one so xtext scoping resolves against the correct feature.
+        EReference valueTypeRef = (attribute instanceof FormParameter)
+                ? FormPackage.eINSTANCE.getFormParameter_ValueType()
+                : FormPackage.eINSTANCE.getAbstractFormAttribute_ValueType();
         TypeItem resolved = resolveTypeItemViaTypeProvider(
                 attribute,
-                FormPackage.eINSTANCE.getAbstractFormAttribute_ValueType(),
+                valueTypeRef,
                 context,
                 typeQuery);
         if (resolved == null) {
