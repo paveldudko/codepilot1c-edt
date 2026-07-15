@@ -90,9 +90,11 @@ commit hash in parentheses where useful.
   preserved). Complements the synchronous `EDT_DESIGNER_AGENT_AUTH_FAILED` classifier above by removing
   the trigger for the credentialed-bind case rather than only reporting it after the fact.
 - Regression-covered by `EdtInfobaseConnectFinishBindOrderTest` (pins store-before-associate for
-  explicit creds; associate-before-store for the no-creds and blank-login paths). **Live validation
-  pending** on a real EDT + credentialed file sandbox (infra stack) — the acceptance bar is a bind that
-  surfaces no UI-thread modal.
+  explicit creds; associate-before-store for the no-creds and blank-login paths). **Live-validated
+  PASS** by infra on a real EDT + credentialed file sandbox (2026-07-15, bus report `4eda6a36`): the
+  credentialed bind completed with no UI-thread access-settings modal. The autonomy blocker is closed;
+  the item #6 residual (headless auto-suppression of the native dialog on *other* paths, e.g. a later
+  `update_infobase` under a genuinely-unauthenticable base) is untouched and stays a parked candidate.
   Ref: `codepilot1c-feedback/2026-07-10-connect-infobase-access-settings-modal-credentialed-file-base.md`
   (§ESCALATION 2026-07-15).
 
