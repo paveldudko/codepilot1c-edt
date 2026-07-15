@@ -89,14 +89,6 @@ public class AgentTraceSession {
         return LogSanitizer.newId(prefix);
     }
 
-    public String writeAgentEvent(TraceEventType type, String parentEventId, Map<String, Object> data) {
-        return write("events", type, parentEventId, data); //$NON-NLS-1$
-    }
-
-    public String writeLlmEvent(TraceEventType type, String parentEventId, Map<String, Object> data) {
-        return write("llm", type, parentEventId, data); //$NON-NLS-1$
-    }
-
     public String writeToolEvent(TraceEventType type, String parentEventId, Map<String, Object> data) {
         return write("tools", type, parentEventId, data); //$NON-NLS-1$
     }

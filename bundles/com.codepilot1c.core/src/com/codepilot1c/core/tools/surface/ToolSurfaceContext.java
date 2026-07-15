@@ -12,16 +12,12 @@ package com.codepilot1c.core.tools.surface;
  */
 public final class ToolSurfaceContext {
 
-    private final String activeProviderId;
     private final ToolCategory category;
     private final boolean builtIn;
-    private final boolean backendSelectedInUi;
 
     private ToolSurfaceContext(Builder builder) {
-        this.activeProviderId = builder.activeProviderId;
         this.category = builder.category != null ? builder.category : ToolCategory.DYNAMIC;
         this.builtIn = builder.builtIn;
-        this.backendSelectedInUi = builder.backendSelectedInUi;
     }
 
     public static ToolSurfaceContext passthrough() {
@@ -34,14 +30,8 @@ public final class ToolSurfaceContext {
 
     public Builder toBuilder() {
         return builder()
-                .activeProviderId(activeProviderId)
                 .category(category)
-                .builtIn(builtIn)
-                .backendSelectedInUi(backendSelectedInUi);
-    }
-
-    public String getActiveProviderId() {
-        return activeProviderId;
+                .builtIn(builtIn);
     }
 
     public ToolCategory getCategory() {
@@ -52,20 +42,9 @@ public final class ToolSurfaceContext {
         return builtIn;
     }
 
-    public boolean isBackendSelectedInUi() {
-        return backendSelectedInUi;
-    }
-
     public static final class Builder {
-        private String activeProviderId;
         private ToolCategory category;
         private boolean builtIn;
-        private boolean backendSelectedInUi;
-
-        public Builder activeProviderId(String activeProviderId) {
-            this.activeProviderId = activeProviderId;
-            return this;
-        }
 
         public Builder category(ToolCategory category) {
             this.category = category;
@@ -74,11 +53,6 @@ public final class ToolSurfaceContext {
 
         public Builder builtIn(boolean builtIn) {
             this.builtIn = builtIn;
-            return this;
-        }
-
-        public Builder backendSelectedInUi(boolean backendSelectedInUi) {
-            this.backendSelectedInUi = backendSelectedInUi;
             return this;
         }
 
