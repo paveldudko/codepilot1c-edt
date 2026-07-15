@@ -9,6 +9,26 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### Experiment — `mcp-bridge-lite`: strip the in-EDT chat/agent, keep the MCP bridge only
+
+- **Experimental branch `pd/mcp-bridge-lite` (forked from `pd/bsl-tuning`) turns the plugin into a
+  lightweight MCP-server-only bridge, removing the entire in-EDT chat/agent/LLM feature (~40% of the
+  Java source, ~69k lines).** Delivered in three staged, build-green commits:
+  - `c52b62d` (s1) — decouple the MCP host from the agent/LLM engine: drop the `/remote` browser
+    companion, the dead agent imports, and the `state` MCP resource; serve static prompt templates.
+  - `96d81b7` (s2) — delete the chat/agent UI (`views`/`chat`/`markdown`/`theme`/`editor`/`diff`/
+    `statusbar`/`menu`/`remote`/`dialogs`, AI code-action handlers, model/provider preference pages)
+    + 18 chat-only jars (flexmark ×16, autolink, annotations); keep the MCP-host prefs + `get_diagnostics`.
+  - `6c5fa27` (s3) — delete the core engine: `agent`/`provider`/`session`/`memory`/`skills`/`backend`/
+    `remote`/`context`/`feedback`/`streaming`/`evaluation.benchmark`, chat-state, the outbound MCP
+    client, and the LLM-wire `model` classes (kept `ToolDefinition`/`ToolCall`); trim
+    `VibeCorePlugin`/`ToolRegistry`/`ToolSurfaceContext`/`AgentTraceSession`/`GitService`; drop the
+    `llmProvider`/`promptProvider` extension points + 8 jars (langchain4j, langgraph4j, pdfbox, …).
+- **What remains:** the MCP host (`mcp/host`, `mcp/model`), the EDT tools (`tools/*`), diagnostics,
+  git, permissions, and the host preference/startup UI. Build green (`mvn -Plocal-target -DskipTests
+  verify`, 11/11); the 4 host test suites pass (19/19). Plan + review notes: `mcp-bridge-lite-PLAN.md`.
+  Not merged to `pd/bsl-tuning` — kept as a self-contained divergent line pending a keep/mainline call.
+
 ### BF-12705 — get_infobase_sync_state: actionable guidance for the update→still-NOT_EQUAL non-convergence mode
 
 - **The `needs_update` hint no longer sends an agent into a non-terminating `update_infobase` loop.** (this
