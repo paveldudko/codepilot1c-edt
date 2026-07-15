@@ -136,8 +136,7 @@ public class DiscoverToolsTool extends AbstractTool {
 
         // Collect tools for this category
         List<ToolSummary> toolSummaries = new ArrayList<>();
-        ToolSurfaceContext surfaceContext = toolRegistry.createRuntimeSurfaceContext(
-                ToolSurfaceContext.defaultProfile());
+        ToolSurfaceContext surfaceContext = toolRegistry.createRuntimeSurfaceContext();
         // Honor the exposure gate as a hard ceiling: a category disabled for this
         // endpoint must not be revealed through discover_tools either. When invoked
         // via the MCP host, the router supplies the CALLING PORT's visibility so the

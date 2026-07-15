@@ -18,8 +18,6 @@ import org.eclipse.jgit.lib.Repository;
 
 import com._1c.g5.v8.dt.common.git.GitUtils;
 import com.codepilot1c.core.logging.VibeLogger;
-import com.codepilot1c.core.session.Session;
-import com.codepilot1c.core.session.SessionManager;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
@@ -406,17 +404,6 @@ public class GitService {
 
     private static Path resolveDefaultContextProjectPath() {
         try {
-            Session session = SessionManager.getInstance().getCurrentSession();
-            if (session != null) {
-                Path sessionPath = asExistingDirectory(session.getProjectPath());
-                if (sessionPath != null) {
-                    return sessionPath;
-                }
-            }
-        } catch (RuntimeException e) {
-            LOG.debug("Git session lookup failed: %s", e.getMessage()); //$NON-NLS-1$
-        }
-        try {
             IWorkspace workspace = ResourcesPlugin.getWorkspace();
             if (workspace == null) {
                 return null;
@@ -448,10 +435,30 @@ public class GitService {
 
     private static String resolveDefaultContextProjectName() {
         try {
-            Session session = SessionManager.getInstance().getCurrentSession();
-            return session == null ? null : session.getProjectName();
+            IWorkspace workspace = ResourcesPlugin.getWorkspace();
+            if (workspace == null) {
+                return null;
+            }
+            IWorkspaceRoot root = workspace.getRoot();
+            if (root == null) {
+                return null;
+            }
+            String singleProjectName = null;
+            for (IProject project : root.getProjects()) {
+                if (project == null || !project.exists() || !project.isOpen() || project.getLocation() == null) {
+                    continue;
+                }
+                if (asExistingDirectory(project.getLocation().toOSString()) == null) {
+                    continue;
+                }
+                if (singleProjectName != null) {
+                    return null;
+                }
+                singleProjectName = project.getName();
+            }
+            return singleProjectName;
         } catch (RuntimeException e) {
-            LOG.debug("Git session name lookup failed: %s", e.getMessage()); //$NON-NLS-1$
+            LOG.debug("Git workspace project name lookup failed: %s", e.getMessage()); //$NON-NLS-1$
             return null;
         }
     }

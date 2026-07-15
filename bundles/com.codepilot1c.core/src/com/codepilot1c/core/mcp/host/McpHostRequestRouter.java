@@ -251,8 +251,7 @@ public class McpHostRequestRouter {
     private List<Map<String, Object>> listTools() {
         List<Map<String, Object>> out = new ArrayList<>();
         ToolRegistry registry = ToolRegistry.getInstance();
-        ToolSurfaceContext surfaceContext = registry.createRuntimeSurfaceContext(
-                ToolSurfaceContext.defaultProfile());
+        ToolSurfaceContext surfaceContext = registry.createRuntimeSurfaceContext();
         for (ITool tool : registry.getAllTools()) {
             if (!exposurePolicy.isExposed(tool.getName())) {
                 continue;

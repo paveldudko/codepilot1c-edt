@@ -23,53 +23,15 @@ public class VibePreferenceInitializer extends AbstractPreferenceInitializer {
     public void initializeDefaultPreferences() {
         IEclipsePreferences defaults = DefaultScope.INSTANCE.getNode(VibeCorePlugin.PLUGIN_ID);
 
-        // Default provider
-        defaults.put(VibePreferenceConstants.PREF_PROVIDER_ID, "claude"); //$NON-NLS-1$
-
-        // Claude defaults (no default model - user must configure)
-        defaults.put(VibePreferenceConstants.PREF_CLAUDE_MODEL, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_CLAUDE_API_URL, "https://api.anthropic.com/v1"); //$NON-NLS-1$
-        defaults.putInt(VibePreferenceConstants.PREF_CLAUDE_MAX_TOKENS, 4096);
-        defaults.put(VibePreferenceConstants.PREF_CLAUDE_CUSTOM_MODELS, ""); //$NON-NLS-1$
-
-        // OpenAI defaults (no default model - user must configure)
-        defaults.put(VibePreferenceConstants.PREF_OPENAI_MODEL, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_OPENAI_API_URL, "https://api.openai.com/v1"); //$NON-NLS-1$
-        defaults.putInt(VibePreferenceConstants.PREF_OPENAI_MAX_TOKENS, 4096);
-        defaults.put(VibePreferenceConstants.PREF_OPENAI_CUSTOM_MODELS, ""); //$NON-NLS-1$
-
-        // Ollama defaults (no default model - user must configure)
-        defaults.put(VibePreferenceConstants.PREF_OLLAMA_MODEL, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_OLLAMA_API_URL, "http://localhost:11434"); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_OLLAMA_CUSTOM_MODELS, ""); //$NON-NLS-1$
-
         // General settings
         defaults.putInt(VibePreferenceConstants.PREF_REQUEST_TIMEOUT, 60);
-        defaults.putBoolean(VibePreferenceConstants.PREF_STREAMING_ENABLED, true);
 
-        // Agent settings
-        defaults.putInt(VibePreferenceConstants.PREF_MAX_TOOL_ITERATIONS,
-                VibePreferenceConstants.DEFAULT_MAX_TOOL_ITERATIONS);
-        defaults.putBoolean(VibePreferenceConstants.PREF_AGENT_SKIP_TOOL_CONFIRMATIONS, false);
-        defaults.putBoolean(VibePreferenceConstants.PREF_CHAT_AUTO_COMPACT_ENABLED, true);
-        defaults.putInt(VibePreferenceConstants.PREF_CHAT_AUTO_COMPACT_THRESHOLD_PERCENT, 85);
-        defaults.putBoolean(VibePreferenceConstants.PREF_CHAT_SHOW_TOKEN_USAGE, true);
+        // QA / terminal utility settings
         defaults.put(VibePreferenceConstants.PREF_QA_VA_EPF_PATH, ""); //$NON-NLS-1$
         defaults.put(VibePreferenceConstants.PREF_TERMINAL_CWD_MODE, "project"); //$NON-NLS-1$
         defaults.putBoolean(VibePreferenceConstants.PREF_TERMINAL_NO_COLOR, false);
         defaults.put(VibePreferenceConstants.PREF_TERMINAL_TITLE_PREFIX, ""); //$NON-NLS-1$
         defaults.putBoolean(VibePreferenceConstants.PREF_TERMINAL_ALWAYS_USE_ACTIVE_PROJECT, false);
-
-        // Prompt customization (empty values mean "use built-in templates")
-        defaults.put(VibePreferenceConstants.PREF_PROMPT_SYSTEM_PREFIX, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_PROMPT_SYSTEM_SUFFIX, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_PROMPT_TEMPLATE_EXPLAIN_CODE, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_PROMPT_TEMPLATE_GENERATE_CODE, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_PROMPT_TEMPLATE_FIX_CODE, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_PROMPT_TEMPLATE_CRITICISE_CODE, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_PROMPT_TEMPLATE_ADD_CODE, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_PROMPT_TEMPLATE_DOC_COMMENTS, ""); //$NON-NLS-1$
-        defaults.put(VibePreferenceConstants.PREF_PROMPT_TEMPLATE_OPTIMIZE_QUERY, ""); //$NON-NLS-1$
 
         // HTTP defaults (based on Workmate patterns)
         defaults.putBoolean(VibePreferenceConstants.PREF_HTTP_HTTP2_ENABLED, true);

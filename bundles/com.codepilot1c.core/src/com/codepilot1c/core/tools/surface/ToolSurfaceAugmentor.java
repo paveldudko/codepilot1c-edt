@@ -32,10 +32,7 @@ public class ToolSurfaceAugmentor {
     }
 
     public static ToolSurfaceAugmentor defaultAugmentor() {
-        return new ToolSurfaceAugmentor(List.of(
-                new QwenToolSurfaceRewriteContributor(),
-                new QwenToolSurfaceContributor(),
-                new DynamicToolSurfaceContributor()));
+        return new ToolSurfaceAugmentor(List.of());
     }
 
     public ToolDefinition augment(ITool tool, ToolSurfaceContext context) {

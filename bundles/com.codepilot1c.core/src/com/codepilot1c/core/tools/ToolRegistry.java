@@ -27,7 +27,6 @@ import com.google.gson.Gson;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.model.ToolCall;
 import com.codepilot1c.core.model.ToolDefinition;
-import com.codepilot1c.core.agent.profiles.AgentProfile;
 import com.codepilot1c.core.tools.bsl.*;
 import com.codepilot1c.core.tools.dcs.*;
 import com.codepilot1c.core.tools.diagnostics.*;
@@ -65,7 +64,6 @@ public class ToolRegistry {
     private final Gson gson = new Gson();
     private ToolArgumentParser argumentParser;
     private ToolExecutionService executionService;
-    private ProviderContextResolver providerContextResolver;
     private volatile ToolSurfaceAugmentor augmentor;
 
     private ToolRegistry() {
@@ -73,7 +71,6 @@ public class ToolRegistry {
         registerDefaultTools();
         augmentor = ToolSurfaceAugmentor.defaultAugmentor();
         argumentParser = new ToolArgumentParser();
-        providerContextResolver = new ProviderContextResolver();
         executionService = new ToolExecutionService(this);
         LOG.info("ToolRegistry initialized with %d tools", tools.size()); //$NON-NLS-1$
     }
@@ -163,11 +160,7 @@ public class ToolRegistry {
         register(new QaPrepareFormContextTool());
         register(new QaPlanScenarioTool());
         register(new QaValidateFeatureTool());
-        register(new SkillTool());
-        register(new DelegateToAgentTool(this));
-        register(new TaskTool(this));
         register(new DiscoverToolsTool(this));
-        register(new com.codepilot1c.core.tools.memory.RememberFactTool());
 
         // Extra tools may be contributed by an overlay (e.g. Pro) via extension point.
         loadToolsFromExtensionPoint();
@@ -293,14 +286,7 @@ public class ToolRegistry {
      * @return list of tool definitions
      */
     public List<ToolDefinition> getToolDefinitions() {
-        return getToolDefinitions(ToolSurfaceContext.defaultProfile());
-    }
-
-    public List<ToolDefinition> getToolDefinitions(AgentProfile profile) {
-        ToolSurfaceContext baseContext = createRuntimeSurfaceContext(profile);
-        return getAllTools().stream()
-                .map(tool -> getToolDefinition(tool, baseContext))
-                .collect(Collectors.toList());
+        return getToolDefinitions(createRuntimeSurfaceContext());
     }
 
     public List<ToolDefinition> getToolDefinitions(ToolSurfaceContext baseContext) {
@@ -313,8 +299,8 @@ public class ToolRegistry {
         return effectiveAugmentor().augment(tool, contextForTool(tool, baseContext));
     }
 
-    public ToolSurfaceContext createRuntimeSurfaceContext(AgentProfile profile) {
-        return providerContextResolver().createRuntimeSurfaceContext(profile);
+    public ToolSurfaceContext createRuntimeSurfaceContext() {
+        return ToolSurfaceContext.passthrough();
     }
 
     public void setAugmentor(ToolSurfaceAugmentor augmentor) {
@@ -370,13 +356,6 @@ public class ToolRegistry {
             executionService = new ToolExecutionService(this);
         }
         return executionService;
-    }
-
-    private ProviderContextResolver providerContextResolver() {
-        if (providerContextResolver == null) {
-            providerContextResolver = new ProviderContextResolver();
-        }
-        return providerContextResolver;
     }
 
     private ToolArgumentParser argumentParser() {

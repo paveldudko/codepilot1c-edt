@@ -8,7 +8,6 @@ import java.util.stream.Collectors;
 
 import org.junit.Test;
 
-import com.codepilot1c.core.agent.profiles.BuildAgentProfile;
 import com.codepilot1c.core.model.ToolDefinition;
 import com.codepilot1c.core.tools.ToolRegistry;
 
@@ -18,7 +17,7 @@ public class ToolDescriptionCoverageTest {
     public void buildSurfaceToolsExposeNonEmptyDescriptions() {
         ToolRegistry registry = ToolRegistry.getInstance();
         List<ToolDefinition> definitions = registry.getToolDefinitions(
-                registry.createRuntimeSurfaceContext(new BuildAgentProfile()));
+                registry.createRuntimeSurfaceContext());
 
         List<String> missingDescriptions = definitions.stream()
                 .filter(definition -> definition.getDescription() == null || definition.getDescription().isBlank())

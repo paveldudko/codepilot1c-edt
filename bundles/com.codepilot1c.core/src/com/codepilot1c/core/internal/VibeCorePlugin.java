@@ -44,19 +44,9 @@ import com.e1c.g5.v8.dt.check.settings.ICheckRepository;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
 import com.codepilot1c.core.http.DefaultHttpClientFactory;
 import com.codepilot1c.core.http.HttpClientFactory;
-import com.codepilot1c.core.backend.BackendConfig;
-import com.codepilot1c.core.backend.BackendService;
 import com.codepilot1c.core.edt.runtime.EdtLaunchProcessRegistry;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.mcp.host.McpHostManager;
-import com.codepilot1c.core.mcp.McpServerManager;
-import com.codepilot1c.core.provider.config.DynamicLlmProvider;
-import com.codepilot1c.core.provider.config.LlmProviderConfig;
-import com.codepilot1c.core.provider.config.ProviderType;
-import com.codepilot1c.core.provider.LlmProviderRegistry;
-import com.codepilot1c.core.remote.IRemoteWorkbenchBridge;
-import com.codepilot1c.core.state.EdtStateBeacon;
-import com.codepilot1c.core.state.VibeStateService;
 import com.codepilot1c.core.tools.workspace.BackgroundJobRegistry;
 
 /**
@@ -96,7 +86,6 @@ public class VibeCorePlugin extends Plugin {
     private ServiceTracker<IResolvableRuntimeInstallationManager, IResolvableRuntimeInstallationManager> resolvableRuntimeInstallationManagerTracker;
     private ServiceTracker<IImportConfigurationFilesApi, IImportConfigurationFilesApi> importConfigurationFilesApiTracker;
     private ServiceTracker<IStandaloneServerService, IStandaloneServerService> standaloneServerServiceTracker;
-    private ServiceTracker<IRemoteWorkbenchBridge, IRemoteWorkbenchBridge> remoteWorkbenchBridgeTracker;
 
     @Override
     public void start(BundleContext context) throws Exception {
@@ -118,55 +107,12 @@ public class VibeCorePlugin extends Plugin {
 
         WorkspaceProjectBootstrap.importConfiguredProjects();
 
-        // Initialize persistent memory subsystem (contributor pipeline)
-        com.codepilot1c.core.memory.MemoryService.initialize();
-
-        // Initialize LLM providers and set initial state.
-        // If no providers are configured, plugin still starts but shows NOT_CONFIGURED.
-        try {
-            LlmProviderRegistry registry = LlmProviderRegistry.getInstance();
-            registry.initialize();
-            BackendService backendService = BackendService.getInstance();
-            if (backendService.isConfigured()) {
-                initializeLlmProvider(backendService.getApiKey());
-                CompletableFuture.runAsync(backendService::refreshUsage);
-            }
-            var active = registry.getActiveProvider();
-            if (active != null && active.isConfigured()) {
-                VibeStateService.getInstance().setIdle();
-            } else {
-                VibeStateService.getInstance().setNotConfigured(
-                        "No LLM providers configured. Configure one in Preferences or sign in."); //$NON-NLS-1$
-            }
-        } catch (Exception e) {
-            VibeStateService.getInstance().setError(e.getMessage());
-            vibeLogger.error("Core", "Failed to initialize LLM providers", e); //$NON-NLS-1$ //$NON-NLS-2$
-        }
-
-        // Start enabled MCP servers asynchronously
-        CompletableFuture.runAsync(() -> {
-            try {
-                McpServerManager.getInstance().startEnabledServers();
-            } catch (Exception e) {
-                vibeLogger.error("Core", "Failed to start MCP servers", e); //$NON-NLS-1$ //$NON-NLS-2$
-            }
-        });
-
         // Start inbound MCP host (for external clients) if enabled.
         CompletableFuture.runAsync(() -> {
             try {
                 McpHostManager.getInstance().startIfEnabled();
             } catch (Exception e) {
                 vibeLogger.error("Core", "Failed to start MCP host", e); //$NON-NLS-1$ //$NON-NLS-2$
-            }
-        });
-
-        // Start the shared state beacon if a stack-pool state dir is configured (opt-in).
-        CompletableFuture.runAsync(() -> {
-            try {
-                EdtStateBeacon.getInstance().startIfConfigured();
-            } catch (Exception e) {
-                vibeLogger.error("Core", "Failed to start state beacon", e); //$NON-NLS-1$ //$NON-NLS-2$
             }
         });
 
@@ -224,29 +170,16 @@ public class VibeCorePlugin extends Plugin {
         importConfigurationFilesApiTracker.open();
         standaloneServerServiceTracker = new ServiceTracker<>(context, IStandaloneServerService.class, null);
         standaloneServerServiceTracker.open();
-        remoteWorkbenchBridgeTracker = new ServiceTracker<>(context, IRemoteWorkbenchBridge.class, null);
-        remoteWorkbenchBridgeTracker.open();
     }
 
     @Override
     public void stop(BundleContext context) throws Exception {
         logInfo("1C Copilot Core plugin stopping"); //$NON-NLS-1$
 
-        // Stop all MCP servers
-        try {
-            McpServerManager.getInstance().stopAllServers();
-        } catch (Exception e) {
-            logWarn("Error stopping MCP servers", e); //$NON-NLS-1$
-        }
         try {
             McpHostManager.getInstance().stopAll();
         } catch (Exception e) {
             logWarn("Error stopping MCP host", e); //$NON-NLS-1$
-        }
-        try {
-            EdtStateBeacon.getInstance().stop();
-        } catch (Exception e) {
-            logWarn("Error stopping state beacon", e); //$NON-NLS-1$
         }
         try {
             EdtLaunchProcessRegistry.getInstance().cleanupAll();
@@ -267,17 +200,6 @@ public class VibeCorePlugin extends Plugin {
                 logWarn("Error disposing HTTP client factory", e); //$NON-NLS-1$
             }
             httpClientFactory = null;
-        }
-
-        try {
-            LlmProviderRegistry.getInstance().dispose();
-        } catch (Exception e) {
-            logWarn("Error disposing LLM provider registry", e); //$NON-NLS-1$
-        }
-        try {
-            BackendService.getInstance().dispose();
-        } catch (Exception e) {
-            logWarn("Error disposing backend service", e); //$NON-NLS-1$
         }
 
         closeTracker(configurationProviderTracker);
@@ -330,8 +252,6 @@ public class VibeCorePlugin extends Plugin {
         importConfigurationFilesApiTracker = null;
         closeTracker(standaloneServerServiceTracker);
         standaloneServerServiceTracker = null;
-        closeTracker(remoteWorkbenchBridgeTracker);
-        remoteWorkbenchBridgeTracker = null;
 
         plugin = null;
         super.stop(context);
@@ -523,10 +443,6 @@ public class VibeCorePlugin extends Plugin {
         return tracker.getService();
     }
 
-    public IRemoteWorkbenchBridge getRemoteWorkbenchBridge() {
-        return getTrackedService(remoteWorkbenchBridgeTracker, "IRemoteWorkbenchBridge"); //$NON-NLS-1$
-    }
-
     private <T> T getTrackedService(ServiceTracker<T, T> tracker, String serviceName) {
         if (tracker == null) {
             return null;
@@ -588,47 +504,6 @@ public class VibeCorePlugin extends Plugin {
      */
     public static void logError(Throwable e) {
         logError(e.getMessage(), e);
-    }
-
-    /**
-     * Initializes the transient backend LLM provider from a registration/login API key.
-     *
-     * @param apiKey backend API key
-     */
-    public static void initializeLlmProvider(String apiKey) {
-        initializeLlmProvider(apiKey, false);
-    }
-
-    /**
-     * Initializes the transient backend LLM provider from a registration/login API key.
-     *
-     * @param apiKey backend API key
-     * @param activateIfNoConfiguredProvider activate backend provider only when nothing usable is configured
-     */
-    public static void initializeLlmProvider(String apiKey, boolean activateIfNoConfiguredProvider) {
-        LlmProviderRegistry registry = LlmProviderRegistry.getInstance();
-        var previousActive = activateIfNoConfiguredProvider ? registry.getActiveProvider() : null;
-        LlmProviderConfig config = new LlmProviderConfig(
-                "backend", //$NON-NLS-1$
-                "CodePilot Account", //$NON-NLS-1$
-                ProviderType.CODEPILOT_BACKEND,
-                BackendConfig.LITELLM_BASE_URL,
-                apiKey,
-                "auto", //$NON-NLS-1$
-                4096);
-        config.setStreamingEnabled(true);
-        registry.setBackendProvider(new DynamicLlmProvider(config));
-        if (activateIfNoConfiguredProvider
-                && (previousActive == null || !previousActive.isConfigured())) {
-            registry.setActiveProvider("backend"); //$NON-NLS-1$
-        }
-    }
-
-    /**
-     * Clears the transient backend LLM provider.
-     */
-    public static void clearBackendLlmProvider() {
-        LlmProviderRegistry.getInstance().clearBackendProvider();
     }
 
     /**
