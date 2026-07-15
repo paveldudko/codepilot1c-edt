@@ -28,6 +28,12 @@ commit hash in parentheses where useful.
   git, permissions, and the host preference/startup UI. Build green (`mvn -Plocal-target -DskipTests
   verify`, 11/11); the 4 host test suites pass (19/19). Plan + review notes: `mcp-bridge-lite-PLAN.md`.
   Not merged to `pd/bsl-tuning` — kept as a self-contained divergent line pending a keep/mainline call.
+- **Live-validated** on sandbox EDT 2025.2.3: MCP host binds (`:8764`/`:8767`), `/health` 200,
+  `tools/list` (per-endpoint gating) + `tools/call` clean; `get_diagnostics` present, agent tools gone.
+- `f252b64` — follow-up fix: the root preference page kept the chat/agent field editors (Max Tool
+  Iterations, auto-compaction threshold, …) after their defaults stopped being seeded, so the range
+  validators rejected the un-seeded `0` and blocked saving the whole page (incl. MCP-host settings).
+  Removed the 6 dead fields; kept the host/QA/terminal/diagnostics ones.
 
 ### BF-12705 — get_infobase_sync_state: actionable guidance for the update→still-NOT_EQUAL non-convergence mode
 
