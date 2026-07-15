@@ -15,15 +15,11 @@ import org.eclipse.ui.IWorkbench;
 import org.eclipse.ui.PlatformUI;
 import org.eclipse.ui.plugin.AbstractUIPlugin;
 import org.osgi.framework.BundleContext;
-import org.osgi.framework.ServiceRegistration;
 
 import com.codepilot1c.core.tools.ToolRegistry;
-import com.codepilot1c.core.remote.IRemoteWorkbenchBridge;
 import com.codepilot1c.ui.mcp.McpProfilesChangeMonitor;
-import com.codepilot1c.ui.theme.ThemeManager;
 import com.codepilot1c.ui.tools.GetDiagnosticsDetailsTool;
 import com.codepilot1c.ui.tools.GetDiagnosticsTool;
-import com.codepilot1c.ui.remote.RemoteWorkbenchBridge;
 
 /**
  * The activator class controls the plug-in life cycle.
@@ -34,7 +30,6 @@ public class VibeUiPlugin extends AbstractUIPlugin {
 
 
     private static VibeUiPlugin plugin;
-    private ServiceRegistration<IRemoteWorkbenchBridge> remoteWorkbenchBridgeRegistration;
     private McpProfilesChangeMonitor mcpProfilesMonitor;
 
     @Override
@@ -73,15 +68,9 @@ public class VibeUiPlugin extends AbstractUIPlugin {
                 try {
                     // Check if workbench is available now
                     if (PlatformUI.isWorkbenchRunning()) {
-                        // Initialize theme manager
-                        ThemeManager.getInstance().initialize(finalDisplay);
-                        log("Theme manager initialized"); //$NON-NLS-1$
-
                         // Register UI tools
                         registerUiTools();
                         log("UI tools registered"); //$NON-NLS-1$
-
-                        registerRemoteWorkbenchBridge();
 
                         // Watch the shared MCP profiles file for out-of-band edits
                         // (direct JSON edit / another EDT instance) and offer reload.
@@ -109,21 +98,6 @@ public class VibeUiPlugin extends AbstractUIPlugin {
             mcpProfilesMonitor = null;
         }
 
-        // Dispose theme manager resources
-        try {
-            ThemeManager.getInstance().dispose();
-        } catch (Exception e) {
-            log(e);
-        }
-        if (remoteWorkbenchBridgeRegistration != null) {
-            try {
-                remoteWorkbenchBridgeRegistration.unregister();
-            } catch (Exception e) {
-                log(e);
-            }
-            remoteWorkbenchBridgeRegistration = null;
-        }
-
         plugin = null;
         super.stop(context);
     }
@@ -139,21 +113,6 @@ public class VibeUiPlugin extends AbstractUIPlugin {
         // Companion tool: fetch the rich EDT Check Info description for one or
         // more check_id values (Markdown rendered from check.descriptions HTML).
         registry.registerDynamicTool(new GetDiagnosticsDetailsTool());
-    }
-
-    private void registerRemoteWorkbenchBridge() {
-        if (remoteWorkbenchBridgeRegistration != null) {
-            return;
-        }
-        BundleContext context = getBundle() != null ? getBundle().getBundleContext() : null;
-        if (context == null) {
-            return;
-        }
-        remoteWorkbenchBridgeRegistration = context.registerService(
-                IRemoteWorkbenchBridge.class,
-                new RemoteWorkbenchBridge(),
-                null);
-        log("Remote workbench bridge registered"); //$NON-NLS-1$
     }
 
     /**

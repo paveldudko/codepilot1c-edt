@@ -9,25 +9,7 @@ Bundle-Activator: com.codepilot1c.ui.internal.VibeUiPlugin
 Bundle-ActivationPolicy: lazy
 Bundle-Localization: OSGI-INF/l10n/bundle
 Automatic-Module-Name: com.codepilot1c.ui
-Bundle-ClassPath: .,
- lib/flexmark-0.64.8.jar,
- lib/flexmark-util-0.64.8.jar,
- lib/flexmark-util-ast-0.64.8.jar,
- lib/flexmark-util-builder-0.64.8.jar,
- lib/flexmark-util-collection-0.64.8.jar,
- lib/flexmark-util-data-0.64.8.jar,
- lib/flexmark-util-dependency-0.64.8.jar,
- lib/flexmark-util-format-0.64.8.jar,
- lib/flexmark-util-html-0.64.8.jar,
- lib/flexmark-util-misc-0.64.8.jar,
- lib/flexmark-util-options-0.64.8.jar,
- lib/flexmark-util-sequence-0.64.8.jar,
- lib/flexmark-util-visitor-0.64.8.jar,
- lib/flexmark-ext-tables-0.64.8.jar,
- lib/flexmark-ext-autolink-0.64.8.jar,
- lib/flexmark-ext-gfm-strikethrough-0.64.8.jar,
- lib/annotations-24.0.1.jar,
- lib/autolink-0.6.0.jar
+Bundle-ClassPath: .
 Require-Bundle: org.eclipse.ui;bundle-version="[3.201.0,4.0.0)",
  org.eclipse.core.runtime;bundle-version="[3.26.0,4.0.0)",
  org.eclipse.ui.editors;bundle-version="[3.14.0,4.0.0)",
@@ -46,10 +28,4 @@ Import-Package: com.google.gson;version="[2.10.0,3.0.0)",
  org.eclipse.tm.terminal.view.ui.interfaces,
  org.eclipse.tm.terminal.view.ui.launcher,
  org.osgi.framework;version="[1.10.0,2.0.0)"
-Export-Package: com.codepilot1c.ui.chat,
- com.codepilot1c.ui.dialogs,
- com.codepilot1c.ui.diff,
- com.codepilot1c.ui.editor,
- com.codepilot1c.ui.markdown,
- com.codepilot1c.ui.preferences,
- com.codepilot1c.ui.views
+Export-Package: com.codepilot1c.ui.preferences
