@@ -50,42 +50,10 @@ public class VibePreferencePage extends FieldEditorPreferencePage implements IWo
         timeoutEditor.setValidRange(10, 300);
         addField(timeoutEditor);
 
-        // Streaming
-        addField(new BooleanFieldEditor(
-                VibePreferenceConstants.PREF_STREAMING_ENABLED,
-                Messages.PreferencePage_StreamingLabel,
-                getFieldEditorParent()));
-
-        // Max tool iterations (agent loop limit)
-        IntegerFieldEditor maxIterationsEditor = new IntegerFieldEditor(
-                VibePreferenceConstants.PREF_MAX_TOOL_ITERATIONS,
-                Messages.PreferencePage_MaxIterationsLabel,
-                getFieldEditorParent());
-        maxIterationsEditor.setValidRange(10, 500);
-        addField(maxIterationsEditor);
-
-        // Allow dangerous mode: skip confirmation dialogs for tool execution
-        addField(new BooleanFieldEditor(
-                VibePreferenceConstants.PREF_AGENT_SKIP_TOOL_CONFIRMATIONS,
-                Messages.PreferencePage_SkipToolConfirmationsLabel,
-                getFieldEditorParent()));
-
-        addField(new BooleanFieldEditor(
-                VibePreferenceConstants.PREF_CHAT_AUTO_COMPACT_ENABLED,
-                Messages.PreferencePage_AutoCompactEnabledLabel,
-                getFieldEditorParent()));
-
-        IntegerFieldEditor autoCompactThresholdEditor = new IntegerFieldEditor(
-                VibePreferenceConstants.PREF_CHAT_AUTO_COMPACT_THRESHOLD_PERCENT,
-                Messages.PreferencePage_AutoCompactThresholdLabel,
-                getFieldEditorParent());
-        autoCompactThresholdEditor.setValidRange(50, 95);
-        addField(autoCompactThresholdEditor);
-
-        addField(new BooleanFieldEditor(
-                VibePreferenceConstants.PREF_CHAT_SHOW_TOKEN_USAGE,
-                Messages.PreferencePage_ShowTokenUsageLabel,
-                getFieldEditorParent()));
+        // (lite) chat/agent fields removed with the engine: streaming,
+        // max-tool-iterations, skip-tool-confirmations, chat auto-compaction
+        // (+ threshold), and token-usage. Their defaults are no longer seeded,
+        // so leaving the range-validated editors here blocked the whole page.
 
         FileFieldEditor vaEpfEditor = new FileFieldEditor(
                 VibePreferenceConstants.PREF_QA_VA_EPF_PATH,
