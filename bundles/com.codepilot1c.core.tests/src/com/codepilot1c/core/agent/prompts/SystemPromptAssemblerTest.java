@@ -42,24 +42,6 @@ public class SystemPromptAssemblerTest {
         assertTrue(backend.prompt().contains("Skill: explain")); //$NON-NLS-1$
     }
 
-    @Test
-    public void promptProviderUsesSameAssemblyPathAsDirectAssembler() {
-        String assembled = SystemPromptAssembler.getInstance().assemble(
-                AgentPromptTemplates.buildBuildPrompt(),
-                null,
-                "build", //$NON-NLS-1$
-                List.of());
-        String fromProvider = new com.codepilot1c.core.mcp.host.prompt.PromptTemplateProvider()
-                .getPrompt("build", java.util.Map.of()) //$NON-NLS-1$
-                .orElseThrow()
-                .getMessages()
-                .get(0)
-                .getContent()
-                .getText();
-
-        assertEquals(assembled, fromProvider);
-    }
-
     private int countOccurrences(String haystack, String needle) {
         int count = 0;
         int index = 0;

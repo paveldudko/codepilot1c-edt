@@ -28,7 +28,6 @@ import com.codepilot1c.core.mcp.model.McpResourceContent;
 import com.codepilot1c.core.permissions.PermissionDecision;
 import com.codepilot1c.core.permissions.PermissionManager;
 import com.codepilot1c.core.evaluation.trace.TraceEventType;
-import com.codepilot1c.core.agent.profiles.AgentProfileRegistry;
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolExecutionContext;
 import com.codepilot1c.core.tools.ToolRegistry;

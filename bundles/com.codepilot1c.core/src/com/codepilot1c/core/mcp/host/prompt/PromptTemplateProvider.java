@@ -4,47 +4,71 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import com.codepilot1c.core.agent.prompts.AgentPromptTemplates;
-import com.codepilot1c.core.agent.prompts.SystemPromptAssembler;
 import com.codepilot1c.core.mcp.model.McpContent;
 import com.codepilot1c.core.mcp.model.McpPrompt;
 import com.codepilot1c.core.mcp.model.McpPromptResult;
 
+/**
+ * Serves a small, self-contained set of MCP prompt templates for CodePilot1C's
+ * EDT tool surface.
+ *
+ * <p>The MCP bridge only exposes tools; the reasoning is done by the connecting
+ * MCP client (the agent). These templates are therefore static scaffolds that
+ * point the client at the CodePilot1C tools — they carry no dependency on any
+ * in-plugin agent/LLM engine.
+ */
 public class PromptTemplateProvider implements IMcpPromptProvider {
+
+    private static final String BUILD_PROMPT =
+        "You are working inside a 1C:EDT workspace through the CodePilot1C MCP tools. " //$NON-NLS-1$
+        + "Implement the requested change end to end: inspect the relevant BSL modules and metadata, " //$NON-NLS-1$
+        + "apply edits with the editing tools, and validate the result with the diagnostics tools before finishing."; //$NON-NLS-1$
+
+    private static final String PLAN_PROMPT =
+        "You are working inside a 1C:EDT workspace through the CodePilot1C MCP tools. " //$NON-NLS-1$
+        + "Do not modify anything yet. Explore the workspace with the read-only tools, then produce a concise, " //$NON-NLS-1$
+        + "ordered implementation plan naming the concrete modules, metadata objects and steps required."; //$NON-NLS-1$
+
+    private static final String EXPLORE_PROMPT =
+        "You are working inside a 1C:EDT workspace through the CodePilot1C MCP tools. " //$NON-NLS-1$
+        + "Answer the question by searching and reading the workspace with the read-only tools only. " //$NON-NLS-1$
+        + "Report findings with concrete file paths and symbols; do not change any files."; //$NON-NLS-1$
 
     @Override
     public List<McpPrompt> listPrompts() {
         return List.of(
-            new McpPrompt("build", "Build-mode agent system prompt"), //$NON-NLS-1$ //$NON-NLS-2$
-            new McpPrompt("plan", "Plan-mode agent system prompt"), //$NON-NLS-1$ //$NON-NLS-2$
-            new McpPrompt("explore", "Explore-mode agent system prompt"), //$NON-NLS-1$ //$NON-NLS-2$
-            new McpPrompt("subagent", "Subagent system prompt") //$NON-NLS-1$ //$NON-NLS-2$
+            new McpPrompt("build", "Build-mode system prompt for CodePilot1C EDT tools"), //$NON-NLS-1$ //$NON-NLS-2$
+            new McpPrompt("plan", "Plan-mode system prompt for CodePilot1C EDT tools"), //$NON-NLS-1$ //$NON-NLS-2$
+            new McpPrompt("explore", "Explore-mode system prompt for CodePilot1C EDT tools"), //$NON-NLS-1$ //$NON-NLS-2$
+            new McpPrompt("subagent", "Subagent system prompt for a scoped CodePilot1C task") //$NON-NLS-1$ //$NON-NLS-2$
         );
     }
 
     @Override
     public Optional<McpPromptResult> getPrompt(String name, Map<String, Object> arguments) {
-        String baseText;
+        String text;
         switch (name) {
             case "build": //$NON-NLS-1$
-                baseText = AgentPromptTemplates.buildBuildPrompt();
+                text = BUILD_PROMPT;
                 break;
             case "plan": //$NON-NLS-1$
-                baseText = AgentPromptTemplates.buildPlanPrompt();
+                text = PLAN_PROMPT;
                 break;
             case "explore": //$NON-NLS-1$
-                baseText = AgentPromptTemplates.buildExplorePrompt();
+                text = EXPLORE_PROMPT;
                 break;
             case "subagent": //$NON-NLS-1$
-                String profile = stringArg(arguments, "profile", "mcp"); //$NON-NLS-1$ //$NON-NLS-2$
-                String description = stringArg(arguments, "description", "MCP prompt request"); //$NON-NLS-1$ //$NON-NLS-2$
+                String description = stringArg(arguments, "description", "the requested task"); //$NON-NLS-1$ //$NON-NLS-2$
                 boolean readOnly = Boolean.parseBoolean(stringArg(arguments, "readOnly", "true")); //$NON-NLS-1$ //$NON-NLS-2$
-                baseText = AgentPromptTemplates.buildSubagentPrompt(profile, description, readOnly);
+                text = "You are a focused subagent working inside a 1C:EDT workspace through the CodePilot1C MCP tools. " //$NON-NLS-1$
+                    + "Complete only this task: " + description + ". " //$NON-NLS-1$ //$NON-NLS-2$
+                    + (readOnly
+                        ? "Use the read-only tools only and report your findings." //$NON-NLS-1$
+                        : "Apply the necessary changes and validate them with the diagnostics tools."); //$NON-NLS-1$
                 break;
             default:
                 return Optional.empty();
         }
-        String text = SystemPromptAssembler.getInstance().assemble(baseText, null, name, List.of());
 
         McpPromptResult result = new McpPromptResult();
         result.setDescription("CodePilot prompt template: " + name); //$NON-NLS-1$

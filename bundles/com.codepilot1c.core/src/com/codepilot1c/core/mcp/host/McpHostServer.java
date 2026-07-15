@@ -10,7 +10,6 @@ import com.codepilot1c.core.tools.surface.ToolGroupVisibility;
 import com.codepilot1c.core.mcp.host.prompt.PromptTemplateProvider;
 import com.codepilot1c.core.mcp.host.resource.DiagnosticsResourceProvider;
 import com.codepilot1c.core.mcp.host.resource.IMcpResourceProvider;
-import com.codepilot1c.core.mcp.host.resource.StateResourceProvider;
 import com.codepilot1c.core.mcp.host.resource.WorkspaceResourceProvider;
 import com.codepilot1c.core.mcp.host.session.McpHostSession;
 import com.codepilot1c.core.mcp.host.transport.McpHostHttpTransport;
@@ -68,8 +67,7 @@ public class McpHostServer implements IMcpHostServer {
                 config, profile.getExposedToolsFilter(), groupVisibility);
         List<IMcpResourceProvider> resourceProviders = List.of(
             new WorkspaceResourceProvider(),
-            new DiagnosticsResourceProvider(),
-            new StateResourceProvider()
+            new DiagnosticsResourceProvider()
         );
         router = new McpHostRequestRouter(
             exposurePolicy,
