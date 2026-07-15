@@ -69,6 +69,33 @@ commit hash in parentheses where useful.
 - Unit-covered by new cases in `ConnectInfobaseLockDetectionTest` (classifier + enum distinctness).
   Ref: `codepilot1c-feedback/2026-07-14-bf12839-launch-app-hangs-after-designer-agent-sshauth-fail-bind.md`.
 
+### BF-12839 — connect_infobase: non-interactive bind for credentialed file bases (prime access settings before associate)
+
+- **The access-settings modal on a credentialed (re-)bind is fixed at the root: passed credentials are
+  now written BEFORE `associate()`.** (this commit) `EdtInfobaseConnectService.finishBind` used to
+  `associate()` first and `storeAccessSettings()` last (the BF-13140 creds-last order, which keeps a
+  blocked shared secure-storage flush from stranding the primary pointer). But `associate()`
+  *synchronously* fires EDT's association event, whose behaviour delegate restores previously-open
+  Designer sessions (`connectAndRestoreState → DesignerClient.connect`) using the infobase's *currently
+  stored* access settings — still OS/empty at that point, so on a base copied from a credentialed source
+  the restore fails to authenticate (JSch `Auth fail`) and EDT raises the native **"Configure Infobase
+  Access Settings"** modal on the UI thread. That modal is a hard block on a headless/agent bind
+  (escalated to an autonomy blocker after a 3rd recurrence, 2026-07-15). This explains why passing
+  `login`/`password` did not prevent the modal: the credentials were written a few lines too late. The
+  fix: when explicit credentials are passed, **prime** the access settings before `associate()` so the
+  connect-restore authenticates; the authoritative store still runs after (its skip-if-unchanged fast
+  path makes it a no-op flush in the common case, and it correctly re-targets a UUID adopted during
+  `associate()`'s setDefault retry). The **no-creds path is untouched** — it keeps the BF-13140
+  creds-LAST order (nothing useful to prime; primary durability against a blocked secure-storage flush
+  preserved). Complements the synchronous `EDT_DESIGNER_AGENT_AUTH_FAILED` classifier above by removing
+  the trigger for the credentialed-bind case rather than only reporting it after the fact.
+- Regression-covered by `EdtInfobaseConnectFinishBindOrderTest` (pins store-before-associate for
+  explicit creds; associate-before-store for the no-creds and blank-login paths). **Live validation
+  pending** on a real EDT + credentialed file sandbox (infra stack) — the acceptance bar is a bind that
+  surfaces no UI-thread modal.
+  Ref: `codepilot1c-feedback/2026-07-10-connect-infobase-access-settings-modal-credentialed-file-base.md`
+  (§ESCALATION 2026-07-15).
+
 ### discover_tools: reflect per-endpoint tool gating instead of an unconditional "now available"
 
 - **`discover_tools` now reports category tools the calling endpoint gates out** under an `unavailable`

@@ -852,16 +852,47 @@ public class EdtInfobaseConnectService {
     }
 
     /**
-     * Commits the association/primary pointer, THEN persists credentials best-effort. The ORDER is the
-     * fix for BF-13140 (2026-07-09): EDT's credential flush writes the SHARED default secure storage
-     * and, in a multi-EDT-instance host, can fail or block on the interactive "secure storage modified
-     * by another program" modal a headless bind cannot answer. Committing the primary FIRST guarantees
-     * the bind's primary contract is durable even if that flush later blocks/fails — previously the
-     * flush ran first, so a blocked modal left the v8i entry + lease correct but the primary pointer
-     * stale (live-observed on the SLC-1 stack lifecycle test).
+     * Commits the association/primary pointer and persists the access credentials best-effort. Two
+     * ordering constraints are reconciled here:
+     *
+     * <ul>
+     * <li><b>BF-13140 (2026-07-09) — creds LAST.</b> EDT's credential flush writes the SHARED default
+     * secure storage and, in a multi-EDT-instance host, can fail or block on the interactive "secure
+     * storage modified by another program" modal a headless bind cannot answer. Committing the primary
+     * FIRST guarantees the bind's primary contract is durable even if that flush later blocks/fails —
+     * previously the flush ran first, so a blocked modal left the v8i entry + lease correct but the
+     * primary pointer stale (live-observed on the SLC-1 stack lifecycle test).</li>
+     * <li><b>BF-12839 (2026-07-15) — explicit creds must be PRIMED first.</b> {@link #associate}
+     * synchronously fires EDT's association event, whose behaviour delegate restores previously-open
+     * Designer sessions ({@code connectAndRestoreState -> DesignerClient.connect}) using the infobase's
+     * <em>currently stored</em> access settings. Under the creds-last order above those are still
+     * OS/empty on a (re-)bind, so that restore fails to authenticate and EDT raises the native
+     * "Configure Infobase Access Settings" modal — a hard block on a headless/agent bind (escalated to
+     * an autonomy blocker after a 3rd recurrence). So when explicit credentials are passed we PRIME the
+     * access settings before {@code associate()} too, letting the restore read the real credentials.</li>
+     * </ul>
+     *
+     * When explicit credentials are passed the store therefore runs twice: a best-effort prime before
+     * {@code associate()} (so the connect-restore authenticates) and the authoritative store after it.
+     * The post-associate store's skip-if-unchanged fast path makes the second call a no-op flush in the
+     * common case, and correctly re-targets a UUID adopted during {@code associate()}'s setDefault
+     * retry. The no-creds path keeps the BF-13140 creds-LAST order untouched (nothing useful to prime;
+     * primary durability preserved against a blocked shared secure-storage flush).
      */
     protected BindCommit finishBind(IProject project, InfobaseReference reference, boolean setPrimary,
             String login, String password) {
+        // BF-12839: prime access settings before associate() when explicit creds are passed, so the
+        // association event's Designer connect-restore authenticates instead of raising the native
+        // access-settings modal. Best-effort — the authoritative store below still runs.
+        boolean explicitCreds = login != null && !login.isBlank();
+        if (explicitCreds) {
+            try {
+                storeAccessSettings(reference, login, password);
+            } catch (RuntimeException e) {
+                LOG.warn("connect_infobase: pre-associate credential priming failed (%s) — " //$NON-NLS-1$
+                        + "continuing to associate + authoritative store", e.getMessage()); //$NON-NLS-1$
+            }
+        }
         boolean primary = associate(project, reference, setPrimary);
         CredentialOutcome credentials;
         try {
