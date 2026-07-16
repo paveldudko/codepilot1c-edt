@@ -1321,7 +1321,8 @@ public class EdtMetadataService {
                     if (actionHandler == null || actionHandler.isBlank()) {
                         actionHandler = name; // Default handler name = command name
                     }
-                    FormCommand formCommand = addCommandToForm(formModel, name, actionHandler, operation);
+                    FormCommand formCommand = addCommandToForm(formModel, name, actionHandler, operation,
+                            configuration);
                     Object commandPicture = firstNonNull(
                             getMapValueIgnoreCase(operation, "picture"), //$NON-NLS-1$
                             getMapValueIgnoreCase(extractOperationSet(operation), "picture")); //$NON-NLS-1$
@@ -1474,7 +1475,8 @@ public class EdtMetadataService {
                             getMapValueIgnoreCase(operation, "new_title"), //$NON-NLS-1$
                             getMapValueIgnoreCase(operation, "title")); //$NON-NLS-1$
                     if (newTitle != null) {
-                        applyTitleValue(command, newTitle, resolveProjectDefaultLanguageCode(formModel));
+                        applyTitleValue(command, newTitle,
+                                resolveProjectDefaultLanguageCode(formModel, configuration));
                     }
                     summaries.add("rename_command[" + operationIndex + "]: " + oldName //$NON-NLS-1$ //$NON-NLS-2$
                             + " -> " + newName + ", id=" + command.getId() //$NON-NLS-1$ //$NON-NLS-2$
@@ -2224,14 +2226,15 @@ public class EdtMetadataService {
             Form formModel,
             String name,
             String actionHandler,
-            Map<String, Object> operation) {
+            Map<String, Object> operation,
+            Configuration configuration) {
         FormCommand formCommand = FormFactory.eINSTANCE.createFormCommand();
         formCommand.setName(name);
         // Assign a unique command ID (separate namespace from form items, but we reuse nextFormItemId for safety)
         int cmdId = nextFormCommandId(formModel);
         formCommand.setId(cmdId);
         // Set title — track project's default language so titles don't leak "ru" in English-locale projects.
-        String defaultLanguageCode = resolveProjectDefaultLanguageCode(formModel);
+        String defaultLanguageCode = resolveProjectDefaultLanguageCode(formModel, configuration);
         applyTitleValue(formCommand, getMapValueIgnoreCase(operation, "title"), defaultLanguageCode); //$NON-NLS-1$
         // If no title was set, use command name as default title
         if (formCommand.getTitle().isEmpty()) {
@@ -3458,7 +3461,7 @@ public class EdtMetadataService {
             Object value = entry.getValue();
             String normalized = normalizeToken(key);
             if ("title".equals(normalized) && target instanceof Titled titled) { //$NON-NLS-1$
-                applyTitleValue(titled, value, resolveProjectDefaultLanguageCode(target));
+                applyTitleValue(titled, value, resolveProjectDefaultLanguageCode(target, configuration));
                 continue;
             }
             if ("handlers".equals(normalized) && target instanceof EventHandlerContainer container) { //$NON-NLS-1$
@@ -3657,6 +3660,23 @@ public class EdtMetadataService {
             }
         }
         return RU_LANGUAGE;
+    }
+
+    /**
+     * Configuration-aware variant. A Form EObject lives in its own {@code .form} resource, so
+     * {@code EcoreUtil.getRootContainer(form)} returns that resource's root, NOT the Configuration —
+     * the single-arg variant therefore always fell back to {@code "ru"} and form titles leaked "ru"
+     * into English-primary projects even though synonyms resolved correctly (feedback
+     * 2026-07-16-mutate-form-model-add-command-title-locale-defaults-ru). When the Configuration is in
+     * scope (the form-mutation dispatcher has it), resolve the title's default locale the SAME way
+     * synonyms do ({@link #resolveSynonymLocaleKey}) so a title lands in the project's primary content
+     * language, consistent with {@code create_metadata}/{@code add_metadata_child} synonym handling.
+     */
+    private String resolveProjectDefaultLanguageCode(EObject ctx, Configuration configuration) {
+        if (configuration != null) {
+            return resolveSynonymLocaleKey(configuration);
+        }
+        return resolveProjectDefaultLanguageCode(ctx);
     }
 
     private void applyDataPath(FormField field, Object value) {

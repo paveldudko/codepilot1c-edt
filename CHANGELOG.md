@@ -9,6 +9,24 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-12936 feedback (2026-07-16) — `mutate_form_model` form titles leaked `ru` in EN-primary projects
+
+- **`add_command` / `rename_command` / `set_item` titles now land in the project's primary content
+  language instead of always `ru`.** A plain-string `title` was written under `<key>ru</key>` even in
+  English-primary projects, while `create_metadata` synonyms correctly resolved to `en` — the divergence
+  was `resolveProjectDefaultLanguageCode(form)`, which walked `EcoreUtil.getRootContainer(form)`: a Form
+  EObject lives in its own `.form` resource, so the root container is never the `Configuration` and the
+  resolver always fell back to `ru`. A Configuration-aware overload now resolves the title's default
+  locale via the same `resolveSynonymLocaleKey` the synonym path uses (default language → first
+  configured language → `ru`), threaded through the form-mutation dispatcher (which has the
+  Configuration in scope) into `add_command`, `rename_command`, and `set_item`'s title handling. The
+  rare `itemManagementService == null` fallback (new table/decoration titles) keeps the prior ctx-only
+  resolution. Correctness rests on the already-tested `BmSynonymLocaleResolver`; live confirmation on the
+  AM project pending. (feedback `2026-07-16-mutate-form-model-add-command-title-locale-defaults-ru`)
+- Residual (queued, not in this change): no op removes/replaces a *specific* stray title-locale key on an
+  existing command (only prevents new ones); the same `ru`-default also affects `update_metadata`
+  `recordPresentation`/`listPresentation` (a separate code path).
+
 ### BF-12936 feedback (2026-07-16) — `mutate_form_model set_item userVisible` flat per-role map
 
 - **A flat per-role `userVisible` map no longer silently wipes the item's visibility default.** The tool
