@@ -102,11 +102,17 @@ commit hash in parentheses where useful.
   old hard cap aborted it and reported the misleading "held by another process" as the sole cause. The
   `PROCESS_TIMEOUT` message now names both plausible causes (still-restructuring large IB → raise
   `timeout_s`; or a real external holder) and surfaces the Designer PID(s) EDT spawned that may still
-  hold the file lock (`aborted_designer_pids` + `timeout_s` in the payload) — the process is *named, not
-  killed*, since killing a Designer mid-restructure would corrupt the update. (feedback
+  hold the file lock (`designer_pids_still_holding` + `timeout_s` in the payload) — the process is
+  *named, not killed*, since killing a Designer mid-restructure would corrupt the update. (feedback
   `2026-07-16-update-infobase-process-timeout-300s-ceiling-reproducible`)
+- **Addendum:** the timeout PID field was renamed `aborted_designer_pids` → `designer_pids_still_holding`
+  and the message now states the tool did *not* terminate the process and points at `kill_agent_mode=true`
+  as the actual-kill lever on retry. Infra verified the old `aborted_*` name was misleading: the surfaced
+  Designer PID stayed alive and kept doing real work (CPU climbing) well past the abort, so a caller that
+  trusted the `aborted_*` name could race a still-live process. (infra feedback `29d43ab5` /
+  `update-infobase-abort-does-not-kill-designer`)
 - Unit tests: `EdtUpdateInfobaseErgonomicsTest` (sentinel vs real job id, timeout clamp, `timeout_s`
-  parsing, `PROCESS_TIMEOUT` message). Build green (`-Plocal-target`, 24/24 across the touched suites).
+  parsing, `PROCESS_TIMEOUT` message + non-kill-implying PID key). Build green (`-Plocal-target`).
 
 ### Experiment — `mcp-bridge-lite`: strip the in-EDT chat/agent, keep the MCP bridge only
 

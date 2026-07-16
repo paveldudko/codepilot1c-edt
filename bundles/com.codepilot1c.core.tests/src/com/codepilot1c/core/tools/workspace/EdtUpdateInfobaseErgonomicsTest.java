@@ -19,6 +19,11 @@ import org.junit.Test;
  *       the {@code PROCESS_TIMEOUT} message names both plausible causes plus the still-alive Designer
  *       PID(s). Covered via {@link EdtUpdateInfobaseTool#clampTimeoutSeconds},
  *       {@link EdtUpdateInfobaseTool#asInt} and {@link EdtUpdateInfobaseTool#processTimeoutMessage}.</li>
+ *   <li><b>#4 addendum</b> (infra {@code 29d43ab5}) — the surfaced Designer PID must NOT be reported under
+ *       a name that implies the tool killed it (it did not; the process stays alive and keeps working).
+ *       The detail key is {@code designer_pids_still_holding} and the message points at
+ *       {@code kill_agent_mode=true} as the actual-kill lever. Covered via
+ *       {@link EdtUpdateInfobaseTool#processTimeoutDetails}.</li>
  * </ul>
  *
  * <p>All the methods under test are pure (no EDT/Eclipse runtime), so they run headless.</p>
@@ -116,5 +121,31 @@ public class EdtUpdateInfobaseErgonomicsTest {
         String msg = EdtUpdateInfobaseTool.processTimeoutMessage(600L, List.of(34560L, 34999L));
         assertTrue("must state the (raised) elapsed timeout", msg.contains("600s")); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue("must name the still-alive Designer pids", msg.contains("34560,34999")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("must point at kill_agent_mode=true as the actual-kill lever on retry (infra 29d43ab5)", //$NON-NLS-1$
+                msg.contains("kill_agent_mode=true")); //$NON-NLS-1$
+        assertTrue("must say the tool did NOT kill them, so a caller doesn't race a live process", //$NON-NLS-1$
+                msg.toLowerCase(java.util.Locale.ROOT).contains("did not terminate")); //$NON-NLS-1$
+    }
+
+    // -- #4 addendum (infra 29d43ab5): the PID detail key must not imply a kill ----------------------
+
+    @Test
+    public void timeoutDetailsUseNonKillImplyingKey() {
+        java.util.Map<String, String> details =
+                EdtUpdateInfobaseTool.processTimeoutDetails(600L, List.of(34560L, 34999L));
+        assertFalse("the aborted_* key wrongly implied the Designer was killed — must be gone", //$NON-NLS-1$
+                details.containsKey("aborted_designer_pids")); //$NON-NLS-1$
+        assertTrue("surfaces the still-holding pids under an accurate, non-kill-implying key", //$NON-NLS-1$
+                details.containsKey("designer_pids_still_holding")); //$NON-NLS-1$
+        assertEquals("34560,34999", details.get("designer_pids_still_holding")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void timeoutDetailsOmitPidKeyWhenNoDesignerFound() {
+        java.util.Map<String, String> details =
+                EdtUpdateInfobaseTool.processTimeoutDetails(300L, List.of());
+        assertFalse("no pid key at all when the scan found nothing", //$NON-NLS-1$
+                details.containsKey("designer_pids_still_holding")); //$NON-NLS-1$
+        assertEquals("300", details.get("update_timeout_s")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 }

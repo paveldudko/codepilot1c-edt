@@ -684,20 +684,29 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         if (designerPids != null && !designerPids.isEmpty()) {
             sb.append("The Designer process(es) EDT spawned for this update (pid ") //$NON-NLS-1$
                     .append(joinPids(designerPids))
-                    .append(") may still hold the infobase file lock — kill them before retrying if the ") //$NON-NLS-1$
-                    .append("update is genuinely wedged (NOT if it is still doing real work). "); //$NON-NLS-1$
+                    .append(") are STILL RUNNING — the tool did NOT terminate them (aborting a Designer ") //$NON-NLS-1$
+                    .append("that is genuinely mid-restructure would corrupt the update), so they may ") //$NON-NLS-1$
+                    .append("still hold the infobase file lock and may still be doing real work. If the ") //$NON-NLS-1$
+                    .append("update is genuinely wedged (NOT still progressing), retry with ") //$NON-NLS-1$
+                    .append("kill_agent_mode=true to terminate them right before the lock is taken. "); //$NON-NLS-1$
         }
         sb.append("Stop any real holder (web_publication action=restart, or close the client) or raise ") //$NON-NLS-1$
                 .append("timeout_s, then retry."); //$NON-NLS-1$
         return sb.toString();
     }
 
-    /** Structured detail fields for a {@code PROCESS_TIMEOUT}, rendered by {@link #errorPayloadFrom}. */
-    private static Map<String, String> processTimeoutDetails(long timeoutSeconds, List<Long> designerPids) {
+    /**
+     * Structured detail fields for a {@code PROCESS_TIMEOUT}, rendered by {@link #errorPayloadFrom}.
+     * The PID field is keyed {@code designer_pids_still_holding} (NOT {@code aborted_designer_pids}):
+     * the tool surfaces but does NOT kill these — the earlier {@code aborted_*} name wrongly implied a
+     * kill and let a caller race a still-live process (infra feedback 2026-07-16). Package-private for
+     * the ergonomics unit test.
+     */
+    static Map<String, String> processTimeoutDetails(long timeoutSeconds, List<Long> designerPids) {
         Map<String, String> details = new java.util.LinkedHashMap<>();
         details.put("update_timeout_s", Long.toString(timeoutSeconds)); //$NON-NLS-1$
         if (designerPids != null && !designerPids.isEmpty()) {
-            details.put("aborted_designer_pids", joinPids(designerPids)); //$NON-NLS-1$
+            details.put("designer_pids_still_holding", joinPids(designerPids)); //$NON-NLS-1$
         }
         return details;
     }
@@ -804,9 +813,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 json.addProperty("timeout_s", details.get("update_timeout_s")); //$NON-NLS-1$ //$NON-NLS-2$
             }
         }
-        if (details.containsKey("aborted_designer_pids")) { //$NON-NLS-1$
+        if (details.containsKey("designer_pids_still_holding")) { //$NON-NLS-1$
             JsonArray pids = new JsonArray();
-            for (String raw : details.get("aborted_designer_pids").split(",")) { //$NON-NLS-1$ //$NON-NLS-2$
+            for (String raw : details.get("designer_pids_still_holding").split(",")) { //$NON-NLS-1$ //$NON-NLS-2$
                 String pid = raw.trim();
                 if (pid.isEmpty()) {
                     continue;
@@ -818,7 +827,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 }
             }
             if (!pids.isEmpty()) {
-                json.add("aborted_designer_pids", pids); //$NON-NLS-1$
+                // Surfaced, not killed — see processTimeoutDetails. The name must not imply a kill.
+                json.add("designer_pids_still_holding", pids); //$NON-NLS-1$
             }
         }
         return json;
