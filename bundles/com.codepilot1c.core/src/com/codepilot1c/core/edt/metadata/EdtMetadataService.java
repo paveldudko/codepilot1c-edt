@@ -3699,7 +3699,14 @@ public class EdtMetadataService {
         List<RoleVisibility> perRole = List.of();
         Boolean common = parseBoolean(value);
         if (value instanceof Map<?, ?> map) {
-            perRole = parseForRoleEntries(getMapValueIgnoreCase(map, "for"), fieldName); //$NON-NLS-1$
+            Object forPayload = getMapValueIgnoreCase(map, "for"); //$NON-NLS-1$
+            // Two accepted map shapes: the structured {common, for:[{role,value}]} and the flat
+            // {common, "RoleName":bool} the description advertises as "per-role map". The flat form used
+            // to be silently dropped (feedback 2026-07-16), which wiped the working default to
+            // common=false (hidden for everyone) — harvest its role keys here instead.
+            perRole = forPayload != null
+                    ? parseForRoleEntries(forPayload, fieldName)
+                    : parseFlatRoleEntries(map, fieldName);
             if (common == null) {
                 common = firstParsedBoolean(
                         getMapValueIgnoreCase(map, "common"), //$NON-NLS-1$
@@ -3788,6 +3795,52 @@ public class EdtMetadataService {
             result.add(new RoleVisibility(role, visibleValue.booleanValue()));
         }
         return result;
+    }
+
+    /**
+     * Parse the flat per-role form of a {@code userVisible} map — role names as keys mapping to
+     * booleans, e.g. {@code {common:false, "AddEditFinanceVerification":true}}. This is the shape the
+     * tool description ("bool or per-role map") invites; before this existed such a map silently dropped
+     * every role key and applied only {@code common}, wiping the working default to hidden-for-everyone
+     * (feedback 2026-07-16-mutate-form-model-set-item-uservisible-by-role-breaks-default). Reserved keys
+     * ({@code common}/{@code value}/{@code visible}/{@code enabled}/{@code for}) are skipped — they carry
+     * the uniform flag, not a role. A non-boolean value on a role key is rejected (never silently
+     * ignored — that would risk the same destructive drop). Pure (no EMF/BM access), package-private for
+     * tests.
+     */
+    static List<RoleVisibility> parseFlatRoleEntries(Map<?, ?> map, String fieldName) {
+        if (map == null) {
+            return List.of();
+        }
+        List<RoleVisibility> result = new ArrayList<>();
+        for (Map.Entry<?, ?> mapEntry : map.entrySet()) {
+            String key = asTrimmedString(mapEntry.getKey());
+            if (key == null || key.isBlank() || isReservedUserVisibleKey(key)) {
+                continue;
+            }
+            Boolean value = parseBooleanLiteral(mapEntry.getValue());
+            if (value == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "userVisible per-role entry '" + key + "' must map to a boolean for " + fieldName, //$NON-NLS-1$ //$NON-NLS-2$
+                        false);
+            }
+            result.add(new RoleVisibility(key, value.booleanValue()));
+        }
+        return result;
+    }
+
+    /**
+     * True for the keys of a {@code userVisible} map that carry the uniform {@code common} flag rather
+     * than a role name: {@code common} and its aliases ({@code value}/{@code visible}/{@code enabled}),
+     * plus the structured {@code for} key. Everything else in a flat map is treated as a role name.
+     */
+    private static boolean isReservedUserVisibleKey(String key) {
+        return "common".equalsIgnoreCase(key) //$NON-NLS-1$
+                || "value".equalsIgnoreCase(key) //$NON-NLS-1$
+                || "visible".equalsIgnoreCase(key) //$NON-NLS-1$
+                || "enabled".equalsIgnoreCase(key) //$NON-NLS-1$
+                || "for".equalsIgnoreCase(key); //$NON-NLS-1$
     }
 
     private static Object firstMapValueIgnoreCase(Map<?, ?> map, String... keys) {

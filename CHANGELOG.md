@@ -9,6 +9,20 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-12936 feedback (2026-07-16) — `mutate_form_model set_item userVisible` flat per-role map
+
+- **A flat per-role `userVisible` map no longer silently wipes the item's visibility default.** The tool
+  description advertises `userVisible` as accepting a "per-role map", but `set_item` only implemented the
+  structured `{common, for:[{role,value}]}` shape — a flat `{common:false, "RoleName":true}` (the shape
+  the description invites) dropped every role key and applied only `common=false`, wiping the working
+  default to hidden-for-everyone (a destructive, data-losing no-op). `EdtMetadataService` now harvests a
+  flat map's role→bool keys (`parseFlatRoleEntries`) when no `for` key is present, skipping the reserved
+  `common`/`value`/`visible`/`enabled`/`for` keys; a non-boolean role value is rejected rather than
+  silently dropped. Both accepted shapes are now documented on the tool. (feedback
+  `2026-07-16-mutate-form-model-set-item-uservisible-by-role-breaks-default`)
+- Unit tests: 6 new cases in `UserVisibleForRoleParsingTest` (incl. the exact reported input). Build
+  green (`-Plocal-target`, 17/17).
+
 ### BF-12936 feedback (2026-07-16) — `update_infobase` job-id/timeout ergonomics
 
 - **`update_infobase` no longer tells a caller to poll a job id that cannot be resolved.** A

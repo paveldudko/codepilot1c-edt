@@ -130,4 +130,71 @@ public class UserVisibleForRoleParsingTest {
             // expected
         }
     }
+
+    // -- flat per-role map {common, "RoleName":bool} (feedback 2026-07-16) -----------------------
+    //
+    // The tool description advertises userVisible as accepting a "per-role map". A flat
+    // {common:false, "Role":true} used to silently drop the role key and apply only common=false,
+    // wiping the default to hidden-for-everyone. parseFlatRoleEntries harvests those role keys.
+
+    @Test
+    public void flatMapHarvestsTheReportedWhitelistCase() {
+        // The exact BF-12936 input that wiped the default.
+        Map<String, Object> flat = new LinkedHashMap<>();
+        flat.put("common", Boolean.FALSE); //$NON-NLS-1$
+        flat.put("AddEditFinanceVerification", Boolean.TRUE); //$NON-NLS-1$
+        List<RoleVisibility> parsed = EdtMetadataService.parseFlatRoleEntries(flat, FIELD);
+        assertEquals(1, parsed.size());
+        assertEquals("AddEditFinanceVerification", parsed.get(0).role()); //$NON-NLS-1$
+        assertTrue(parsed.get(0).value());
+    }
+
+    @Test
+    public void flatMapSkipsReservedCommonAliasKeys() {
+        Map<String, Object> reservedOnly = new LinkedHashMap<>();
+        reservedOnly.put("common", Boolean.TRUE); //$NON-NLS-1$
+        reservedOnly.put("value", Boolean.FALSE); //$NON-NLS-1$
+        reservedOnly.put("visible", Boolean.TRUE); //$NON-NLS-1$
+        reservedOnly.put("enabled", Boolean.FALSE); //$NON-NLS-1$
+        assertTrue("reserved common-alias keys are not roles", //$NON-NLS-1$
+                EdtMetadataService.parseFlatRoleEntries(reservedOnly, FIELD).isEmpty());
+    }
+
+    @Test
+    public void flatMapPreservesOrderAndMultipleRoles() {
+        Map<String, Object> flat = new LinkedHashMap<>();
+        flat.put("Менеджер", Boolean.TRUE); //$NON-NLS-1$
+        flat.put("Кладовщик", Boolean.FALSE); //$NON-NLS-1$
+        List<RoleVisibility> parsed = EdtMetadataService.parseFlatRoleEntries(flat, FIELD);
+        assertEquals(2, parsed.size());
+        assertEquals("Менеджер", parsed.get(0).role()); //$NON-NLS-1$
+        assertTrue(parsed.get(0).value());
+        assertEquals("Кладовщик", parsed.get(1).role()); //$NON-NLS-1$
+        assertFalse(parsed.get(1).value());
+    }
+
+    @Test
+    public void flatMapAcceptsStringBooleanLiterals() {
+        Map<String, Object> flat = new LinkedHashMap<>();
+        flat.put("Оператор", "false"); //$NON-NLS-1$ //$NON-NLS-2$
+        List<RoleVisibility> parsed = EdtMetadataService.parseFlatRoleEntries(flat, FIELD);
+        assertFalse(parsed.get(0).value());
+    }
+
+    @Test
+    public void flatMapRejectsNonBooleanRoleValueRatherThanDropIt() {
+        Map<String, Object> flat = new LinkedHashMap<>();
+        flat.put("Бухгалтер", "maybe"); //$NON-NLS-1$ //$NON-NLS-2$
+        try {
+            EdtMetadataService.parseFlatRoleEntries(flat, FIELD);
+            fail("a non-boolean role value must be rejected, not silently dropped"); //$NON-NLS-1$
+        } catch (MetadataOperationException expected) {
+            // expected — non-destructive: the caller learns the value is bad instead of a silent wipe
+        }
+    }
+
+    @Test
+    public void flatMapNullYieldsEmpty() {
+        assertTrue(EdtMetadataService.parseFlatRoleEntries(null, FIELD).isEmpty());
+    }
 }
