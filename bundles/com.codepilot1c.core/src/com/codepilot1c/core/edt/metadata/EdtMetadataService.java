@@ -5745,6 +5745,11 @@ public class EdtMetadataService {
         });
         int changedCount = changedHolder[0];
 
+        // DIAGNOSTIC round (BF-12936 rights-persist, 2026-07-16): does the rights fragment resolve
+        // post-commit? forceExport→createSaveObjectTask silently skips an FQN whose getTopObjectByFqn
+        // returns null, so this pinpoints whether the fix is attach/commit vs save-scheduling.
+        logRightsPersistDiagnostics(project, rightsFqnHolder[0], roleNameToFqn(request.roleFqn()), opId);
+
         // Force-export BOTH the role top-object AND the separate rights external-object (the
         // Rights.rights fragment). Exporting only the role top-level leaves the rights fragment
         // unwritten — the grants mutate the model but never reach disk (scenario "b").
@@ -5808,6 +5813,44 @@ public class EdtMetadataService {
 
     private String roleNameToFqn(String roleRef) {
         return roleRef.indexOf('.') >= 0 ? roleRef : "Role." + roleRef; //$NON-NLS-1$
+    }
+
+    /**
+     * DIAGNOSTIC (BF-12936 rights-persist, 2026-07-16 — owner-authorized diagnostic round). Logs, in a
+     * fresh post-commit read transaction, whether the rights fragment is a resolvable top-object — the
+     * exact check {@code forceExport}→{@code createSaveObjectTask} performs ({@code getTopObjectByFqn};
+     * a null result means the save task is silently skipped → {@code RightsExporter} never runs →
+     * {@code Rights.rights} is not written). Also logs what a fresh {@code Role.getRights()} sees.
+     * Read-only, never throws. INFO-level so it lands in {@code .metadata/.log}. Remove once the
+     * persistence path is fixed + validated. See [[rights_manage_persist_investigation]].
+     */
+    private void logRightsPersistDiagnostics(IProject project, String rightsFqn, String roleTopFqn, String opId) {
+        try {
+            executeRead(project, tx -> {
+                Object frag = (rightsFqn == null || rightsFqn.isBlank()) ? null : tx.getTopObjectByFqn(rightsFqn);
+                if (frag == null) {
+                    LOG.info("[%s] RIGHTS-DIAG post-commit getTopObjectByFqn(%s)=NULL — rights fragment is NOT a resolvable top-object; forceExport/createSaveObjectTask skips it, so Rights.rights is never written (fix = attach/commit registration)", //$NON-NLS-1$
+                            opId, rightsFqn);
+                } else {
+                    long bmId = (frag instanceof IBmObject bo) ? bo.bmGetId() : -1L;
+                    LOG.info("[%s] RIGHTS-DIAG post-commit getTopObjectByFqn(%s)=%s (bmId=%d) — resolvable; if the file is still absent the issue is save-scheduling/exporter, not resolution", //$NON-NLS-1$
+                            opId, rightsFqn, frag.getClass().getSimpleName(), Long.valueOf(bmId));
+                }
+                Object roleObj = (roleTopFqn == null) ? null : tx.getTopObjectByFqn(roleTopFqn);
+                if (roleObj instanceof Role role) {
+                    AbstractRoleDescription rd = role.getRights();
+                    LOG.info("[%s] RIGHTS-DIAG post-commit %s.getRights()=%s (isRoleDescription=%s)", //$NON-NLS-1$
+                            opId, roleTopFqn, rd == null ? "null" : rd.getClass().getSimpleName(), //$NON-NLS-1$
+                            Boolean.valueOf(rd instanceof RoleDescription));
+                } else {
+                    LOG.info("[%s] RIGHTS-DIAG post-commit %s did not resolve to a Role (%s)", //$NON-NLS-1$
+                            opId, roleTopFqn, roleObj == null ? "null" : roleObj.getClass().getSimpleName()); //$NON-NLS-1$
+                }
+                return null;
+            });
+        } catch (RuntimeException e) {
+            LOG.warn("[%s] RIGHTS-DIAG failed: %s", opId, e.getMessage()); //$NON-NLS-1$
+        }
     }
 
     private Role resolveRoleObject(Configuration configuration, String roleRef) {
