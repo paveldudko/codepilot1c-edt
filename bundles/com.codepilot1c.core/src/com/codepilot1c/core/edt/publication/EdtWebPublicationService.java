@@ -321,6 +321,16 @@ public class EdtWebPublicationService {
             }
         } catch (WebServerAccessException e) {
             throw accessFailed("publish '" + name + "'", serverName, e); //$NON-NLS-1$ //$NON-NLS-2$
+        } catch (EdtToolException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            // Never surface a raw NPE/ISE from EDT's publish delegate as an unstructured "Tool execution
+            // failed" (feedback 2026-07-16-web-publication-publish-npe-webextensions-null): the delegate
+            // can throw when it enumerates extension web services without a resolved project/platform
+            // context. Wrap into a structured tool error naming the operation.
+            throw new EdtToolException(EdtToolErrorCode.WEB_SERVER_ACCESS_FAILED,
+                    "publish '" + name + "' on '" + serverName + "' failed inside the EDT publish delegate: " //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                            + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()), e);
         }
         LOG.info("Published '%s' on '%s' (location=%s)", name, serverName, effectiveLocation); //$NON-NLS-1$
         return publication;
@@ -340,6 +350,13 @@ public class EdtWebPublicationService {
         if (hasServices || extras.publishHttpByDefault() != null) {
             HttpServices httpServices = ModelFactory.eINSTANCE.createHttpServices();
             httpServices.setPublishByDefault(Boolean.TRUE.equals(extras.publishHttpByDefault()));
+            // Do NOT publish extension configurations' HTTP services by default. The EMF default for
+            // publishExtensionsByDefault is true, but that makes the publish delegate enumerate extension
+            // web services — which needs a resolved project/platform context and NPEs (null webExtensions
+            // Path) on an infobase_connection-only publish (feedback
+            // 2026-07-16-web-publication-publish-npe-webextensions-null). The hand-authored sandbox vrds
+            // omit the attribute (= false), so false is also the faithful value.
+            httpServices.setPublishExtensionsByDefault(false);
             if (extras.httpServices() != null) {
                 for (HttpServiceSpec spec : extras.httpServices()) {
                     if (spec == null || spec.name() == null || spec.name().isBlank()) {

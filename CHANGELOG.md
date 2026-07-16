@@ -27,6 +27,14 @@ commit hash in parentheses where useful.
   `rootUrl`) but not byte-identical on per-service pool numbers.
 - Unit tests: `WebPublicationExtrasParsingTest` (the pure param→options parser). The model→vrd serialization
   is EDT's — validated live (battle test on stack-2). Build green (`-Plocal-target`).
+- **Follow-up fix (battle-test NPE):** the first live option-1 publish crashed with a raw
+  `NullPointerException: … "webExtensions" is null`. Cause: `HttpServices.publishExtensionsByDefault` defaults
+  to `true` in the EMF model, which makes the publish delegate enumerate extension web services — needing a
+  resolved project/platform context it doesn't have on an `infobase_connection`-only publish. Fix: explicitly
+  set `publishExtensionsByDefault(false)` (also the faithful value — the hand vrds omit it), and wrap the
+  delegate publish so an unexpected `RuntimeException` surfaces as a structured `WEB_SERVER_ACCESS_FAILED`
+  tool error instead of a raw crash. The `rootUrl="bsl-analyzer"` serialization itself was confirmed correct
+  in the crashed vrd. (feedback `2026-07-16-web-publication-publish-npe-webextensions-null`)
 
 ### BF-12936 feedback (2026-07-16) — `mutate_form_model` form titles leaked `ru` in EN-primary projects
 
