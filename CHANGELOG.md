@@ -114,6 +114,29 @@ commit hash in parentheses where useful.
 - Unit tests: `EdtUpdateInfobaseErgonomicsTest` (sentinel vs real job id, timeout clamp, `timeout_s`
   parsing, `PROCESS_TIMEOUT` message + non-kill-implying PID key). Build green (`-Plocal-target`).
 
+### BF-12936 (2026-07-16) — `rights_manage` honest reporting + `edt_validate_request` enum sync
+
+- **`rights_manage` no longer reports unconditional success when nothing changed.** Each grant is now
+  marked `(changed from X)` vs `(unchanged — already X)`, and the result message says *"No rights changed:
+  … nothing was written"* when every grant was a no-op — instead of the old *"Role rights updated: …"* that
+  listed every grant as applied regardless. Root cause: the summary line was appended for every grant even
+  when `changeObjectRight` was skipped (`currentValue == newValue`), so a stale-model / already-set case
+  masqueraded as a write. (feedback `2026-07-16-rights-manage-reports-success-but-does-not-persist`, ask 2)
+- **On-disk advisory:** after the export, `rights_manage` reports whether the role's separate
+  `Rights.rights` fragment is actually present on disk, and warns (non-fatally) when a change was made but
+  the file is missing — the exact recovery-blocking symptom when a `Rights.rights` was deleted on disk under
+  a live EDT (a stale in-memory model then accepts grants without re-serializing). Non-throwing on purpose:
+  attribute-default-only grants can legitimately serialize no file, so a missing file is a "verify" hint,
+  not a guaranteed error. (ask 1 — the deeper "why the fragment isn't rewritten" needs a live-EDT repro.)
+- **`edt_validate_request` advertised `operation` enum re-synced with `ValidationOperation`.** The schema
+  stopped at `mutate_form_model` and omitted `rights_manage`, `render_template`,
+  `create_event_subscription`, `create_information_register` — all accepted by the backend, so a caller had
+  to discover `rights_manage` by trial. A new test asserts every `ValidationOperation` toolName is advertised.
+  (ask 3)
+- Unit tests: `RightsManageMessagesTest` (changed vs no-op summary, no-op message, changed-count, advisory),
+  `EdtValidateRequestToolSchemaTest` (enum-in-sync). Build green (`-Plocal-target`, 23/23 across touched
+  suites).
+
 ### Experiment — `mcp-bridge-lite`: strip the in-EDT chat/agent, keep the MCP bridge only
 
 - **Experimental branch `pd/mcp-bridge-lite` (forked from `pd/bsl-tuning`) turns the plugin into a

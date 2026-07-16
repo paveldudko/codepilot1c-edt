@@ -5684,6 +5684,7 @@ public class EdtMetadataService {
         IRightInfosService rightInfosService = resolveRightInfosService();
         EolGuard eolGuard = beginEolGuard(project, roleNameToFqn(request.roleFqn()), opId);
 
+        int[] changedHolder = {0};
         List<String> summaries = executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
             if (txConfiguration == null) {
@@ -5712,20 +5713,26 @@ public class EdtMetadataService {
                 RightValue newValue = toRightValue(grant.value());
                 ObjectRights objectRights = RightsModelUtil.getOrCreateObjectRights(targetObject, roleDescription);
                 RightValue currentValue = currentRightValue(objectRights, right, targetObject, role);
-                if (currentValue != newValue) {
+                boolean changed = currentValue != newValue;
+                if (changed) {
                     // changeObjectRight(newValue, oldValue, ...): the FIRST RightValue is the
                     // value assigned via ObjectRight.setValue (verified by bytecode), the second
                     // is only the previous value for the equality/remove decision. Passing them
                     // in the wrong order writes the OLD value — e.g. value="set" persisted as
                     // <value>false</value> instead of true (codepilot1c-feedback 2026-06-02).
                     RightsModelUtil.changeObjectRight(newValue, currentValue, objectRights, right);
+                    changedHolder[0]++;
                 }
-                applied.add("grant[" + index + "]: " + grant.objectFqn() + "." + right.getName() //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                        + "=" + newValue.getName()); //$NON-NLS-1$
+                // Track changed-vs-no-op explicitly: a no-op grant must NOT read as "applied" — the
+                // old unconditional summary let a stale-model / already-set case masquerade as a write
+                // (codepilot1c-feedback 2026-07-16-rights-manage-reports-success-but-does-not-persist).
+                applied.add(RightsManageMessages.formatGrantSummary(index, grant.objectFqn(),
+                        right.getName(), newValue.getName(), currentValue.getName(), changed));
                 index++;
             }
             return applied;
         });
+        int changedCount = changedHolder[0];
 
         // Rights are serialized under the role's top-level object → force-export it.
         String roleTopLevelFqn = extractTopLevelFqn(roleNameToFqn(request.roleFqn()));
@@ -5733,9 +5740,14 @@ public class EdtMetadataService {
         verifyObjectPersisted(project, roleTopLevelFqn, opId);
         eolGuard.restore();
         refreshProjectSafely(project);
-        LOG.info("[%s] manageRights SUCCESS in %s role=%s grants=%d", opId, //$NON-NLS-1$
+        // Honest post-write state: report whether the separate Rights.rights fragment landed on
+        // disk. A Rights.rights deleted on disk under a live EDT can leave a stale in-memory model
+        // that accepts grants without re-serializing them — the tool used to claim success anyway
+        // (codepilot1c-feedback 2026-07-16-rights-manage-reports-success-but-does-not-persist).
+        String rightsFileState = describeRightsFileState(project, roleTopLevelFqn, changedCount, opId);
+        LOG.info("[%s] manageRights DONE in %s role=%s grants=%d changed=%d", opId, //$NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
-                request.roleFqn(), Integer.valueOf(summaries.size()));
+                request.roleFqn(), Integer.valueOf(summaries.size()), Integer.valueOf(changedCount));
 
         return new MetadataOperationResult(
                 true,
@@ -5743,7 +5755,42 @@ public class EdtMetadataService {
                 "RIGHTS", //$NON-NLS-1$
                 extractNameFromFqn(roleTopLevelFqn),
                 roleTopLevelFqn,
-                "Role rights updated: " + String.join("; ", summaries)); //$NON-NLS-1$ //$NON-NLS-2$
+                RightsManageMessages.buildRightsMessage(changedCount, summaries, rightsFileState));
+    }
+
+    /**
+     * Non-throwing advisory describing whether the role's separate {@code Rights.rights} fragment is
+     * present on disk after the export. Surfaces the real on-disk state (feedback ask) WITHOUT a hard
+     * fail: for attribute-default-only grants EDT may legitimately serialize no file, so a missing
+     * file is a "verify" warning, not a guaranteed error. Empty for external projects (no src tree).
+     */
+    private String describeRightsFileState(IProject project, String roleTopLevelFqn, int changedCount, String opId) {
+        if (project == null || !project.exists() || isExternalProject(project)) {
+            return ""; //$NON-NLS-1$
+        }
+        String topName = topNameFromFqn(roleTopLevelFqn);
+        if (topName == null || topName.isBlank()) {
+            return ""; //$NON-NLS-1$
+        }
+        String relPath = "src/Roles/" + topName + "/Rights.rights"; //$NON-NLS-1$ //$NON-NLS-2$
+        boolean present;
+        try {
+            present = project.getFile(relPath).exists();
+        } catch (RuntimeException e) {
+            LOG.warn("[%s] rights-file probe failed for %s: %s", opId, relPath, e.getMessage()); //$NON-NLS-1$
+            return ""; //$NON-NLS-1$
+        }
+        if (present) {
+            return "Rights fragment present on disk: " + relPath + "."; //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        if (changedCount > 0) {
+            return "⚠️ WARNING: expected rights fragment " + relPath //$NON-NLS-1$
+                    + " was NOT found on disk after export — the change may not have persisted. A " //$NON-NLS-1$
+                    + "Rights.rights deleted on disk while EDT is running can leave a stale in-memory " //$NON-NLS-1$
+                    + "model that accepts grants without re-serializing; reload the project/role and " //$NON-NLS-1$
+                    + "retry, then confirm the file exists."; //$NON-NLS-1$
+        }
+        return "No Rights.rights on disk (no non-default grants to serialize)."; //$NON-NLS-1$
     }
 
     private String roleNameToFqn(String roleRef) {
