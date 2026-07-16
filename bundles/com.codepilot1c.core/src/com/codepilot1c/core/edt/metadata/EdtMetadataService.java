@@ -5685,6 +5685,7 @@ public class EdtMetadataService {
         EolGuard eolGuard = beginEolGuard(project, roleNameToFqn(request.roleFqn()), opId);
 
         int[] changedHolder = {0};
+        String[] rightsFqnHolder = {null};
         List<String> summaries = executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
             if (txConfiguration == null) {
@@ -5694,6 +5695,16 @@ public class EdtMetadataService {
             }
             Role role = resolveRoleObject(txConfiguration, request.roleFqn());
             RoleDescription roleDescription = ensureRoleDescription(transaction, project, role, request.roleFqn());
+            // The rights live in a SEPARATE external top-object (the Rights.rights fragment), not under
+            // the role's own top-object — so force-exporting only the role does NOT write them
+            // (codepilot1c-feedback 2026-07-16-…-does-not-persist, scenario "b" confirmed live on
+            // build 1626). Capture its FQN so the export below targets it explicitly.
+            try {
+                rightsFqnHolder[0] = gateway.getTopObjectFqnGenerator()
+                        .generateExternalPropertyFqn(role, MdClassPackage.Literals.ROLE__RIGHTS);
+            } catch (RuntimeException e) {
+                LOG.warn("[%s] could not compute rights external FQN: %s", opId, e.getMessage()); //$NON-NLS-1$
+            }
 
             List<String> applied = new ArrayList<>();
             int index = 1;
@@ -5734,9 +5745,11 @@ public class EdtMetadataService {
         });
         int changedCount = changedHolder[0];
 
-        // Rights are serialized under the role's top-level object → force-export it.
+        // Force-export BOTH the role top-object AND the separate rights external-object (the
+        // Rights.rights fragment). Exporting only the role top-level leaves the rights fragment
+        // unwritten — the grants mutate the model but never reach disk (scenario "b").
         String roleTopLevelFqn = extractTopLevelFqn(roleNameToFqn(request.roleFqn()));
-        forceExportTopLevelObject(project, roleTopLevelFqn, opId);
+        forceExportTopLevelObject(project, roleTopLevelFqn, rightsFqnHolder[0], opId);
         verifyObjectPersisted(project, roleTopLevelFqn, opId);
         eolGuard.restore();
         refreshProjectSafely(project);
@@ -12507,6 +12520,16 @@ public class EdtMetadataService {
     }
 
     private void forceExportTopLevelObject(IProject project, String fqn, String opId) {
+        forceExportTopLevelObject(project, fqn, null, opId);
+    }
+
+    /**
+     * Force-exports {@code fqn} (+ {@code Configuration}), and — when non-null — an additional
+     * {@code extraFqn} in the SAME batch. The extra slot carries an external-property top-object
+     * (e.g. a role's {@code Rights.rights} fragment) that is NOT reachable by exporting its owning
+     * top-object alone, so it would otherwise never reach disk.
+     */
+    private void forceExportTopLevelObject(IProject project, String fqn, String extraFqn, String opId) {
         IBmModelManager modelManager = gateway.getBmModelManager();
         IDtProjectManager projectManager = gateway.getDtProjectManager();
         IDtProject dtProject = projectManager.getDtProject(project);
@@ -12516,7 +12539,7 @@ public class EdtMetadataService {
                     "Cannot resolve DT project for force export: " + project.getName(), false); //$NON-NLS-1$
         }
 
-        List<String> targets = buildExportTargets(fqn);
+        List<String> targets = buildExportTargets(fqn, extraFqn);
         boolean exported = false;
         try {
             exported = modelManager.forceExport(dtProject, targets);
@@ -12551,9 +12574,16 @@ public class EdtMetadataService {
     }
 
     private List<String> buildExportTargets(String fqn) {
+        return buildExportTargets(fqn, null);
+    }
+
+    private List<String> buildExportTargets(String fqn, String extraFqn) {
         LinkedHashSet<String> targets = new LinkedHashSet<>();
         if (fqn != null && !fqn.isBlank()) {
             targets.add(fqn);
+        }
+        if (extraFqn != null && !extraFqn.isBlank()) {
+            targets.add(extraFqn);
         }
         targets.add("Configuration"); //$NON-NLS-1$
         return List.copyOf(targets);

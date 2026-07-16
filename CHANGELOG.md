@@ -136,6 +136,17 @@ commit hash in parentheses where useful.
 - Unit tests: `RightsManageMessagesTest` (changed vs no-op summary, no-op message, changed-count, advisory),
   `EdtValidateRequestToolSchemaTest` (enum-in-sync). Build green (`-Plocal-target`, 23/23 across touched
   suites).
+- **Persistence fix (scenario "b", root cause).** dev-stack-2's repro on the honest-reporting build
+  (`0.1.7.20260716-1626`) confirmed the grants *did* mutate the model (`N of N changed`, `changed from
+  Unset`) yet `Rights.rights` never landed on disk — so it was NOT a stale model, but the export missing the
+  fragment. Root cause (EDT-bytecode-grounded): a role's rights live in a **separate external top-object**
+  (the `Rights.rights` fragment), not under the role's own top-object, and `IBmModelManager.forceExport`
+  only takes FQN strings (no EObject overload) — so force-exporting just `Role.<name>` left the rights
+  fragment unwritten. Fix: capture the rights external FQN (`ITopObjectFqnGenerator.generateExternalPropertyFqn(role,
+  ROLE__RIGHTS)` — the same FQN it is attached under in the BM) and add it to the same `forceExport` batch.
+  Additive + fallback chain untouched → no regression risk. Live re-validation on stack-2 pending (build
+  `0.1.7.20260716-1843`); the on-disk advisory stays, so the next repro is a definitive yes/no. (feedback
+  `2026-07-16-rights-manage-reports-success-but-does-not-persist`, ask 1)
 
 ### Experiment — `mcp-bridge-lite`: strip the in-EDT chat/agent, keep the MCP bridge only
 
