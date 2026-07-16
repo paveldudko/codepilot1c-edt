@@ -9,6 +9,22 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-12936 (2026-07-17) — `grep` honest hint when a literal search hides a regex-intent pattern
+
+- **`grep` now hints on a zero-match LITERAL search whose pattern carries regex syntax.** `grep`'s
+  `regex` param defaults to false, so the pattern is `Pattern.quote`d and matched literally — an
+  alternation like `A|B|C` is searched as the single string `"A|B|C"` (pipes included) and returns a
+  clean "0 matches" that reads as "not present" even when each term IS present. Confirmed live on
+  stack-2 as a caller footgun (a `ЮТ_X|ЮТ_Y|…` pattern without `regex:true` → 0 matches; the same names
+  found individually and with `regex:true`) — a recurring class (feedback `2026-07-11` and `2026-07-16`,
+  both pipe patterns). Fix: on a zero-match result with `regex=false`, when the pattern looks like it
+  was meant as a regex (contains `|`, `^`/`$` anchors, `.*`/`.+`, a `[..]` class, or `\d`/`\w`… escape
+  classes — a bare `.` is ignored so FQNs like `Catalog.Foo` don't trip it), append a one-line hint to
+  re-run with `regex:true`. The literal default is unchanged (no behaviour/regression change); the
+  `regex` schema description now spells out the literal-matching semantics too. Unit test:
+  `GrepRegexIntentTest` (the pure `looksLikeRegexIntent` heuristic). Build green (`-Plocal-target`).
+  (feedback `2026-07-16-grep-false-negative-on-present-method-names`)
+
 ### BF-12936 (2026-07-16) — `web_publication publish` can carry custom HTTP services into the vrd
 
 - **`web_publication publish` now accepts publication content beyond the plain infobase binding**, so an

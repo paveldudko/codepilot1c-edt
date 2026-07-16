@@ -61,7 +61,7 @@ public class GrepTool extends AbstractTool {
                     },
                     "regex": {
                         "type": "boolean",
-                        "description": "Treat pattern as regex (default: false)"
+                        "description": "Treat pattern as regex (default: false). When false the pattern is matched LITERALLY, including any regex metacharacters — so 'A|B|C' searches for that exact string with the '|' characters, NOT as an alternation. Set true for alternation (|), anchors (^ $), or classes (\\\\d, [..])."
                     },
                     "case_sensitive": {
                         "type": "boolean",
@@ -143,7 +143,7 @@ public class GrepTool extends AbstractTool {
                 List<SearchMatch> matches = new ArrayList<>();
                 searchInContainer(searchRoot, searchPattern, filePattern, contextLines, matchKind, matches);
 
-                return formatResults(patternStr, matches, outputMode);
+                return formatResults(patternStr, matches, outputMode, useRegex);
             } catch (CoreException e) {
                 return ToolResult.failure("Error searching: " + e.getMessage()); //$NON-NLS-1$
             }
@@ -305,7 +305,7 @@ public class GrepTool extends AbstractTool {
         return StandardCharsets.UTF_8;
     }
 
-    private ToolResult formatResults(String pattern, List<SearchMatch> matches, String outputMode) {
+    private ToolResult formatResults(String pattern, List<SearchMatch> matches, String outputMode, boolean useRegex) {
         StringBuilder sb = new StringBuilder();
         if ("compact".equals(outputMode)) { //$NON-NLS-1$
             for (SearchMatch match : matches) {
@@ -317,6 +317,7 @@ public class GrepTool extends AbstractTool {
             }
             if (matches.isEmpty()) {
                 sb.append("(no matches for `").append(pattern).append("`)\n"); //$NON-NLS-1$ //$NON-NLS-2$
+                appendLiteralRegexHint(sb, pattern, useRegex);
             } else if (matches.size() == MAX_RESULTS) {
                 sb.append("...truncated at ").append(MAX_RESULTS).append(" matches\n"); //$NON-NLS-1$ //$NON-NLS-2$
             }
@@ -339,7 +340,57 @@ public class GrepTool extends AbstractTool {
             sb.append("```\n").append(match.context).append("\n```\n\n"); //$NON-NLS-1$ //$NON-NLS-2$
         }
 
+        if (matches.isEmpty()) {
+            appendLiteralRegexHint(sb, pattern, useRegex);
+        }
+
         return ToolResult.success(sb.toString(), ToolResult.ToolResultType.SEARCH_RESULTS);
+    }
+
+    /**
+     * On a zero-match LITERAL search (regex=false) whose pattern carries regex syntax, appends an
+     * actionable hint. Without regex=true the pattern is {@code Pattern.quote}d, so an alternation like
+     * {@code A|B|C} is searched as the single literal string {@code "A|B|C"} (pipes included) — which
+     * yields a clean "0 matches" that reads as "not present" even when each term IS present. This is a
+     * recurring caller footgun (codepilot1c-feedback 2026-07-11 and 2026-07-16, both pipe patterns);
+     * the hint turns a silent no-op into a self-correcting signal without changing the literal default.
+     */
+    private void appendLiteralRegexHint(StringBuilder sb, String pattern, boolean useRegex) {
+        if (!useRegex && looksLikeRegexIntent(pattern)) {
+            sb.append("\nNote: this was a LITERAL search (regex=false) but the pattern contains regex " //$NON-NLS-1$
+                    + "syntax (e.g. '|' alternation, ^/$ anchors, or \\d/\\w classes). If you intended " //$NON-NLS-1$
+                    + "a regex/alternation, re-run with regex:true.\n"); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Heuristic: does a (literal-mode) pattern carry syntax that strongly signals the caller meant it as
+     * a regex? Conservative — targets high-signal tokens that are rare in a literal identifier/text
+     * search (alternation, anchors, quantified wildcards, char classes, escape classes) and deliberately
+     * ignores a bare '.' (ubiquitous in FQNs like {@code Catalog.Foo}) to avoid noisy false hints.
+     */
+    static boolean looksLikeRegexIntent(String literal) {
+        if (literal == null || literal.isEmpty()) {
+            return false;
+        }
+        if (literal.indexOf('|') >= 0) { // alternation — the observed footgun
+            return true;
+        }
+        if (literal.startsWith("^") || literal.endsWith("$")) { // anchors //$NON-NLS-1$ //$NON-NLS-2$
+            return true;
+        }
+        if (literal.contains(".*") || literal.contains(".+")) { // quantified wildcard //$NON-NLS-1$ //$NON-NLS-2$
+            return true;
+        }
+        if (literal.indexOf('[') >= 0 && literal.indexOf(']') >= 0) { // char class
+            return true;
+        }
+        for (int i = 0; i + 1 < literal.length(); i++) { // \b \B \d \D \s \S \w \W escape classes
+            if (literal.charAt(i) == '\\' && "bBdDsSwW".indexOf(literal.charAt(i + 1)) >= 0) { //$NON-NLS-1$
+                return true;
+            }
+        }
+        return false;
     }
 
     private static class SearchMatch {
