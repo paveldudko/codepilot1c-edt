@@ -24,8 +24,20 @@ commit hash in parentheses where useful.
   resolution. Correctness rests on the already-tested `BmSynonymLocaleResolver`; live confirmation on the
   AM project pending. (feedback `2026-07-16-mutate-form-model-add-command-title-locale-defaults-ru`)
 - Residual (queued, not in this change): no op removes/replaces a *specific* stray title-locale key on an
-  existing command (only prevents new ones); the same `ru`-default also affects `update_metadata`
-  `recordPresentation`/`listPresentation` (a separate code path).
+  existing command (only prevents new ones).
+
+### BF-12936 feedback (2026-07-16) — `update_metadata` localized strings also leaked `ru`
+
+- **`update_metadata` `set:{synonym|objectPresentation|listPresentation|…}` with a plain string now lands
+  in the project's default content language, not a hard-coded `ru`.** The addendum to the form-title note
+  reported the same leak on `recordPresentation`/`listPresentation`; the shared cause was the
+  `update_metadata` localized-string writers (`applyEMapStringPatch` / `applyStringMapPatch`) hard-coding
+  `RU_LANGUAGE` for a plain string — so `create_metadata` synonyms resolved to `en` (via
+  `setCommonProperties`→`resolveSynonymLocaleKey`) but the *update* path always wrote `ru`. Both writers +
+  the synonym set/unset now resolve the locale key via the same `resolveSynonymLocaleKey`, threading the
+  `Configuration` (already in scope at every call site). Fixes synonym and every localized presentation
+  property in one choke-point. `BmSynonymLocaleResolver` (already tested) backs the resolution; live
+  confirmation pending. (feedback `…add-command-title-locale-defaults-ru`, addendum)
 
 ### BF-12936 feedback (2026-07-16) — `mutate_form_model set_item userVisible` flat per-role map
 

@@ -5516,7 +5516,7 @@ public class EdtMetadataService {
                     "Unknown form property: " + fieldName + hint, false); //$NON-NLS-1$
         }
         if (feature instanceof EReference reference) {
-            if (applyStringMapReferenceValue(target, reference, value)) {
+            if (applyStringMapReferenceValue(target, reference, value, configuration)) {
                 return;
             }
             if ("uservisible".equals(normalizeToken(reference.getName())) && target instanceof Visible visible) { //$NON-NLS-1$
@@ -8804,7 +8804,7 @@ public class EdtMetadataService {
             if ("synonym".equalsIgnoreCase(key)) { //$NON-NLS-1$
                 EMap<String, String> synonymMap = target.getSynonym();
                 if (synonymMap != null) {
-                    applyEMapStringPatch(synonymMap, entry.getValue(), "synonym"); //$NON-NLS-1$
+                    applyEMapStringPatch(synonymMap, entry.getValue(), "synonym", configuration); //$NON-NLS-1$
                 }
                 continue;
             }
@@ -8855,7 +8855,7 @@ public class EdtMetadataService {
             if ("synonym".equalsIgnoreCase(key)) { //$NON-NLS-1$
                 EMap<String, String> synonymMap = target.getSynonym();
                 if (synonymMap != null) {
-                    synonymMap.removeKey(RU_LANGUAGE);
+                    synonymMap.removeKey(resolveSynonymLocaleKey(configuration));
                 }
                 continue;
             }
@@ -11053,7 +11053,7 @@ public class EdtMetadataService {
             Object value
     ) {
         if (reference.isContainment()) {
-            if (applyStringMapReferenceValue(target, reference, value)) {
+            if (applyStringMapReferenceValue(target, reference, value, configuration)) {
                 return;
             }
             throw new MetadataOperationException(
@@ -11081,24 +11081,26 @@ public class EdtMetadataService {
     }
 
     @SuppressWarnings("unchecked")
-    private boolean applyStringMapReferenceValue(EObject target, EReference reference, Object value) {
+    private boolean applyStringMapReferenceValue(EObject target, EReference reference, Object value,
+            Configuration configuration) {
         if (target == null || reference == null || !isStringMapReference(reference)) {
             return false;
         }
         Object raw = target.eGet(reference);
         if (raw instanceof EMap<?, ?> eMap) {
-            applyEMapStringPatch((EMap<String, String>) eMap, value, reference.getName());
+            applyEMapStringPatch((EMap<String, String>) eMap, value, reference.getName(), configuration);
             return true;
         }
         if (raw instanceof Map<?, ?> map) {
-            applyStringMapPatch((Map<Object, Object>) map, value, reference.getName());
+            applyStringMapPatch((Map<Object, Object>) map, value, reference.getName(), configuration);
             return true;
         }
         if (raw == null) {
             // EMF map references are initialized lazily in generated models.
             Object refreshed = target.eGet(reference);
             if (refreshed instanceof EMap<?, ?> refreshedMap) {
-                applyEMapStringPatch((EMap<String, String>) refreshedMap, value, reference.getName());
+                applyEMapStringPatch((EMap<String, String>) refreshedMap, value, reference.getName(),
+                        configuration);
                 return true;
             }
         }
@@ -11133,12 +11135,14 @@ public class EdtMetadataService {
         return "java.lang.String".equals(instanceClassName); //$NON-NLS-1$
     }
 
-    private void applyStringMapPatch(Map<Object, Object> targetMap, Object value, String fieldName) {
+    private void applyStringMapPatch(Map<Object, Object> targetMap, Object value, String fieldName,
+            Configuration configuration) {
         if (targetMap == null) {
             return;
         }
+        String defaultLocaleKey = resolveSynonymLocaleKey(configuration);
         if (value == null) {
-            targetMap.remove(RU_LANGUAGE);
+            targetMap.remove(defaultLocaleKey);
             return;
         }
         if (value instanceof Map<?, ?> map) {
@@ -11170,7 +11174,7 @@ public class EdtMetadataService {
                     MetadataOperationCode.INVALID_PROPERTY_VALUE,
                     "Expected string or {lang:text} map for " + fieldName + ": " + value, false); //$NON-NLS-1$ //$NON-NLS-2$
         }
-        targetMap.put(RU_LANGUAGE, text);
+        targetMap.put(defaultLocaleKey, text);
     }
 
     /**
@@ -11179,12 +11183,19 @@ public class EdtMetadataService {
      * The EMap interface provides its own {@code put}/{@code removeKey} methods
      * that work across OSGi classloader boundaries.
      */
-    private void applyEMapStringPatch(EMap<String, String> targetMap, Object value, String fieldName) {
+    private void applyEMapStringPatch(EMap<String, String> targetMap, Object value, String fieldName,
+            Configuration configuration) {
         if (targetMap == null) {
             return;
         }
+        // Plain-string values land under the project's default content language (default → first
+        // configured language → "ru"), matching create_metadata/setCommonProperties instead of the old
+        // hard-coded "ru" that leaked into EN-primary projects (feedback
+        // 2026-07-16-mutate-form-model-add-command-title-locale-defaults-ru, addendum: update_metadata
+        // synonym/recordPresentation/listPresentation).
+        String defaultLocaleKey = resolveSynonymLocaleKey(configuration);
         if (value == null) {
-            targetMap.removeKey(RU_LANGUAGE);
+            targetMap.removeKey(defaultLocaleKey);
             return;
         }
         if (value instanceof Map<?, ?> map) {
@@ -11216,7 +11227,7 @@ public class EdtMetadataService {
                     MetadataOperationCode.INVALID_PROPERTY_VALUE,
                     "Expected string or {lang:text} map for " + fieldName + ": " + value, false); //$NON-NLS-1$ //$NON-NLS-2$
         }
-        targetMap.put(RU_LANGUAGE, text);
+        targetMap.put(defaultLocaleKey, text);
     }
 
     private Collection<Object> resolveReferenceValues(
