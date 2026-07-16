@@ -9,6 +9,28 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-12936 feedback (2026-07-16) — `update_infobase` job-id/timeout ergonomics
+
+- **`update_infobase` no longer tells a caller to poll a job id that cannot be resolved.** A
+  synchronous (or just-registering async) update holds the in-flight guard slot with a `"sync"` /
+  `"starting"` sentinel, not a `BackgroundJobRegistry` job. The `UPDATE_ALREADY_RUNNING` rejection used
+  to emit `in_flight_job_id: "sync"` + a "poll `update_infobase_status(job_id="sync")`" hint, which dead-
+  ended at `Unknown job: sync`. Now the payload distinguishes a real, pollable `in_flight_job_id` (async)
+  from a non-pollable `in_flight_mode: sync|starting` (adds `in_flight_pollable`), with mode-specific
+  guidance (wait out the sync call / retry the poll). `update_infobase_status` also recognizes the two
+  sentinels and returns a `not_pollable_sentinel` explanation instead of the bare `Unknown job`.
+  (feedback `2026-07-16-update-infobase-sync-job-id-unpollable`)
+- **The 300s update ceiling is now a caller-overridable `timeout_s` (60..1800, default 300).** A full-
+  schema exclusive update of a multi-hundred-MB+ file infobase can genuinely need longer than 300s; the
+  old hard cap aborted it and reported the misleading "held by another process" as the sole cause. The
+  `PROCESS_TIMEOUT` message now names both plausible causes (still-restructuring large IB → raise
+  `timeout_s`; or a real external holder) and surfaces the Designer PID(s) EDT spawned that may still
+  hold the file lock (`aborted_designer_pids` + `timeout_s` in the payload) — the process is *named, not
+  killed*, since killing a Designer mid-restructure would corrupt the update. (feedback
+  `2026-07-16-update-infobase-process-timeout-300s-ceiling-reproducible`)
+- Unit tests: `EdtUpdateInfobaseErgonomicsTest` (sentinel vs real job id, timeout clamp, `timeout_s`
+  parsing, `PROCESS_TIMEOUT` message). Build green (`-Plocal-target`, 24/24 across the touched suites).
+
 ### Experiment — `mcp-bridge-lite`: strip the in-EDT chat/agent, keep the MCP bridge only
 
 - **Experimental branch `pd/mcp-bridge-lite` (forked from `pd/bsl-tuning`) turns the plugin into a

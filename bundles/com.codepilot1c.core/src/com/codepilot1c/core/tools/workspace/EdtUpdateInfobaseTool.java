@@ -46,8 +46,27 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtUpdateInfobaseTool.class);
 
-    /** Hard cap on the platform update so a held infobase / EDT modal can never hang the call forever. */
-    private static final long UPDATE_JOIN_TIMEOUT_MS = 300_000L;
+    /**
+     * Default hard cap on the platform update (seconds) so a held infobase / EDT modal can never hang
+     * the call forever. Caller-overridable via {@code timeout_s}: a full-schema exclusive update on a
+     * multi-hundred-MB+ file infobase can genuinely need longer than the default (feedback
+     * 2026-07-16-update-infobase-process-timeout-300s-ceiling-reproducible).
+     */
+    private static final int DEFAULT_UPDATE_TIMEOUT_S = 300;
+
+    /** Lower/upper clamp for a caller-supplied {@code timeout_s}. */
+    private static final int MIN_UPDATE_TIMEOUT_S = 60;
+    private static final int MAX_UPDATE_TIMEOUT_S = 1800;
+
+    /**
+     * In-flight-slot sentinels. A synchronous run ({@code "sync"}) and the transient async-registration
+     * window ({@code "starting"}) hold the guard slot but have NO pollable {@code job_id} —
+     * {@code update_infobase_status} cannot resolve them (feedback
+     * 2026-07-16-update-infobase-sync-job-id-unpollable). Only a real async job upgrades the slot to a
+     * {@link BackgroundJobRegistry} job id.
+     */
+    private static final String SLOT_SENTINEL_SYNC = "sync"; //$NON-NLS-1$
+    private static final String SLOT_SENTINEL_STARTING = "starting"; //$NON-NLS-1$
 
     /**
      * Process-wide guard against a second concurrent (schema) update of the SAME project while one is
@@ -101,6 +120,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 "skip_if_current": {
                   "type": "boolean",
                   "description": "Skip the update when the infobase already equals the project configuration (EDT getEqualityState == EQUAL, an in-memory state query — no configurator/DESIGNER spawned, no lease taken). Default: false. If the state cannot be determined the tool falls back to a normal update."
+                },
+                "timeout_s": {
+                  "type": "integer",
+                  "description": "Жёсткий предел (секунды) на применение обновления, после которого вызов прерывается. По умолчанию 300. Полное схемное обновление большой файловой ИБ (сотни МБ+, несколько новых объектов метаданных) реально может не уложиться в 300с — поднимайте это значение (макс 1800). PROCESS_TIMEOUT сообщает истёкший timeout_s и PID(ы) Designer'а, которые могли остаться держать блокировку. Диапазон 60..1800."
                 }
               },
               "required": ["project_name"]
@@ -158,6 +181,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         boolean skipIfCurrent = asBoolean(parameters == null ? null : parameters.get("skip_if_current"), false); //$NON-NLS-1$
         String runtimeVersionRaw = asString(parameters == null ? null : parameters.get("runtime_version")); //$NON-NLS-1$
         String runtimeVersion = runtimeVersionRaw == null || runtimeVersionRaw.isBlank() ? null : runtimeVersionRaw;
+        int timeoutSeconds = clampTimeoutSeconds(
+                asInt(parameters == null ? null : parameters.get("timeout_s"), DEFAULT_UPDATE_TIMEOUT_S)); //$NON-NLS-1$
+        long timeoutMs = timeoutSeconds * 1000L;
 
         if (async && dryRun) {
             // Dry-run is fast and deterministic; running it synchronously avoids
@@ -166,7 +192,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             LOG.info("[%s] edt_update_infobase async+dry_run: running sync (async_ignored)", opId); //$NON-NLS-1$
         } else if (async) {
             String updateKey = updateKey(projectName);
-            AtomicReference<String> slot = new AtomicReference<>("starting"); //$NON-NLS-1$
+            AtomicReference<String> slot = new AtomicReference<>(SLOT_SENTINEL_STARTING);
             String inFlight = tryAcquireUpdate(updateKey, slot);
             if (inFlight != null) {
                 LOG.warn("[%s] edt_update_infobase async rejected: update already in flight for project %s", //$NON-NLS-1$
@@ -180,7 +206,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                         () -> {
                             try {
                                 return runUpdateAndRenderResult(opId, projectName, keepConnected, workspaceRoot,
-                                        runtimeVersion, killAgentMode, allowWebserverRunning, skipIfCurrent);
+                                        runtimeVersion, killAgentMode, allowWebserverRunning, skipIfCurrent,
+                                        timeoutMs);
                             } finally {
                                 // Release only our own slot (identity-checked) so a fast job that finished
                                 // before the caller upgraded the value below can never leak the key.
@@ -221,7 +248,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             String updateKey = updateKey(projectName);
             AtomicReference<String> slot = null;
             if (!dryRun) {
-                slot = new AtomicReference<>("sync"); //$NON-NLS-1$
+                slot = new AtomicReference<>(SLOT_SENTINEL_SYNC);
                 String inFlight = tryAcquireUpdate(updateKey, slot);
                 if (inFlight != null) {
                     LOG.warn("[%s] edt_update_infobase rejected: update already in flight for project %s", //$NON-NLS-1$
@@ -268,7 +295,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 preflightWebserverGuard(allowWebserverRunning, ibPath);
                 killPhantomsIfRequested(result, killAgentMode, ibPath);
                 EdtRuntimeService.UpdateInfobaseStatus status =
-                        runUpdateWithGuiProgress(projectName, keepConnected);
+                        runUpdateWithGuiProgress(projectName, keepConnected, timeoutMs, ibPath);
                 result.addProperty("updated", status.updated()); //$NON-NLS-1$
                 if (skipIfCurrent) {
                     annotateEqualityProceeding(result, equalityState);
@@ -352,24 +379,51 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
      * re-firing — the re-fire is what wedged BF-12705.
      */
     private static JsonObject alreadyRunningPayload(String opId, String projectName, File workspaceRoot,
-            String inFlightJobId) {
+            String inFlightSlot) {
         JsonObject json = errorPayload(opId, projectName, workspaceRoot,
                 EdtToolErrorCode.UPDATE_ALREADY_RUNNING,
                 "An infobase update is already in progress for project '" + projectName //$NON-NLS-1$
                         + "'. EDT applies updates through a single-connection Designer session, so a " //$NON-NLS-1$
                         + "second concurrent update on the same infobase would collide and can wedge the " //$NON-NLS-1$
-                        + "platform. Poll the running job with update_infobase_status instead of re-firing."); //$NON-NLS-1$
+                        + "platform. Do NOT start another update for this project."); //$NON-NLS-1$
         json.addProperty("error", "update_already_running"); //$NON-NLS-1$ //$NON-NLS-2$
-        if (inFlightJobId != null && !inFlightJobId.isBlank()) {
-            json.addProperty("in_flight_job_id", inFlightJobId); //$NON-NLS-1$
+        // Only a real async job has a pollable id. A synchronous run (or the transient async-registration
+        // window) holds the guard slot with a sentinel that update_infobase_status cannot resolve — telling
+        // the caller to poll "sync"/"starting" produced the "Unknown job: sync" dead end (feedback
+        // 2026-07-16-update-infobase-sync-job-id-unpollable).
+        if (isPollableJobId(inFlightSlot)) {
+            json.addProperty("in_flight_job_id", inFlightSlot); //$NON-NLS-1$
+            json.addProperty("in_flight_pollable", true); //$NON-NLS-1$
+            json.addProperty("hint", //$NON-NLS-1$
+                    "Poll update_infobase_status(job_id=\"" + inFlightSlot //$NON-NLS-1$
+                            + "\", wait_for_completion=true) until it reaches a terminal state, then re-check."); //$NON-NLS-1$
+        } else if (SLOT_SENTINEL_SYNC.equals(inFlightSlot)) {
+            json.addProperty("in_flight_mode", "sync"); //$NON-NLS-1$ //$NON-NLS-2$
+            json.addProperty("in_flight_pollable", false); //$NON-NLS-1$
+            json.addProperty("hint", //$NON-NLS-1$
+                    "A synchronous update is in flight on this project's single Designer connection; it has " //$NON-NLS-1$
+                            + "no pollable job_id (\"sync\" is a sentinel, not a job). Wait for the blocking " //$NON-NLS-1$
+                            + "call to return. If you suspect it wedged, check get_infobase_sync_state and scan " //$NON-NLS-1$
+                            + "for a phantom Designer, then retry once it clears. For a pollable job next time, " //$NON-NLS-1$
+                            + "call update_infobase with async=true."); //$NON-NLS-1$
+        } else {
+            json.addProperty("in_flight_mode", "starting"); //$NON-NLS-1$ //$NON-NLS-2$
+            json.addProperty("in_flight_pollable", false); //$NON-NLS-1$
+            json.addProperty("hint", //$NON-NLS-1$
+                    "An async update for this project is being registered (transient). Retry the poll in a " //$NON-NLS-1$
+                            + "moment; a real job_id will be available shortly."); //$NON-NLS-1$
         }
-        json.addProperty("hint", //$NON-NLS-1$
-                "Do NOT start another update for this project. Poll update_infobase_status" //$NON-NLS-1$
-                        + (inFlightJobId != null && !inFlightJobId.isBlank()
-                                ? "(job_id=\"" + inFlightJobId + "\", wait_for_completion=true)" //$NON-NLS-1$ //$NON-NLS-2$
-                                : "(job_id=…, wait_for_completion=true)") //$NON-NLS-1$
-                        + " until it reaches a terminal state, then re-check."); //$NON-NLS-1$
         return json;
+    }
+
+    /**
+     * True when {@code slot} is a real {@link BackgroundJobRegistry} job id — i.e. not blank and not one
+     * of the {@link #SLOT_SENTINEL_SYNC}/{@link #SLOT_SENTINEL_STARTING} sentinels that
+     * {@code update_infobase_status} cannot resolve. Package-private for unit tests.
+     */
+    static boolean isPollableJobId(String slot) {
+        return slot != null && !slot.isBlank()
+                && !SLOT_SENTINEL_SYNC.equals(slot) && !SLOT_SENTINEL_STARTING.equals(slot);
     }
 
     /**
@@ -379,7 +433,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
      */
     private String runUpdateAndRenderResult(String opId, String projectName, boolean keepConnected,
             File workspaceRoot, String runtimeVersion, boolean killAgentMode, boolean allowWebserverRunning,
-            boolean skipIfCurrent) {
+            boolean skipIfCurrent, long timeoutMs) {
         LOG.info("[%s] START edt_update_infobase (async)", opId); //$NON-NLS-1$
         String ibPath = null;
         try {
@@ -408,7 +462,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             preflightWebserverGuard(allowWebserverRunning, ibPath);
             killPhantomsIfRequested(result, killAgentMode, ibPath);
             EdtRuntimeService.UpdateInfobaseStatus status =
-                    runUpdateWithGuiProgress(projectName, keepConnected);
+                    runUpdateWithGuiProgress(projectName, keepConnected, timeoutMs, ibPath);
             boolean updated = status.updated();
             result.addProperty("updated", updated); //$NON-NLS-1$
             if (skipIfCurrent) {
@@ -538,7 +592,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
      * normally; there is simply no progress UI to populate.</p>
      */
     private EdtRuntimeService.UpdateInfobaseStatus runUpdateWithGuiProgress(String projectName,
-            boolean keepConnected) throws Exception {
+            boolean keepConnected, long timeoutMs, String ibPath) throws Exception {
         AtomicReference<EdtRuntimeService.UpdateInfobaseStatus> statusRef = new AtomicReference<>();
         AtomicReference<Exception> errorRef = new AtomicReference<>();
         String taskName = "Updating infobase: " + projectName + "…"; //$NON-NLS-1$ //$NON-NLS-2$
@@ -567,15 +621,14 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             // Bounded join: never block forever. A held infobase (web server / client) or an EDT
             // modal can wedge the platform update; without a cap the caller just hangs until the
             // MCP transport times out and the worker stays stuck. Abort with a clear error instead.
-            boolean completed = job.join(UPDATE_JOIN_TIMEOUT_MS, null);
+            boolean completed = job.join(timeoutMs, null);
             if (!completed) {
                 job.cancel();
+                long timeoutSeconds = timeoutMs / 1000L;
+                List<Long> designerPids = scanUpdateDesignerPids(ibPath);
                 throw new EdtToolException(EdtToolErrorCode.PROCESS_TIMEOUT,
-                        "Infobase update did not complete within " //$NON-NLS-1$
-                                + (UPDATE_JOIN_TIMEOUT_MS / 1000L) + "s and was aborted. The infobase is " //$NON-NLS-1$
-                                + "likely held by another process (a running web server / wsap publication, " //$NON-NLS-1$
-                                + "or an open client/Designer). Stop the holder (web_publication " //$NON-NLS-1$
-                                + "action=restart, or close the client) and retry."); //$NON-NLS-1$
+                        processTimeoutMessage(timeoutSeconds, designerPids),
+                        processTimeoutDetails(timeoutSeconds, designerPids));
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -587,6 +640,77 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             throw failure;
         }
         return statusRef.get();
+    }
+
+    /**
+     * Best-effort scan for the Designer process(es) EDT spawned for this file infobase that are still
+     * holding it at abort time. Surfaced (not killed) in the {@code PROCESS_TIMEOUT} payload: killing a
+     * Designer that is genuinely mid-restructure would corrupt the in-progress update, so the caller
+     * decides. Returns an empty list for a server infobase (null {@code ibPath}) or on any scan failure.
+     */
+    private static List<Long> scanUpdateDesignerPids(String ibPath) {
+        if (ibPath == null || ibPath.isBlank()) {
+            return List.of();
+        }
+        try {
+            List<Long> pids = new java.util.ArrayList<>();
+            for (InfobaseProcessScanner.LockingProcess p : InfobaseProcessScanner.scan(ibPath)) {
+                if (p.targetIb() && (p.kind() == InfobaseProcessScanner.LockKind.DESIGNER
+                        || p.kind() == InfobaseProcessScanner.LockKind.DESIGNER_AGENT)) {
+                    pids.add(p.pid());
+                }
+            }
+            return pids;
+        } catch (Exception e) {
+            LOG.debug("scanUpdateDesignerPids failed for %s: %s", ibPath, e.getMessage()); //$NON-NLS-1$
+            return List.of();
+        }
+    }
+
+    /**
+     * The {@code PROCESS_TIMEOUT} message. Reworked (feedback
+     * 2026-07-16-update-infobase-process-timeout-300s-ceiling-reproducible): the old text asserted "held
+     * by another process" as the sole cause, which was misleading when the real cause was a large IB that
+     * simply needed more than the ceiling. Now it names both possibilities, points at {@code timeout_s},
+     * and surfaces the still-alive Designer PID(s) so the caller can clean up before retrying.
+     */
+    static String processTimeoutMessage(long timeoutSeconds, List<Long> designerPids) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Infobase update did not complete within ").append(timeoutSeconds) //$NON-NLS-1$
+                .append("s and was aborted. This can mean the update is genuinely still restructuring a ") //$NON-NLS-1$
+                .append("large infobase — raise timeout_s (max ").append(MAX_UPDATE_TIMEOUT_S) //$NON-NLS-1$
+                .append(") and retry — OR the infobase is held by another process (a running web server / ") //$NON-NLS-1$
+                .append("wsap publication, or an open client/Designer). "); //$NON-NLS-1$
+        if (designerPids != null && !designerPids.isEmpty()) {
+            sb.append("The Designer process(es) EDT spawned for this update (pid ") //$NON-NLS-1$
+                    .append(joinPids(designerPids))
+                    .append(") may still hold the infobase file lock — kill them before retrying if the ") //$NON-NLS-1$
+                    .append("update is genuinely wedged (NOT if it is still doing real work). "); //$NON-NLS-1$
+        }
+        sb.append("Stop any real holder (web_publication action=restart, or close the client) or raise ") //$NON-NLS-1$
+                .append("timeout_s, then retry."); //$NON-NLS-1$
+        return sb.toString();
+    }
+
+    /** Structured detail fields for a {@code PROCESS_TIMEOUT}, rendered by {@link #errorPayloadFrom}. */
+    private static Map<String, String> processTimeoutDetails(long timeoutSeconds, List<Long> designerPids) {
+        Map<String, String> details = new java.util.LinkedHashMap<>();
+        details.put("update_timeout_s", Long.toString(timeoutSeconds)); //$NON-NLS-1$
+        if (designerPids != null && !designerPids.isEmpty()) {
+            details.put("aborted_designer_pids", joinPids(designerPids)); //$NON-NLS-1$
+        }
+        return details;
+    }
+
+    private static String joinPids(List<Long> pids) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < pids.size(); i++) {
+            if (i > 0) {
+                sb.append(','); //$NON-NLS-1$
+            }
+            sb.append(pids.get(i));
+        }
+        return sb.toString();
     }
 
     /**
@@ -673,6 +797,30 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         if (details.containsKey("branch")) { //$NON-NLS-1$
             json.addProperty("branch", details.get("branch")); //$NON-NLS-1$ //$NON-NLS-2$
         }
+        if (details.containsKey("update_timeout_s")) { //$NON-NLS-1$
+            try {
+                json.addProperty("timeout_s", Long.valueOf(details.get("update_timeout_s"))); //$NON-NLS-1$ //$NON-NLS-2$
+            } catch (NumberFormatException ignored) {
+                json.addProperty("timeout_s", details.get("update_timeout_s")); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+        }
+        if (details.containsKey("aborted_designer_pids")) { //$NON-NLS-1$
+            JsonArray pids = new JsonArray();
+            for (String raw : details.get("aborted_designer_pids").split(",")) { //$NON-NLS-1$ //$NON-NLS-2$
+                String pid = raw.trim();
+                if (pid.isEmpty()) {
+                    continue;
+                }
+                try {
+                    pids.add(Long.valueOf(pid));
+                } catch (NumberFormatException ignored) {
+                    pids.add(pid);
+                }
+            }
+            if (!pids.isEmpty()) {
+                json.add("aborted_designer_pids", pids); //$NON-NLS-1$
+            }
+        }
         return json;
     }
 
@@ -716,6 +864,34 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             return false;
         }
         return defaultValue;
+    }
+
+    /**
+     * Coerces a JSON-decoded value into an int. Accepts {@link Number} and decimal strings (the
+     * edt_diagnostics dispatcher may ship numeric params as strings). Falls back to {@code defaultValue}
+     * on null/blank/unparseable input.
+     */
+    static int asInt(Object value, int defaultValue) {
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Number n) {
+            return n.intValue();
+        }
+        String s = String.valueOf(value).trim();
+        if (s.isEmpty()) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
+    }
+
+    /** Clamps a requested update timeout (seconds) into {@code [MIN, MAX]}. Package-private for tests. */
+    static int clampTimeoutSeconds(int requested) {
+        return Math.max(MIN_UPDATE_TIMEOUT_S, Math.min(MAX_UPDATE_TIMEOUT_S, requested));
     }
 
     /**

@@ -162,6 +162,24 @@ public class UpdateInfobaseStatusTool extends AbstractTool {
             }
             case UNKNOWN:
             default: {
+                // "sync"/"starting" are update_infobase in-flight-guard sentinels, not registry jobs.
+                // A caller that (mistakenly, or from a stale hint) polls one gets a targeted explanation
+                // instead of the bare "Unknown job" (feedback 2026-07-16-update-infobase-sync-job-id-unpollable).
+                if ("sync".equals(jobId) || "starting".equals(jobId)) { //$NON-NLS-1$ //$NON-NLS-2$
+                    LOG.warn("update_infobase_status: sentinel job id %s is not pollable", jobId); //$NON-NLS-1$
+                    JsonObject payload = new JsonObject();
+                    payload.addProperty("job_id", jobId); //$NON-NLS-1$
+                    payload.addProperty("error", "not_pollable_sentinel"); //$NON-NLS-1$ //$NON-NLS-2$
+                    payload.addProperty("message", //$NON-NLS-1$
+                            "\"" + jobId + "\" is not a job id — it is an update_infobase in-flight sentinel " //$NON-NLS-1$ //$NON-NLS-2$
+                                    + ("sync".equals(jobId) //$NON-NLS-1$
+                                            ? "for a SYNCHRONOUS update, which has no pollable job. Wait for the " //$NON-NLS-1$
+                                                    + "blocking update_infobase call to return; for a pollable job, " //$NON-NLS-1$
+                                                    + "call update_infobase with async=true." //$NON-NLS-1$
+                                            : "for an async update still being registered. Retry in a moment to " //$NON-NLS-1$
+                                                    + "get the real job_id.")); //$NON-NLS-1$
+                    return ToolResult.failure(pretty(payload));
+                }
                 LOG.warn("update_infobase_status: unknown job id %s", jobId); //$NON-NLS-1$
                 return ToolResult.failure("Unknown job: " + jobId); //$NON-NLS-1$
             }
