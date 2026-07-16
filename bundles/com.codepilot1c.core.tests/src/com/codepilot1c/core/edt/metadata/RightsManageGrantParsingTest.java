@@ -63,6 +63,14 @@ public class RightsManageGrantParsingTest {
     }
 
     @Test
+    public void normalizesRemoveAliases() {
+        assertEquals(RightsManageRequest.VALUE_REMOVE, parseValue("remove")); //$NON-NLS-1$
+        assertEquals(RightsManageRequest.VALUE_REMOVE, parseValue("clear")); //$NON-NLS-1$
+        assertEquals(RightsManageRequest.VALUE_REMOVE, parseValue("delete")); //$NON-NLS-1$
+        assertEquals(RightsManageRequest.VALUE_REMOVE, parseValue("drop")); //$NON-NLS-1$
+    }
+
+    @Test
     public void acceptsBooleanValueLiteral() {
         assertEquals(RightsManageRequest.VALUE_SET, parseValueRaw(Boolean.TRUE));
         assertEquals(RightsManageRequest.VALUE_UNSET, parseValueRaw(Boolean.FALSE));

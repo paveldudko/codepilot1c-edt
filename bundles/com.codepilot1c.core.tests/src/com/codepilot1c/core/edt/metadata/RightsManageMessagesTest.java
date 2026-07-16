@@ -56,6 +56,20 @@ public class RightsManageMessagesTest {
     }
 
     @Test
+    public void removalSummaryMarksActualRemovalVsNoOp() {
+        String removed = RightsManageMessages.formatGrantRemoval(1,
+                "Enum.FinanceVerificationState", "Read", true); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(removed.contains("Enum.FinanceVerificationState.Read=remove")); //$NON-NLS-1$
+        assertTrue("a real removal must be marked removed", removed.contains("(removed)")); //$NON-NLS-1$ //$NON-NLS-2$
+
+        String noop = RightsManageMessages.formatGrantRemoval(2,
+                "Enum.FinanceVerificationState", "Use", false); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("removing an absent grant must read as a no-op, not a removal", //$NON-NLS-1$
+                noop.contains("unchanged")); //$NON-NLS-1$
+        assertFalse(noop.contains("(removed)")); //$NON-NLS-1$
+    }
+
+    @Test
     public void messageAppendsRightsFileStateAdvisory() {
         String advisory = "⚠️ WARNING: expected rights fragment src/Roles/X/Rights.rights was NOT found"; //$NON-NLS-1$
         String msg = RightsManageMessages.buildRightsMessage(1,

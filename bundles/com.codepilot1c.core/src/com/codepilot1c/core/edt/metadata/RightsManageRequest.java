@@ -24,6 +24,13 @@ public record RightsManageRequest(
     public static final String VALUE_SET = "set"; //$NON-NLS-1$
     public static final String VALUE_UNSET = "unset"; //$NON-NLS-1$
     public static final String VALUE_PROVIDED = "provided"; //$NON-NLS-1$
+    /**
+     * Fully remove the explicit right entry (and prune the now-empty {@code <object>} block), rather
+     * than writing {@code <value>false</value>} ({@link #VALUE_UNSET}) or a valueless inherited entry
+     * ({@link #VALUE_PROVIDED}), both of which leave the object's rights block on disk. Needed to strip
+     * a stray/invalid grant such as a rights-less-type block that stalls DB restructure (BF-12936).
+     */
+    public static final String VALUE_REMOVE = "remove"; //$NON-NLS-1$
 
     /** A single object-level right grant. {@code value} is one of set/unset/provided. */
     public record RightGrant(String objectFqn, String right, String value) {
@@ -108,10 +115,11 @@ public record RightsManageRequest(
             case "", "set", "true", "grant", "allow", "1" -> VALUE_SET; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
             case "unset", "false", "revoke", "deny", "0" -> VALUE_UNSET; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
             case "provided", "inherit", "inherited", "default" -> VALUE_PROVIDED; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            case "remove", "clear", "delete", "drop" -> VALUE_REMOVE; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             default -> throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_PROPERTY_VALUE,
                     "Invalid right value '" + raw + "' for " + right + " on " + objectFqn //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-                            + " (expected set/unset/provided)", false); //$NON-NLS-1$
+                            + " (expected set/unset/provided/remove)", false); //$NON-NLS-1$
         };
     }
 

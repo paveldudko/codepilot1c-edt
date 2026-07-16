@@ -45,7 +45,7 @@ public class RightsManageTool extends AbstractTool {
                     "properties": {
                       "object_fqn": {"type": "string", "description": "FQN объекта (или под-объекта), для которого задаются права, напр. 'Catalog.OutcomePaymentsTypes'."},
                       "right": {"type": "string", "description": "Имя права для типа объекта: Read/Update/Delete/View/Edit/DeletionMark/Insert/... (как в платформе)."},
-                      "value": {"type": "string", "description": "set | unset | provided. По умолчанию set (выдать право). unset — снять, provided — наследуемое значение."}
+                      "value": {"type": "string", "description": "set | unset | provided | remove. По умолчанию set (выдать право). unset — снять (пишет false), provided — наследуемое значение, remove — полностью удалить запись права и пустой блок объекта (для очистки ошибочного гранта на типе без прав)."}
                     },
                     "required": ["object_fqn", "right"],
                     "additionalProperties": true

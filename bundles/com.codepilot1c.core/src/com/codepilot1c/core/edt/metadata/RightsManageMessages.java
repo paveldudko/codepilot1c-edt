@@ -25,6 +25,18 @@ final class RightsManageMessages {
     }
 
     /**
+     * Renders one {@code value:remove} grant line, honestly marking a real removal vs a no-op when the
+     * object carried no such explicit right entry. Removal drops the entry entirely (and prunes the
+     * emptied {@code <object>} block), which {@code unset}/{@code provided} do not.
+     */
+    static String formatGrantRemoval(int index, String objectFqn, String rightName, boolean removed) {
+        String base = "grant[" + index + "]: " + objectFqn + "." + rightName + "=remove"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        return removed
+                ? base + " (removed)" //$NON-NLS-1$
+                : base + " (unchanged — no such explicit grant)"; //$NON-NLS-1$
+    }
+
+    /**
      * Builds the rights_manage result message. When NOTHING changed, says so plainly instead of
      * claiming an update — the old unconditional "Role rights updated: …" wrongly implied a write
      * even when every grant was a no-op (and thus nothing was serialized to disk).

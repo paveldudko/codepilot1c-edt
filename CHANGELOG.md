@@ -152,6 +152,25 @@ commit hash in parentheses where useful.
   responses carry no warning. NB: re-bootstrap applies only the *requested* grants onto the fresh fragment —
   the recovery intent for a file-deleted role. (feedback
   `2026-07-16-rights-manage-reports-success-but-does-not-persist`, ask 1)
+- **Content-validation fix — reject a grant on a rights-less type + a `value:remove` escape hatch.**
+  `rights_manage` accepted an invalid grant on an `Enum` (a type with no configurable access rights) and
+  wrote a stray `<object>Enum.X</object>` block; that block then stalls the platform DB restructure for
+  10–20 min on the next `update_infobase` (owner-confirmed real cause of the BF-12936 prod hang; not
+  statically diagnosable). Root cause (decompiled `RightsInfoService`): `resolveRight` matched the right by
+  NAME against `getRights(object)`, which returns the **global** pool of every right for the runtime version
+  (not the object's own rights), so `Read`/`Use` resolved for an Enum even though its `getEClassRights` set
+  is empty; the coarse `isMdObjectHasRights` guard can't catch it (Enum's EClass is in
+  `ALL_SUPPORTED_RIGHT_ECLASSES`). **Fix (Part 1):** when the rights service is warm (global pool non-empty)
+  but the target's own eClass exposes zero configurable rights (`getEClassRights` empty), reject the grant —
+  gated on a non-empty global pool so a cold service never yields a false reject; resolution order for
+  objects that DO have rights is unchanged (no regression for registers/catalogs/sub-objects). A dual-purpose
+  diagnostic logs `globalRights` count vs `eClassRights` names per grant. **Fix (Part 2):** a new
+  `value:remove` verb (aliases `clear`/`delete`/`drop`) drops the explicit right entry and prunes the emptied
+  `<object>` wrapper (`RightsModelUtil.removeEmptyObjectRights`) — `unset`/`provided` leave the block on disk,
+  so removal was previously impossible; `remove` deliberately bypasses the Part-1 guard so an already-written
+  stray block can be stripped. Unit tests: `normalizesRemoveAliases` (parsing), `removalSummaryMarksActualRemovalVsNoOp`
+  (message). Build green (`-Plocal-target`). (feedback
+  `2026-07-16-rights-manage-accepts-invalid-enum-grant-and-cannot-fully-remove-it`)
 
 ### Experiment — `mcp-bridge-lite`: strip the in-EDT chat/agent, keep the MCP bridge only
 

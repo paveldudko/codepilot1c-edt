@@ -20,6 +20,7 @@ import java.util.LinkedHashSet;
 import java.util.IdentityHashMap;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
@@ -5707,6 +5708,9 @@ public class EdtMetadataService {
             }
 
             List<String> applied = new ArrayList<>();
+            // Object-rights wrappers touched by this operation; pruned of empties afterwards. Identity
+            // set — ObjectRights has no value-equality, and we must not merge distinct EMF instances.
+            Set<ObjectRights> touchedRights = Collections.newSetFromMap(new IdentityHashMap<>());
             int index = 1;
             for (RightsManageRequest.RightGrant grant : request.grants()) {
                 MdObject targetObject = resolveByFqn(txConfiguration, grant.objectFqn());
@@ -5720,7 +5724,34 @@ public class EdtMetadataService {
                             MetadataOperationCode.INVALID_METADATA_CHANGE,
                             "Object does not support rights: " + grant.objectFqn(), false); //$NON-NLS-1$
                 }
-                Right right = resolveRight(rightInfosService, targetObject, grant.right(), grant.objectFqn());
+                if (RightsManageRequest.VALUE_REMOVE.equals(grant.value())) {
+                    // Removal escape hatch: fully drop an explicit right entry (and prune the now-empty
+                    // <object> wrapper below) so a stray/invalid grant can be undone — unlike unset/
+                    // provided, which leave the <object> block on disk (BF-12936: a stray
+                    // <object>Enum.X</object> block stalls DB restructure for minutes). Deliberately NOT
+                    // routed through resolveRight's applicability guard — a right that is invalid for the
+                    // type is EXACTLY what a caller needs to be able to strip out (else it is unremovable).
+                    ObjectRights objectRights = RightsModelUtil.filterObjectRightsByEObject(
+                            targetObject, roleDescription.getRights());
+                    boolean removed = false;
+                    if (objectRights != null) {
+                        ObjectRight existing = objectRights.getRights().stream()
+                                .filter(Objects::nonNull)
+                                .filter(or -> or.getRight() != null && rightMatchesName(or.getRight(), grant.right()))
+                                .findFirst().orElse(null);
+                        if (existing != null) {
+                            objectRights.getRights().remove(existing);
+                            changedHolder[0]++;
+                            removed = true;
+                        }
+                        touchedRights.add(objectRights);
+                    }
+                    applied.add(RightsManageMessages.formatGrantRemoval(index, grant.objectFqn(),
+                            grant.right(), removed));
+                    index++;
+                    continue;
+                }
+                Right right = resolveRight(rightInfosService, targetObject, grant.right(), grant.objectFqn(), opId);
                 RightValue newValue = toRightValue(grant.value());
                 ObjectRights objectRights = RightsModelUtil.getOrCreateObjectRights(targetObject, roleDescription);
                 RightValue currentValue = currentRightValue(objectRights, right, targetObject, role);
@@ -5734,12 +5765,20 @@ public class EdtMetadataService {
                     RightsModelUtil.changeObjectRight(newValue, currentValue, objectRights, right);
                     changedHolder[0]++;
                 }
+                touchedRights.add(objectRights);
                 // Track changed-vs-no-op explicitly: a no-op grant must NOT read as "applied" — the
                 // old unconditional summary let a stale-model / already-set case masquerade as a write
                 // (codepilot1c-feedback 2026-07-16-rights-manage-reports-success-but-does-not-persist).
                 applied.add(RightsManageMessages.formatGrantSummary(index, grant.objectFqn(),
                         right.getName(), newValue.getName(), currentValue.getName(), changed));
                 index++;
+            }
+            // Prune any <object> wrappers left empty by this operation (after a remove, or an unset that
+            // dropped the last explicit right). An empty rights block is cruft that still serializes as
+            // <object><name>…</name></object> and can trip the platform DB restructure; removeEmptyObjectRights
+            // is a no-op for non-empty wrappers, so untouched objects with real grants are never affected.
+            for (ObjectRights objectRights : touchedRights) {
+                RightsModelUtil.removeEmptyObjectRights(roleDescription, objectRights);
             }
             return applied;
         });
@@ -5936,14 +5975,43 @@ public class EdtMetadataService {
     }
 
     private Right resolveRight(IRightInfosService rightInfosService, MdObject targetObject,
-            String rightName, String objectFqn) {
-        Set<Right> candidates = rightInfosService.getRights(targetObject);
-        if (candidates == null || candidates.isEmpty()) {
-            EClass rightsEClass = RightsModelUtil.getEClass(targetObject);
-            if (rightsEClass != null) {
-                candidates = rightInfosService.getEClassRights(targetObject, rightsEClass);
-            }
+            String rightName, String objectFqn, String opId) {
+        // getRights(context) returns the GLOBAL pool of every right declared for the runtime version
+        // (independent of the object) — verified by decompiling RightsInfoService: it just returns
+        // versionRights.get(version). getEClassRights(object, eClass) is the per-EClass authority (the
+        // very source the platform rights editor uses to render an object's rights columns).
+        Set<Right> globalRights = rightInfosService.getRights(targetObject);
+        EClass rightsEClass = RightsModelUtil.getEClass(targetObject);
+        Set<Right> eClassRights = rightsEClass == null ? null
+                : rightInfosService.getEClassRights(targetObject, rightsEClass);
+        // Dual-purpose diagnostic (diagnostic-build-round method): surfaces the global-pool size vs the
+        // eClass-applicable right names so a live run confirms whether an object's own type carries any
+        // configurable rights — the crux of the invalid-Enum-grant defect (BF-12936).
+        LOG.info("[%s] rights-resolve object=%s eClass=%s globalRights=%d eClassRights=%s", opId, //$NON-NLS-1$
+                objectFqn, rightsEClass == null ? "<null>" : rightsEClass.getName(), //$NON-NLS-1$
+                Integer.valueOf(globalRights == null ? 0 : globalRights.size()), rightNames(eClassRights));
+        // Applicability guard (regression-safe). When the rights service is warm (the global pool is
+        // populated) yet the target's OWN eClass exposes zero configurable rights, the object type does
+        // not support rights at all — e.g. an Enum, whose Designer rights row is empty. The coarse
+        // isMdObjectHasRights guard cannot catch this (Enum's EClass is in ALL_SUPPORTED_RIGHT_ECLASSES),
+        // so without this a grant would resolve any right by NAME from the global pool and persist a
+        // stray <object>Enum.X</object> block that stalls the DB restructure for minutes (BF-12936).
+        // Gated on a non-empty global pool so a cold/uninitialised service never yields a false reject.
+        boolean serviceWarm = globalRights != null && !globalRights.isEmpty();
+        if (serviceWarm && (eClassRights == null || eClassRights.isEmpty())) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "Object '" + objectFqn + "' has no configurable access rights — its metadata type " //$NON-NLS-1$ //$NON-NLS-2$
+                            + "carries no rights in the platform (e.g. an Enum), so no grant can be " //$NON-NLS-1$
+                            + "written. Use value:remove to strip a previously written stray block.", //$NON-NLS-1$
+                    false);
         }
+        // Resolve the Right object by name. Keep the pre-existing resolution order (global pool first,
+        // eClass set as fallback) so grant resolution for objects that DO support rights — registers,
+        // catalogs, and sub-objects (fields/attributes, whose eClass rights come via supertype
+        // fallbacks) — is unchanged; only the zero-rights-type case above is newly rejected. Tightening
+        // resolution to the eClass set is deferred to a follow-up round (needs sub-object validation).
+        Set<Right> candidates = (globalRights != null && !globalRights.isEmpty()) ? globalRights : eClassRights;
         if (candidates != null) {
             for (Right candidate : candidates) {
                 if (candidate != null && rightMatchesName(candidate, rightName)) {
@@ -5955,6 +6023,21 @@ public class EdtMetadataService {
                 MetadataOperationCode.INVALID_METADATA_CHANGE,
                 "Right '" + rightName + "' is not applicable to " + objectFqn //$NON-NLS-1$ //$NON-NLS-2$
                         + availableRightsHint(candidates), false);
+    }
+
+    /** Sorted right names for diagnostics; {@code []} for null/empty. */
+    private String rightNames(Set<Right> rights) {
+        if (rights == null || rights.isEmpty()) {
+            return "[]"; //$NON-NLS-1$
+        }
+        List<String> names = new ArrayList<>();
+        for (Right right : rights) {
+            if (right != null && right.getName() != null) {
+                names.add(right.getName());
+            }
+        }
+        names.sort(String::compareToIgnoreCase);
+        return names.toString();
     }
 
     private String availableRightsHint(Set<Right> candidates) {
