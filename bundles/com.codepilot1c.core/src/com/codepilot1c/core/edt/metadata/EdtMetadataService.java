@@ -5867,7 +5867,20 @@ public class EdtMetadataService {
             Role role, String roleRef) {
         AbstractRoleDescription existing = role.getRights();
         if (existing instanceof RoleDescription roleDescription) {
-            return roleDescription;
+            // Reuse the existing RoleDescription ONLY if it is a resolvable top-object — otherwise the
+            // grants would apply to an orphaned fragment that forceExport→createSaveObjectTask cannot
+            // find (getTopObjectByFqn==null → save task skipped → Rights.rights never written). This
+            // is exactly what happens after a role's .rights file is deleted on disk under a live EDT:
+            // role.getRights() still returns a dangling RoleDescriptionImpl, but it is no longer a
+            // registered top-object (diagnostic build 1956 / dev-stack-2 confirmed live, BF-12936).
+            // When orphaned, fall through to re-bootstrap a properly attached fragment; the grant loop
+            // then re-applies onto the fresh, exportable RoleDescription.
+            if (isRightsResolvableTopObject(transaction, project, role)) {
+                return roleDescription;
+            }
+            LOG.info("[rights] role %s has an ORPHANED rights fragment (not a resolvable top-object) — re-bootstrapping so it can be exported", //$NON-NLS-1$
+                    roleRef);
+            return attachBootstrappedRoleDescription(transaction, project, role);
         }
         // A freshly created (or never-edited) role carries an empty AbstractRoleDescription
         // placeholder — a featureless marker with no rights data — instead of a concrete
@@ -5883,6 +5896,27 @@ public class EdtMetadataService {
                             + existing.eClass().getName(), false);
         }
         return attachBootstrappedRoleDescription(transaction, project, role);
+    }
+
+    /**
+     * Whether the role's rights fragment currently resolves as a top-object by its external FQN in
+     * this transaction — the precondition {@code forceExport}→{@code createSaveObjectTask} requires to
+     * schedule a save (and thus write {@code Rights.rights}). A dangling {@code role.getRights()} that
+     * is not a registered top-object (e.g. its file was deleted on disk) returns {@code false}.
+     */
+    private boolean isRightsResolvableTopObject(IBmPlatformTransaction transaction, IProject project, Role role) {
+        try {
+            String externalFqn = gateway.getTopObjectFqnGenerator()
+                    .generateExternalPropertyFqn(role, MdClassPackage.Literals.ROLE__RIGHTS);
+            if (externalFqn == null || externalFqn.isBlank()) {
+                return false;
+            }
+            IBmNamespace namespace = gateway.getBmModelManager().getBmNamespace(project);
+            return namespace != null && transaction.getTopObjectByFqn(namespace, externalFqn) != null;
+        } catch (RuntimeException e) {
+            LOG.warn("[rights] resolvable-top-object probe failed: %s", e.getMessage()); //$NON-NLS-1$
+            return false;
+        }
     }
 
     /**
