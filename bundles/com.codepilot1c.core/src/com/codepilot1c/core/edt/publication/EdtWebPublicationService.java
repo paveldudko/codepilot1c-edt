@@ -22,12 +22,17 @@ import com._1c.g5.v8.dt.platform.services.core.webservers.IWebServerTypes;
 import com._1c.g5.v8.dt.platform.services.core.webservers.WebServers;
 import com._1c.g5.v8.dt.platform.services.model.AppArch;
 import com._1c.g5.v8.dt.platform.services.model.Arch;
+import com._1c.g5.v8.dt.platform.services.model.HttpService;
+import com._1c.g5.v8.dt.platform.services.model.HttpServices;
 import com._1c.g5.v8.dt.platform.services.model.InfobasePublication;
 import com._1c.g5.v8.dt.platform.services.model.ModelFactory;
+import com._1c.g5.v8.dt.platform.services.model.OData;
+import com._1c.g5.v8.dt.platform.services.model.Pool;
 import com._1c.g5.v8.dt.platform.services.model.Publication;
 import com._1c.g5.v8.dt.platform.services.model.PublicationType;
 import com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation;
 import com._1c.g5.v8.dt.platform.services.model.WebServer;
+import com._1c.g5.v8.dt.platform.services.model.WebServices;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponent;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager;
 import com.codepilot1c.core.edt.runtime.EdtRuntimeGateway;
@@ -72,6 +77,42 @@ public class EdtWebPublicationService {
 
     /** Wsap module resolved from a pinned platform installation. */
     private record ResolvedWebExtension(RuntimeInstallation installation, Path modulePath) {
+    }
+
+    /** A custom HTTP-service publication entry (vrd {@code <httpServices><service …/>}). */
+    public record HttpServiceSpec(String name, String rootUrl, boolean enable) {
+    }
+
+    /** Publication-level connection pool (vrd pool attributes). Null fields keep the model default. */
+    public record PoolSpec(Integer size, Integer maxAge) {
+    }
+
+    /**
+     * Optional model content a {@link #publish} caller can carry into the generated {@code default.vrd}
+     * beyond the plain infobase binding — so an EDT-managed publication reproduces a hand-authored vrd's
+     * custom HTTP services (per-service {@code rootUrl}), OData/analytics flags and pool. BF-12936: the
+     * bsl-analyzer-workspace MCP depends on {@code <service rootUrl="bsl-analyzer">}, which the bare
+     * publish never emitted. Any field left null keeps EDT's default for that facet.
+     *
+     * <p>Fidelity note: per-service pool tuning is NOT modelled ({@link HttpService} carries only
+     * name/rootUrl/enable) — only the publication-level {@link PoolSpec} exists. A migrated vrd is
+     * functionally faithful (the service publishes at its {@code rootUrl}) but not byte-identical on
+     * per-service pool numbers.</p>
+     */
+    public record PublicationExtras(
+            Boolean publishHttpByDefault,
+            Boolean publishWebByDefault,
+            List<HttpServiceSpec> httpServices,
+            Boolean enableStandardOData,
+            Boolean enableSystemAnalytics,
+            PoolSpec pool) {
+
+        /** True when nothing is set — {@link #publish} then behaves exactly as the bare overload. */
+        public boolean isEmpty() {
+            return publishHttpByDefault == null && publishWebByDefault == null
+                    && (httpServices == null || httpServices.isEmpty())
+                    && enableStandardOData == null && enableSystemAnalytics == null && pool == null;
+        }
     }
 
     private final EdtRuntimeGateway gateway;
@@ -210,6 +251,16 @@ public class EdtWebPublicationService {
      */
     public InfobasePublication publish(String serverName, String name, Path location, String infobaseConnection,
             String wsapVersion) {
+        return publish(serverName, name, location, infobaseConnection, wsapVersion, null);
+    }
+
+    /**
+     * Publish overload that also carries {@link PublicationExtras} (custom HTTP services / OData /
+     * analytics / pool) into the generated vrd — see {@link PublicationExtras}. A null/empty
+     * {@code extras} is identical to the bare overload.
+     */
+    public InfobasePublication publish(String serverName, String name, Path location, String infobaseConnection,
+            String wsapVersion, PublicationExtras extras) {
         WebServer server = requireServer(serverName);
         if (name == null || name.isBlank()) {
             throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT, "Publication name is required"); //$NON-NLS-1$
@@ -253,6 +304,7 @@ public class EdtWebPublicationService {
         publication.setLocation(effectiveLocation.toString());
         publication.setInfobaseConnection(infobaseConnection);
         publication.setEnable(true);
+        applyExtras(publication, extras);
 
         try {
             if (wsapVersion != null && !wsapVersion.isBlank()) {
@@ -272,6 +324,63 @@ public class EdtWebPublicationService {
         }
         LOG.info("Published '%s' on '%s' (location=%s)", name, serverName, effectiveLocation); //$NON-NLS-1$
         return publication;
+    }
+
+    /**
+     * Populates optional {@link PublicationExtras} onto a freshly-built publication so the publish
+     * delegate serializes it into the vrd. No-op for null/empty extras (identical to the bare publish).
+     * Custom HTTP services set name/rootUrl/enable per entry; per-service pool tuning is not modelled
+     * (only the publication-level {@link Pool}) — see {@link PublicationExtras}.
+     */
+    private void applyExtras(InfobasePublication publication, PublicationExtras extras) {
+        if (extras == null || extras.isEmpty()) {
+            return;
+        }
+        boolean hasServices = extras.httpServices() != null && !extras.httpServices().isEmpty();
+        if (hasServices || extras.publishHttpByDefault() != null) {
+            HttpServices httpServices = ModelFactory.eINSTANCE.createHttpServices();
+            httpServices.setPublishByDefault(Boolean.TRUE.equals(extras.publishHttpByDefault()));
+            if (extras.httpServices() != null) {
+                for (HttpServiceSpec spec : extras.httpServices()) {
+                    if (spec == null || spec.name() == null || spec.name().isBlank()) {
+                        continue;
+                    }
+                    HttpService service = ModelFactory.eINSTANCE.createHttpService();
+                    service.setName(spec.name());
+                    if (spec.rootUrl() != null && !spec.rootUrl().isBlank()) {
+                        service.setRootUrl(spec.rootUrl());
+                    }
+                    service.setEnable(spec.enable());
+                    httpServices.getServices().add(service);
+                }
+            }
+            publication.setHttpServices(httpServices);
+        }
+        if (extras.publishWebByDefault() != null) {
+            WebServices webServices = ModelFactory.eINSTANCE.createWebServices();
+            webServices.setPublishExtensionsByDefault(extras.publishWebByDefault().booleanValue());
+            publication.setWebServices(webServices);
+        }
+        if (extras.enableStandardOData() != null) {
+            boolean enabled = extras.enableStandardOData().booleanValue();
+            publication.setEnableStandardOData(enabled);
+            OData odata = ModelFactory.eINSTANCE.createOData();
+            odata.setEnable(enabled);
+            publication.setStandardOdata(odata);
+        }
+        if (extras.enableSystemAnalytics() != null) {
+            publication.setEnableSystemAnalytics(extras.enableSystemAnalytics().booleanValue());
+        }
+        if (extras.pool() != null) {
+            Pool pool = ModelFactory.eINSTANCE.createPool();
+            if (extras.pool().size() != null) {
+                pool.setSize(extras.pool().size().intValue());
+            }
+            if (extras.pool().maxAge() != null) {
+                pool.setMaxAge(extras.pool().maxAge().intValue());
+            }
+            publication.setPool(pool);
+        }
     }
 
     public boolean removePublication(String serverName, String name) {

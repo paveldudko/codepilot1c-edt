@@ -3,6 +3,7 @@ package com.codepilot1c.core.tools.workspace;
 import java.net.URL;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -86,6 +87,43 @@ public class WebPublicationTool extends AbstractTool {
                   "type": "string",
                   "description": "publish: пин версии платформы для wsap-модуля ('8.3.27' или точный билд). Без него: существующий LoadModule в conf сохраняется; в свежем conf EDT возьмёт новейшую установленную платформу, включая пре-релизы."
                 },
+                "http_services": {
+                  "type": "array",
+                  "description": "publish: кастомные HTTP-сервисы для vrd (<httpServices><service>). Каждый: {name, root_url, enable}. Нужно, чтобы EDT-managed публикация несла сервис с нестандартным rootUrl (напр. BSLAnalyzerService rootUrl=bsl-analyzer). Per-service pool-тюнинг моделью EDT не поддерживается (только name/root_url/enable).",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {"type": "string", "description": "Имя HTTP-сервиса конфигурации."},
+                      "root_url": {"type": "string", "description": "Корневой URL сервиса (override), напр. 'bsl-analyzer'."},
+                      "enable": {"type": "boolean", "description": "Публиковать сервис (default true)."}
+                    },
+                    "required": ["name"]
+                  }
+                },
+                "publish_http_by_default": {
+                  "type": "boolean",
+                  "description": "publish: <httpServices publishByDefault> — публиковать все HTTP-сервисы конфигурации по умолчанию."
+                },
+                "publish_web_by_default": {
+                  "type": "boolean",
+                  "description": "publish: публиковать web-сервисы (SOAP) расширений по умолчанию."
+                },
+                "enable_standard_odata": {
+                  "type": "boolean",
+                  "description": "publish: включить стандартный OData-интерфейс (<standardOdata enable>)."
+                },
+                "enable_system_analytics": {
+                  "type": "boolean",
+                  "description": "publish: включить системную аналитику (<analytics enable>)."
+                },
+                "pool": {
+                  "type": "object",
+                  "description": "publish: пул соединений публикации (уровень публикации, не per-service). {size, max_age}.",
+                  "properties": {
+                    "size": {"type": "integer", "description": "Размер пула (poolSize)."},
+                    "max_age": {"type": "integer", "description": "Макс. возраст соединения, сек (sessionMaxAge)."}
+                  }
+                },
                 "restart": {
                   "type": "boolean",
                   "description": "publish/remove: рестартовать веб-сервер после изменения conf (kill+start для foreground Apache — EDT-делегат на Windows рестартовать не умеет)."
@@ -127,8 +165,9 @@ public class WebPublicationTool extends AbstractTool {
     public String getDescription() {
         return "Manages infobase publications on a web server via the EDT API (Apache, portable included). " //$NON-NLS-1$
                 + "Register the server (register_server) before the first publish. " //$NON-NLS-1$
-                + "publish is idempotent (re-pointing an alias to another infobase = re-publish); " //$NON-NLS-1$
-                + "restart=true is required for conf changes to take effect."; //$NON-NLS-1$
+                + "publish is idempotent (re-pointing an alias to another infobase = re-publish) and can " //$NON-NLS-1$
+                + "carry custom HTTP services (http_services: name/root_url/enable) + OData/analytics/pool " //$NON-NLS-1$
+                + "into the generated vrd; restart=true is required for conf changes to take effect."; //$NON-NLS-1$
     }
 
     @Override
@@ -237,12 +276,14 @@ public class WebPublicationTool extends AbstractTool {
         Path location = locationRaw == null ? null : Paths.get(locationRaw);
         String wsapVersion = asString(get(parameters, "wsap_version")); //$NON-NLS-1$
         String connection = resolveInfobaseConnection(parameters);
+        EdtWebPublicationService.PublicationExtras extras = parsePublicationExtras(parameters);
         InfobasePublication publication = publicationService.publish(serverName, name, location, connection,
-                wsapVersion);
+                wsapVersion, extras);
         result.addProperty("name", publication.getName()); //$NON-NLS-1$
         result.addProperty("location", publication.getLocation()); //$NON-NLS-1$
         result.addProperty("infobase_connection", publication.getInfobaseConnection()); //$NON-NLS-1$
         result.addProperty("wsap_source", wsapVersion == null ? "conf_or_auto" : "pinned"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        appendExtras(extras, result);
         publicationService.getPublicationUrl(serverName, name)
                 .ifPresent(url -> result.addProperty("url", url.toString())); //$NON-NLS-1$
         maybeRestart(parameters, serverName, result);
@@ -337,6 +378,129 @@ public class WebPublicationTool extends AbstractTool {
                     "Project '" + projectName + "' has no associated infobase with a connection string"); //$NON-NLS-1$ //$NON-NLS-2$
         }
         return infobase.getConnectionString().asConnectionString();
+    }
+
+    /**
+     * Parses the publish action's optional publication-content params into a typed
+     * {@link EdtWebPublicationService.PublicationExtras}. Pure (no EDT/EMF) so it is unit-testable;
+     * package-private. Returns {@code null} when no extras param is present (bare publish).
+     */
+    static EdtWebPublicationService.PublicationExtras parsePublicationExtras(Map<String, Object> parameters) {
+        EdtWebPublicationService.PublicationExtras extras = new EdtWebPublicationService.PublicationExtras(
+                asBoolOrNull(get(parameters, "publish_http_by_default")), //$NON-NLS-1$
+                asBoolOrNull(get(parameters, "publish_web_by_default")), //$NON-NLS-1$
+                parseHttpServices(get(parameters, "http_services")), //$NON-NLS-1$
+                asBoolOrNull(get(parameters, "enable_standard_odata")), //$NON-NLS-1$
+                asBoolOrNull(get(parameters, "enable_system_analytics")), //$NON-NLS-1$
+                parsePool(get(parameters, "pool"))); //$NON-NLS-1$
+        return extras.isEmpty() ? null : extras;
+    }
+
+    private static List<EdtWebPublicationService.HttpServiceSpec> parseHttpServices(Object raw) {
+        if (!(raw instanceof List<?> list) || list.isEmpty()) {
+            return null;
+        }
+        List<EdtWebPublicationService.HttpServiceSpec> out = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> map)) {
+                throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
+                        "http_services entries must be objects {name, root_url, enable}"); //$NON-NLS-1$
+            }
+            String name = asString(map.get("name")); //$NON-NLS-1$
+            if (name == null) {
+                throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
+                        "each http_services entry requires a non-empty 'name'"); //$NON-NLS-1$
+            }
+            Boolean enable = asBoolOrNull(map.get("enable")); //$NON-NLS-1$
+            out.add(new EdtWebPublicationService.HttpServiceSpec(name, asString(map.get("root_url")), //$NON-NLS-1$
+                    enable == null || enable.booleanValue()));
+        }
+        return out;
+    }
+
+    private static EdtWebPublicationService.PoolSpec parsePool(Object raw) {
+        if (!(raw instanceof Map<?, ?> map)) {
+            return null;
+        }
+        Integer size = asIntOrNull(map.get("size")); //$NON-NLS-1$
+        Integer maxAge = asIntOrNull(map.get("max_age")); //$NON-NLS-1$
+        if (size == null && maxAge == null) {
+            return null;
+        }
+        return new EdtWebPublicationService.PoolSpec(size, maxAge);
+    }
+
+    private static void appendExtras(EdtWebPublicationService.PublicationExtras extras, JsonObject result) {
+        if (extras == null || extras.isEmpty()) {
+            return;
+        }
+        JsonObject applied = new JsonObject();
+        if (extras.publishHttpByDefault() != null) {
+            applied.addProperty("publish_http_by_default", extras.publishHttpByDefault()); //$NON-NLS-1$
+        }
+        if (extras.publishWebByDefault() != null) {
+            applied.addProperty("publish_web_by_default", extras.publishWebByDefault()); //$NON-NLS-1$
+        }
+        if (extras.enableStandardOData() != null) {
+            applied.addProperty("enable_standard_odata", extras.enableStandardOData()); //$NON-NLS-1$
+        }
+        if (extras.enableSystemAnalytics() != null) {
+            applied.addProperty("enable_system_analytics", extras.enableSystemAnalytics()); //$NON-NLS-1$
+        }
+        if (extras.httpServices() != null && !extras.httpServices().isEmpty()) {
+            JsonArray arr = new JsonArray();
+            for (EdtWebPublicationService.HttpServiceSpec spec : extras.httpServices()) {
+                JsonObject s = new JsonObject();
+                s.addProperty("name", spec.name()); //$NON-NLS-1$
+                if (spec.rootUrl() != null) {
+                    s.addProperty("root_url", spec.rootUrl()); //$NON-NLS-1$
+                }
+                s.addProperty("enable", spec.enable()); //$NON-NLS-1$
+                arr.add(s);
+            }
+            applied.add("http_services", arr); //$NON-NLS-1$
+        }
+        if (extras.pool() != null) {
+            JsonObject p = new JsonObject();
+            if (extras.pool().size() != null) {
+                p.addProperty("size", extras.pool().size()); //$NON-NLS-1$
+            }
+            if (extras.pool().maxAge() != null) {
+                p.addProperty("max_age", extras.pool().maxAge()); //$NON-NLS-1$
+            }
+            applied.add("pool", p); //$NON-NLS-1$
+        }
+        result.add("extras_applied", applied); //$NON-NLS-1$
+    }
+
+    private static Boolean asBoolOrNull(Object value) {
+        if (value instanceof Boolean b) {
+            return b;
+        }
+        if (value instanceof String s) {
+            String t = s.trim();
+            if ("true".equalsIgnoreCase(t)) { //$NON-NLS-1$
+                return Boolean.TRUE;
+            }
+            if ("false".equalsIgnoreCase(t)) { //$NON-NLS-1$
+                return Boolean.FALSE;
+            }
+        }
+        return null;
+    }
+
+    private static Integer asIntOrNull(Object value) {
+        if (value instanceof Number number) {
+            return Integer.valueOf(number.intValue());
+        }
+        if (value instanceof String s) {
+            try {
+                return Integer.valueOf(s.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private JsonObject serverJson(WebServer server) {

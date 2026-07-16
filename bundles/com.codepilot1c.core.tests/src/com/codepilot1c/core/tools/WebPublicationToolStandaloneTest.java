@@ -2,6 +2,7 @@ package com.codepilot1c.core.tools;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -106,6 +107,35 @@ public class WebPublicationToolStandaloneTest {
     }
 
     @Test
+    public void publishCarriesCustomHttpServicesToServiceAndEchoesThem() {
+        StubPublicationService service = new StubPublicationService();
+        WebPublicationTool tool = new WebPublicationTool(service, new EdtRuntimeService());
+
+        ToolResult result = tool.execute(Map.of(
+                "action", "publish", //$NON-NLS-1$ //$NON-NLS-2$
+                "server", "apache-local", //$NON-NLS-1$ //$NON-NLS-2$
+                "name", "agent-current", //$NON-NLS-1$ //$NON-NLS-2$
+                "infobase_connection", "File=\"C:\\db\\sandbox\";", //$NON-NLS-1$ //$NON-NLS-2$
+                "publish_http_by_default", Boolean.TRUE, //$NON-NLS-1$
+                "http_services", List.of(Map.of( //$NON-NLS-1$
+                        "name", "BSLAnalyzerService", //$NON-NLS-1$ //$NON-NLS-2$
+                        "root_url", "bsl-analyzer", //$NON-NLS-1$ //$NON-NLS-2$
+                        "enable", Boolean.TRUE)))).join(); //$NON-NLS-1$
+
+        assertTrue("publish with http_services must succeed: " + result.getContent(), result.isSuccess()); //$NON-NLS-1$
+        // extras reached the service layer
+        assertNotNull("extras must be passed to the publication service", service.lastExtras); //$NON-NLS-1$
+        assertEquals(1, service.lastExtras.httpServices().size());
+        assertEquals("bsl-analyzer", service.lastExtras.httpServices().get(0).rootUrl()); //$NON-NLS-1$
+        assertEquals(Boolean.TRUE, service.lastExtras.publishHttpByDefault());
+        // and are echoed back in the result payload
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        assertTrue("result must echo extras_applied", json.has("extras_applied")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("bsl-analyzer", json.getAsJsonObject("extras_applied") //$NON-NLS-1$ //$NON-NLS-2$
+                .getAsJsonArray("http_services").get(0).getAsJsonObject().get("root_url").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
     public void probeFailureSurfacesProbeFailedCode() {
         StubPublicationService service = new StubPublicationService();
         service.probeStatus = 503;
@@ -190,6 +220,7 @@ public class WebPublicationToolStandaloneTest {
         boolean restartCalled;
         String lastServerName;
         String lastConnection;
+        PublicationExtras lastExtras;
         int probeStatus = 200;
 
         @Override
@@ -204,10 +235,11 @@ public class WebPublicationToolStandaloneTest {
 
         @Override
         public InfobasePublication publish(String serverName, String name, Path location,
-                String infobaseConnection, String wsapVersion) {
+                String infobaseConnection, String wsapVersion, PublicationExtras extras) {
             publishCalled = true;
             lastServerName = serverName;
             lastConnection = infobaseConnection;
+            lastExtras = extras;
             return newPublicationProxy(name, location == null ? "" : location.toString(), infobaseConnection); //$NON-NLS-1$
         }
 

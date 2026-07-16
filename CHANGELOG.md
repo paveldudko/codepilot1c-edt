@@ -9,6 +9,25 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-12936 (2026-07-16) — `web_publication publish` can carry custom HTTP services into the vrd
+
+- **`web_publication publish` now accepts publication content beyond the plain infobase binding**, so an
+  EDT-managed publication can reproduce a hand-authored `default.vrd`'s custom HTTP services and flags:
+  `http_services: [{name, root_url, enable}]`, `publish_http_by_default`, `publish_web_by_default`,
+  `enable_standard_odata`, `enable_system_analytics`, and a publication-level `pool: {size, max_age}`. These
+  map onto the EDT `InfobasePublication` model (`HttpServices`/`HttpService.rootUrl`, `OData`,
+  `enableSystemAnalytics`, `Pool`) and the publish delegate serializes them into the generated vrd. Unblocks
+  making script-managed sandbox publications first-class EDT-managed — chiefly reproducing
+  `<service name="BSLAnalyzerService" rootUrl="bsl-analyzer">` (the bsl-analyzer-workspace MCP dependency),
+  which the bare publish silently dropped. Feasibility + design:
+  `TaskArtifacts/BF-12008/BF-12936/edt-optione1-feasibility.md`.
+- **Documented fidelity limit:** the EDT `HttpService` model is `{name, rootUrl, enable}` only — per-service
+  pool tuning (`reuseSessions`/`sessionMaxAge`/`poolSize` on a `<service>`) is not representable (only the
+  publication-level `Pool`). A migrated publication is functionally faithful (the service publishes at its
+  `rootUrl`) but not byte-identical on per-service pool numbers.
+- Unit tests: `WebPublicationExtrasParsingTest` (the pure param→options parser). The model→vrd serialization
+  is EDT's — validated live (battle test on stack-2). Build green (`-Plocal-target`).
+
 ### BF-12936 feedback (2026-07-16) — `mutate_form_model` form titles leaked `ru` in EN-primary projects
 
 - **`add_command` / `rename_command` / `set_item` titles now land in the project's primary content
