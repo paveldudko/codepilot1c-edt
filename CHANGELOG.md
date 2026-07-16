@@ -27,14 +27,20 @@ commit hash in parentheses where useful.
   `rootUrl`) but not byte-identical on per-service pool numbers.
 - Unit tests: `WebPublicationExtrasParsingTest` (the pure param→options parser). The model→vrd serialization
   is EDT's — validated live (battle test on stack-2). Build green (`-Plocal-target`).
-- **Follow-up fix (battle-test NPE):** the first live option-1 publish crashed with a raw
-  `NullPointerException: … "webExtensions" is null`. Cause: `HttpServices.publishExtensionsByDefault` defaults
-  to `true` in the EMF model, which makes the publish delegate enumerate extension web services — needing a
-  resolved project/platform context it doesn't have on an `infobase_connection`-only publish. Fix: explicitly
-  set `publishExtensionsByDefault(false)` (also the faithful value — the hand vrds omit it), and wrap the
-  delegate publish so an unexpected `RuntimeException` surfaces as a structured `WEB_SERVER_ACCESS_FAILED`
-  tool error instead of a raw crash. The `rootUrl="bsl-analyzer"` serialization itself was confirmed correct
-  in the crashed vrd. (feedback `2026-07-16-web-publication-publish-npe-webextensions-null`)
+- **Follow-up fix (battle-test NPE — `webExtensions is null`):** the first live option-1 publish crashed
+  with `NullPointerException: … "webExtensions" is null`. Root cause (confirmed in services.core 21.0
+  bytecode): `PublicationManager.publish(pub, server)` passes a **null** web-extension `Path` to the Apache
+  publish delegate (`aconst_null`), and the delegate dereferences it (`.toString()`) when the vrd carries
+  `<httpServices>` — so a plain infobase publish always worked but an `http_services` publish NPE'd,
+  unconditionally (independent of `publishExtensionsByDefault`). Fix: the `wsap_version`-absent publish
+  branch no longer calls `manager.publish` (which nulls the path); it resolves the module itself
+  (`IPublicationManager.getWebExtension`, which reads the conf's `LoadModule _1cws_module`) and drives the
+  delegate directly with a non-null `Path` (null → clear `WEB_EXTENSION_NOT_FOUND` telling the caller to
+  pass `wsap_version`). Also hardened earlier: `publishExtensionsByDefault(false)` (faithful to the hand
+  vrds; avoids extension enumeration) and a `RuntimeException`→structured-`WEB_SERVER_ACCESS_FAILED` wrap so
+  a delegate crash never surfaces as a raw NPE. The `rootUrl="bsl-analyzer"` serialization was confirmed
+  correct in the crashed vrd — option-1's core premise holds. (feedback
+  `2026-07-16-web-publication-publish-npe-webextensions-null`)
 
 ### BF-12936 feedback (2026-07-16) — `mutate_form_model` form titles leaked `ru` in EN-primary projects
 

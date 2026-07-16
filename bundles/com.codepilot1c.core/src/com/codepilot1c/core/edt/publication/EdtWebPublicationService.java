@@ -317,7 +317,27 @@ public class EdtWebPublicationService {
                 }
                 delegate.publish(publication, server, wsap.modulePath());
             } else {
-                manager.publish(publication, server);
+                // PublicationManager.publish(pub, server) hands the delegate a NULL web-extension Path
+                // (verified in services.core 21.0 bytecode: it does aconst_null), which the Apache delegate
+                // dereferences with .toString() when the vrd carries <httpServices> -> NPE (feedback
+                // 2026-07-16-web-publication-publish-npe-webextensions-null; unconditional on
+                // publishExtensionsByDefault, which is why the earlier fix did not gate it). Resolve the
+                // wsap module ourselves — getWebExtension reads it from the conf's LoadModule _1cws_module —
+                // and drive the delegate directly with a non-null Path, mirroring the wsap_version branch.
+                IWebServerPublishDelegate delegate =
+                        gateway.getWebServerPublishDelegateRegistry().getDelegate(server.getTypeId());
+                if (delegate == null) {
+                    throw new EdtToolException(EdtToolErrorCode.WEB_SERVER_ACCESS_FAILED,
+                            "No publish delegate registered for web server type " + server.getTypeId()); //$NON-NLS-1$
+                }
+                Path webExtension = manager.getWebExtension(publication, server);
+                if (webExtension == null) {
+                    throw new EdtToolException(EdtToolErrorCode.WEB_EXTENSION_NOT_FOUND,
+                            "Could not resolve the wsap web-extension module for '" + name //$NON-NLS-1$
+                                    + "' from the web server conf (no LoadModule _1cws_module?). " //$NON-NLS-1$
+                                    + "Pass wsap_version to pin it explicitly."); //$NON-NLS-1$
+                }
+                delegate.publish(publication, server, webExtension);
             }
         } catch (WebServerAccessException e) {
             throw accessFailed("publish '" + name + "'", serverName, e); //$NON-NLS-1$ //$NON-NLS-2$
