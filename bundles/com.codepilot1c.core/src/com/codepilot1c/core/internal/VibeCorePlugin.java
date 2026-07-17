@@ -44,6 +44,7 @@ import com.e1c.g5.v8.dt.check.settings.ICheckRepository;
 import com.e1c.g5.v8.dt.platform.standaloneserver.wst.core.IStandaloneServerService;
 import com.codepilot1c.core.http.DefaultHttpClientFactory;
 import com.codepilot1c.core.http.HttpClientFactory;
+import com.codepilot1c.core.edt.publication.PublishDelegateRegistryResolver;
 import com.codepilot1c.core.edt.runtime.EdtLaunchProcessRegistry;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.mcp.host.McpHostManager;
@@ -60,6 +61,9 @@ public class VibeCorePlugin extends Plugin {
     private static ILog logger;
     private static final long EDT_SERVICE_WAIT_STEP_MS = 1000L;
     private static final long EDT_SERVICE_WAIT_TOTAL_MS = 30000L;
+    /** Symbolic name of the EDT bundle whose Guice injector binds IWebServerPublishDelegateRegistry. */
+    private static final String PLATFORM_SERVICES_CORE_BUNDLE_ID =
+            "com._1c.g5.v8.dt.platform.services.core"; //$NON-NLS-1$
     private HttpClientFactory httpClientFactory;
     private ServiceTracker<IConfigurationProvider, IConfigurationProvider> configurationProviderTracker;
     private ServiceTracker<IBmModelManager, IBmModelManager> bmModelManagerTracker;
@@ -413,7 +417,28 @@ public class VibeCorePlugin extends Plugin {
     }
 
     public IWebServerPublishDelegateRegistry getWebServerPublishDelegateRegistry() {
-        return getTrackedService(webServerPublishDelegateRegistryTracker, "IWebServerPublishDelegateRegistry"); //$NON-NLS-1$
+        // IWebServerPublishDelegateRegistry is bound only in EDT's platform-services Guice injector,
+        // never exported as an OSGi service (unlike IWebServerManager/IPublicationManager). A
+        // ServiceTracker.waitForService() therefore ALWAYS times out (feedback
+        // 2026-07-17-web-publication-webserverpublishdelegateregistry-unavailable) — so resolve it
+        // from the injector instead. The non-blocking OSGi fast-path below stays as forward-compat in
+        // case a future EDT ever does export it; it must NOT wait (that was the 30s hang).
+        if (webServerPublishDelegateRegistryTracker != null) {
+            IWebServerPublishDelegateRegistry osgi = webServerPublishDelegateRegistryTracker.getService();
+            if (osgi != null) {
+                return osgi;
+            }
+        }
+        IWebServerPublishDelegateRegistry viaInjector = PublishDelegateRegistryResolver
+                .fromInjector(Platform.getBundle(PLATFORM_SERVICES_CORE_BUNDLE_ID));
+        if (viaInjector != null) {
+            return viaInjector;
+        }
+        // Fallback: read the registry EDT's PublicationManager (the OSGi IPublicationManager) keeps
+        // injected, matched by type — survives even if getInjector() is renamed/removed.
+        IPublicationManager publicationManager =
+                publicationManagerTracker == null ? null : publicationManagerTracker.getService();
+        return PublishDelegateRegistryResolver.fromServiceHolderField(publicationManager);
     }
 
     public IResolvableRuntimeInstallationManager getResolvableRuntimeInstallationManager() {

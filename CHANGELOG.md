@@ -9,6 +9,27 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-13159 (2026-07-17) — `web_publication publish` no longer times out on `IWebServerPublishDelegateRegistry`
+
+- **`web_publication action=publish` failed after a 30s wait with `WEB_SERVER_ACCESS_FAILED: "EDT service
+  not available: IWebServerPublishDelegateRegistry"`** — reproducibly, on a healthy stack (`list_servers`
+  and `get` worked). Root cause (decompile audit of `platform.services.core 21.0`): unlike its siblings
+  `IWebServerManager` / `IPublicationManager`, `IWebServerPublishDelegateRegistry` is bound **only in EDT's
+  platform-services Guice injector** (`PlatformServicesCoreModule`) and is **not** among the interfaces the
+  activator exports as OSGi services (`InjectorAwareServiceRegistrator`). The plugin looked it up with an
+  OSGi `ServiceTracker.waitForService(30s)` — the same mechanism EDT's own `com._1c.g5.wiring.ServiceAccess`
+  uses — so the lookup could never resolve it and always waited the full timeout. Not a headless /
+  lazy-activation / "Servers view" issue; the lookup mechanism was simply wrong for an injector-only binding.
+- **Fix:** new `PublishDelegateRegistryResolver` resolves the registry from the injector — `PlatformServicesCore`
+  `getDefault()` → package-private `getInjector()` (reflected; classes loaded via the platform-services
+  bundle's own class loader, no new `Import-Package`) → `Injector.getInstance(...)` — with a fallback that
+  reads the registry EDT's `PublicationManager` (the OSGi `IPublicationManager`) keeps injected, matched by
+  assignable type so a field rename can't break it. `VibeCorePlugin.getWebServerPublishDelegateRegistry()`
+  now: non-blocking OSGi fast-path (forward-compat) → injector → `PublicationManager` field; the 30s wait is
+  gone. Two independent reflective routes minimise EDT-version fragility. Unit test:
+  `PublishDelegateRegistryResolverTest` (field-by-type + null-safety); injector route covered by live
+  validation. (feedback `2026-07-17-web-publication-webserverpublishdelegateregistry-unavailable`)
+
 ### BF-12936 (2026-07-17) — `grep` honest hint when a literal search hides a regex-intent pattern
 
 - **`grep` now hints on a zero-match LITERAL search whose pattern carries regex syntax.** `grep`'s
