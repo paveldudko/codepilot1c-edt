@@ -9,6 +9,36 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-13159 (2026-07-18) — `web_publication publish` Alias trailing-separator (403) + extension-services gate (404)
+
+Follow-up after the registry fix below unblocked `publish` live (build `-1751`): the call now writes a
+vrd + touches the conf, but the published `BSLAnalyzerService` still didn't answer 200. Two distinct
+defects, both fixed:
+
+- **Gap A — 403 (`AH01630`): generated `Alias` target lacked a trailing separator.** On a re-point, EDT's
+  publish delegate writes `Alias "/<name>" "<location>"` with `<location>` = `publication.getLocation()`
+  verbatim, while `<name>` is EDT's stored publication name (**trailing slash**, e.g. `agent-current/`).
+  Apache concatenates the request remainder onto the target with **no** separator, so
+  `/agent-current/hs/…` resolves under `…\published\agent-currenths\…` → `client denied` (403). Fix: new
+  pure helper `EdtWebPublicationService.vrdLocation(location, name)` appends `File.separator` to the
+  location when the publication name is slash-terminated but the location is not (a bare-name fresh
+  publish keeps the remainder's own leading slash and is left unchanged). Unit test
+  `EdtWebPublicationServiceHelpersTest`.
+- **Gap B — 404: `publishExtensionsByDefault="false"` suppressed the extension owning the service.** The
+  forced `false` (commit `38a6066`) was introduced as an NPE workaround, but the NPE was actually the
+  **null web-extension `Path`** that `IPublicationManager.publish` hands the delegate (`aconst_null`, decompile-
+  confirmed) — already fixed by driving the delegate directly with a non-null `Path`. The delegate does
+  **not** enumerate project extensions (decompiled), so `false` was pure collateral: it stopped the
+  `BSL_Analyzer` extension (which owns `BSLAnalyzerService`) from being published at all → 404, breaking
+  the fleet's primary use case. Fix: `applyExtras` no longer forces `false`; it sets
+  `publishExtensionsByDefault` only when the caller passes the new `publish_extensions_by_default` param,
+  otherwise leaves EMF's default (`true`) — matching the hand-authored vrd that served the service. New
+  schema param wired through `parsePublicationExtras`/`appendExtras` (infra found the undocumented param
+  was silently ignored before). Test in `WebPublicationToolStandaloneTest`.
+
+Build green (`-Plocal-target`); injector route + live 200 pending the next install round.
+(feedback `2026-07-17-web-publication-webserverpublishdelegateregistry-unavailable`, Gaps A/B)
+
 ### BF-13159 (2026-07-17) — `web_publication publish` no longer times out on `IWebServerPublishDelegateRegistry`
 
 - **`web_publication action=publish` failed after a 30s wait with `WEB_SERVER_ACCESS_FAILED: "EDT service

@@ -1,5 +1,6 @@
 package com.codepilot1c.core.edt.publication;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -105,13 +106,15 @@ public class EdtWebPublicationService {
             List<HttpServiceSpec> httpServices,
             Boolean enableStandardOData,
             Boolean enableSystemAnalytics,
-            PoolSpec pool) {
+            PoolSpec pool,
+            Boolean publishExtensionsByDefault) {
 
         /** True when nothing is set — {@link #publish} then behaves exactly as the bare overload. */
         public boolean isEmpty() {
             return publishHttpByDefault == null && publishWebByDefault == null
                     && (httpServices == null || httpServices.isEmpty())
-                    && enableStandardOData == null && enableSystemAnalytics == null && pool == null;
+                    && enableStandardOData == null && enableSystemAnalytics == null && pool == null
+                    && publishExtensionsByDefault == null;
         }
     }
 
@@ -301,7 +304,7 @@ public class EdtWebPublicationService {
 
         InfobasePublication publication = ModelFactory.eINSTANCE.createInfobasePublication();
         publication.setName(effectiveName);
-        publication.setLocation(effectiveLocation.toString());
+        publication.setLocation(vrdLocation(effectiveLocation.toString(), effectiveName));
         publication.setInfobaseConnection(infobaseConnection);
         publication.setEnable(true);
         applyExtras(publication, extras);
@@ -367,16 +370,21 @@ public class EdtWebPublicationService {
             return;
         }
         boolean hasServices = extras.httpServices() != null && !extras.httpServices().isEmpty();
-        if (hasServices || extras.publishHttpByDefault() != null) {
+        if (hasServices || extras.publishHttpByDefault() != null
+                || extras.publishExtensionsByDefault() != null) {
             HttpServices httpServices = ModelFactory.eINSTANCE.createHttpServices();
             httpServices.setPublishByDefault(Boolean.TRUE.equals(extras.publishHttpByDefault()));
-            // Do NOT publish extension configurations' HTTP services by default. The EMF default for
-            // publishExtensionsByDefault is true, but that makes the publish delegate enumerate extension
-            // web services — which needs a resolved project/platform context and NPEs (null webExtensions
-            // Path) on an infobase_connection-only publish (feedback
-            // 2026-07-16-web-publication-publish-npe-webextensions-null). The hand-authored sandbox vrds
-            // omit the attribute (= false), so false is also the faithful value.
-            httpServices.setPublishExtensionsByDefault(false);
+            // Extension HTTP services: only override when the caller explicitly asks. The earlier forced
+            // `false` (commit 38a6066) was a workaround for an NPE that was actually the NULL web-extension
+            // Path that IPublicationManager.publish hands the delegate (aconst_null) — now fixed by driving
+            // the delegate directly with a non-null Path (see #publish); the delegate does NOT enumerate
+            // project extensions, so `true` is safe here. `false` instead SUPPRESSED the extension that
+            // owns the published <service> (e.g. BSLAnalyzerService in the BSL_Analyzer extension) → a 404
+            // for the fleet's primary use case (feedback 2026-07-18 …delegateregistry-unavailable, Gap B).
+            // Leaving it unset keeps EMF's default (true), matching the hand-authored vrd that served it.
+            if (extras.publishExtensionsByDefault() != null) {
+                httpServices.setPublishExtensionsByDefault(extras.publishExtensionsByDefault().booleanValue());
+            }
             if (extras.httpServices() != null) {
                 for (HttpServiceSpec spec : extras.httpServices()) {
                     if (spec == null || spec.name() == null || spec.name().isBlank()) {
@@ -631,6 +639,30 @@ public class EdtWebPublicationService {
             throw new EdtToolException(EdtToolErrorCode.INVALID_ARGUMENT,
                     "Unsupported Apache version '" + apacheVersion + "' (expected 2.0, 2.2 or 2.4)"); //$NON-NLS-1$ //$NON-NLS-2$
         }
+    }
+
+    /**
+     * Aligns the publication's on-disk location with the Apache {@code Alias} the EDT delegate writes.
+     * The delegate emits {@code Alias "/<name>" "<location>"} with {@code <location>} taken from
+     * {@code publication.getLocation()} verbatim, while the URL side carries {@code <name>} — which, on
+     * a re-point, is EDT's stored publication name and ends with {@code /}. Apache then resolves a
+     * sub-path request by concatenating the unmatched remainder onto the target with NO separator, so a
+     * slash-terminated alias against a non-terminated target yields {@code ...\agent-currenths\...}
+     * (AH01630 → 403). When the name is slash-terminated we therefore give the location a matching
+     * trailing separator; a bare name (fresh publish) keeps the remainder's own leading slash and is
+     * left unchanged. (feedback 2026-07-18 …webserverpublishdelegateregistry-unavailable, Gap A)
+     */
+    public static String vrdLocation(String location, String publicationName) {
+        if (location == null || location.isEmpty()) {
+            return location;
+        }
+        boolean nameSlashTerminated = publicationName != null
+                && (publicationName.endsWith("/") || publicationName.endsWith("\\")); //$NON-NLS-1$ //$NON-NLS-2$
+        boolean locationSeparated = location.endsWith("/") || location.endsWith("\\"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (nameSlashTerminated && !locationSeparated) {
+            return location + File.separator;
+        }
+        return location;
     }
 
     private static String stripTrailingSlash(String name) {

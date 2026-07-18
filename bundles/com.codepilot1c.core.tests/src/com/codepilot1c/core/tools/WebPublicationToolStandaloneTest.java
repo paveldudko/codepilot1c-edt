@@ -136,6 +136,32 @@ public class WebPublicationToolStandaloneTest {
     }
 
     @Test
+    public void publishWiresPublishExtensionsByDefaultAndEchoesIt() {
+        StubPublicationService service = new StubPublicationService();
+        WebPublicationTool tool = new WebPublicationTool(service, new EdtRuntimeService());
+
+        ToolResult result = tool.execute(Map.of(
+                "action", "publish", //$NON-NLS-1$ //$NON-NLS-2$
+                "server", "apache-local", //$NON-NLS-1$ //$NON-NLS-2$
+                "name", "agent-current", //$NON-NLS-1$ //$NON-NLS-2$
+                "infobase_connection", "File=\"C:\\db\\sandbox\";", //$NON-NLS-1$ //$NON-NLS-2$
+                "http_services", List.of(Map.of( //$NON-NLS-1$
+                        "name", "BSLAnalyzerService", //$NON-NLS-1$ //$NON-NLS-2$
+                        "root_url", "bsl-analyzer", //$NON-NLS-1$ //$NON-NLS-2$
+                        "enable", Boolean.TRUE)), //$NON-NLS-1$
+                "publish_extensions_by_default", Boolean.TRUE)).join(); //$NON-NLS-1$
+
+        assertTrue("publish must succeed: " + result.getContent(), result.isSuccess()); //$NON-NLS-1$
+        assertNotNull("extras must reach the service", service.lastExtras); //$NON-NLS-1$
+        assertEquals(Boolean.TRUE, service.lastExtras.publishExtensionsByDefault());
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        assertTrue("result must echo publish_extensions_by_default", //$NON-NLS-1$
+                json.getAsJsonObject("extras_applied").has("publish_extensions_by_default")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(json.getAsJsonObject("extras_applied") //$NON-NLS-1$
+                .get("publish_extensions_by_default").getAsBoolean()); //$NON-NLS-1$
+    }
+
+    @Test
     public void probeFailureSurfacesProbeFailedCode() {
         StubPublicationService service = new StubPublicationService();
         service.probeStatus = 503;

@@ -108,6 +108,10 @@ public class WebPublicationTool extends AbstractTool {
                   "type": "boolean",
                   "description": "publish: публиковать web-сервисы (SOAP) расширений по умолчанию."
                 },
+                "publish_extensions_by_default": {
+                  "type": "boolean",
+                  "description": "publish: <httpServices publishExtensionsByDefault> — публиковать HTTP-сервисы РАСШИРЕНИЙ. Оставьте пустым, чтобы обслуживался явно перечисленный сервис расширения (напр. BSLAnalyzerService из расширения BSL_Analyzer); false подавляет расширение целиком → 404 на его сервисах."
+                },
                 "enable_standard_odata": {
                   "type": "boolean",
                   "description": "publish: включить стандартный OData-интерфейс (<standardOdata enable>)."
@@ -392,7 +396,8 @@ public class WebPublicationTool extends AbstractTool {
                 parseHttpServices(get(parameters, "http_services")), //$NON-NLS-1$
                 asBoolOrNull(get(parameters, "enable_standard_odata")), //$NON-NLS-1$
                 asBoolOrNull(get(parameters, "enable_system_analytics")), //$NON-NLS-1$
-                parsePool(get(parameters, "pool"))); //$NON-NLS-1$
+                parsePool(get(parameters, "pool")), //$NON-NLS-1$
+                asBoolOrNull(get(parameters, "publish_extensions_by_default"))); //$NON-NLS-1$
         return extras.isEmpty() ? null : extras;
     }
 
@@ -440,6 +445,9 @@ public class WebPublicationTool extends AbstractTool {
         }
         if (extras.publishWebByDefault() != null) {
             applied.addProperty("publish_web_by_default", extras.publishWebByDefault()); //$NON-NLS-1$
+        }
+        if (extras.publishExtensionsByDefault() != null) {
+            applied.addProperty("publish_extensions_by_default", extras.publishExtensionsByDefault()); //$NON-NLS-1$
         }
         if (extras.enableStandardOData() != null) {
             applied.addProperty("enable_standard_odata", extras.enableStandardOData()); //$NON-NLS-1$
