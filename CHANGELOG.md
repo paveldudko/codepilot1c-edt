@@ -41,8 +41,12 @@ Fix — one call now authors a fully-formed command, via both `add_metadata_chil
   `representation`, `parameterUseMode`, `modifiesData`, `shortcut`).
 
 Unit test `AddMetadataChildToolCommandPropertiesTest` pins the tool-level plumbing (the properties survive
-validation normalization + the validation token and reach the service request). BM-level application is
-live-validated against a real EDT workspace.
+validation normalization + the validation token and reach the service request). **Live-validated** on the
+sandbox EDT (project `TestConfiguration`, build `-2052`): a single `add_metadata_child` wrote
+`<group>FormCommandBarImportant</group>` + `<commandParameterType><types>CatalogRef.Catalog</types></commandParameterType>`
++ `<representation>Auto</representation>` into the owner `.mdo`; `update_metadata set={commandParameterType}`
+succeeded on the existing command; and `group:"FormCommandBar"` failed loud with the live valid-group list
+(confirming the repro's `FormCommandBar` was an invalid name — the real one is `FormCommandBarImportant`).
 
 ### BF-13159 (2026-07-18) — `web_publication publish` Alias trailing-separator (403) + extension-services gate (404)
 
