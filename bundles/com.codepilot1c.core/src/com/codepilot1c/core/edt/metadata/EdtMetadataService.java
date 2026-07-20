@@ -1488,6 +1488,48 @@ public class EdtMetadataService {
                             + ", buttons_rebound=" + reboundButtons //$NON-NLS-1$
                             + (actionApplied != null ? ", action=" + actionApplied : "")); //$NON-NLS-1$ //$NON-NLS-2$
                 }
+                case "removecommand", "removeformcommand", "deletecommand" -> { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    // Remove a form-local command. formCommands live in Form.getFormCommands(),
+                    // NOT in the UI item tree, so remove_item ("Cannot remove root form container
+                    // item") never reached them (BF-12562 Issue 3 / BF-12936). Removing the
+                    // FormCommand disposes its whole contained subtree (action ->
+                    // FormCommandHandlerContainer -> CommandHandler) atomically, so there is no
+                    // dangling "handler not found". The BSL handler procedure in the form module is
+                    // left untouched (a harmless orphan; the module still compiles).
+                    FormCommand command = resolveRequiredFormCommand(formModel, operation);
+                    String commandName = command.getName();
+                    List<Button> referencingButtons = collectReferencingButtons(formModel, command);
+                    Boolean removeButtonsFlag = firstParsedBoolean(
+                            getMapValueIgnoreCase(operation, "remove_referencing_buttons"), //$NON-NLS-1$
+                            getMapValueIgnoreCase(operation, "remove_buttons"), //$NON-NLS-1$
+                            getMapValueIgnoreCase(operation, "force")); //$NON-NLS-1$
+                    boolean removeButtons = removeButtonsFlag != null && removeButtonsFlag.booleanValue();
+                    if (!referencingButtons.isEmpty() && !removeButtons) {
+                        List<String> names = new ArrayList<>();
+                        for (Button b : referencingButtons) {
+                            names.add(b.getName() + "(id=" + safeItemId(b) + ")"); //$NON-NLS-1$ //$NON-NLS-2$
+                        }
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.METADATA_DELETE_CONFLICT,
+                                "Form command '" + commandName + "' is still referenced by " //$NON-NLS-1$ //$NON-NLS-2$
+                                        + referencingButtons.size() + " button(s): " //$NON-NLS-1$
+                                        + String.join(", ", names) //$NON-NLS-1$
+                                        + ". Re-point those buttons to another command first, or pass " //$NON-NLS-1$
+                                        + "remove_referencing_buttons=true to remove them together with the command.", //$NON-NLS-1$
+                                false);
+                    }
+                    int removedButtons = 0;
+                    for (Button b : referencingButtons) {
+                        FormItemContainer parent = findParentContainer(formModel, b);
+                        if (parent != null) {
+                            parent.getItems().remove(b);
+                            removedButtons++;
+                        }
+                    }
+                    formModel.getFormCommands().remove(command);
+                    summaries.add("remove_command[" + operationIndex + "]: name=" + commandName //$NON-NLS-1$ //$NON-NLS-2$
+                            + ", buttons_removed=" + removedButtons); //$NON-NLS-1$
+                }
                 default -> throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
                         "Unsupported form operation: " + rawOp, false); //$NON-NLS-1$
@@ -2409,6 +2451,31 @@ public class EdtMetadataService {
                 directButtons.add(button);
             }
         }
+    }
+
+    /**
+     * Collects every {@link Button} on the form whose command reference targets
+     * {@code command} — via a {@link CommandRef} wrapper or a direct reference.
+     * Used by {@code remove_command} to detect/clean up referers before dropping
+     * the form command (a dangling button command reference would fail validation).
+     */
+    private List<Button> collectReferencingButtons(Form formModel, FormCommand command) {
+        List<Button> buttons = new ArrayList<>();
+        if (formModel == null || command == null) {
+            return buttons;
+        }
+        TreeIterator<EObject> iterator = formModel.eAllContents();
+        while (iterator.hasNext()) {
+            EObject obj = iterator.next();
+            if (!(obj instanceof Button button)) {
+                continue;
+            }
+            Command ref = button.getCommandName();
+            if (ref == command || (ref instanceof CommandRef commandRef && commandRef.getCommand() == command)) {
+                buttons.add(button);
+            }
+        }
+        return buttons;
     }
 
     /**
@@ -4994,8 +5061,8 @@ public class EdtMetadataService {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Operation requires \"op\" field. Valid values: add_field, add_group, add_command, " //$NON-NLS-1$
-                            + "add_button, add_form_parameter, set_item, remove_item, move_item, " //$NON-NLS-1$
-                            + "rename_command, set_form_props", false); //$NON-NLS-1$
+                            + "add_button, add_form_parameter, set_item, remove_item, move_item, rename_command, " //$NON-NLS-1$
+                            + "remove_command, set_form_props", false); //$NON-NLS-1$
         }
 
         // Detect "type":"field" hallucination — model should use op:"add_field"

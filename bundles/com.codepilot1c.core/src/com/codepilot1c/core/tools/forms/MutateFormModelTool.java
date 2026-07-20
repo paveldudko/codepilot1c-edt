@@ -47,7 +47,7 @@ public class MutateFormModelTool extends AbstractTool {
                     "properties": {
                       "op": {
                         "type": "string",
-                        "description": "Тип операции: set_form_props/add_group/add_field/add_command/add_button/add_form_parameter/set_item/remove_item/move_item/rename_command"
+                        "description": "Тип операции: set_form_props/add_group/add_field/add_command/add_button/add_form_parameter/set_item/remove_item/move_item/rename_command/remove_command. remove_command удаляет form-команду (по name/id); при наличии кнопок-ссылок отказывает со списком — передайте remove_referencing_buttons=true, чтобы удалить их вместе с командой."
                       }
                     },
                     "required": ["op"],

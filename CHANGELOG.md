@@ -9,6 +9,32 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-12936 / BF-12562 (2026-07-20) — `mutate_form_model remove_command`: delete a form-local command
+
+The command-relocation refactor (form-local commands → register-owned commands) could not be finished:
+after re-pointing the buttons, the old form commands could not be deleted. `remove_item` rejects them
+("Cannot remove root form container item") because form commands live in `Form.getFormCommands()`, not the
+UI item tree; and dropping their BSL handler in isolation raised "handler not found" — so the refactor
+finished only with dead metadata (BF-12562 Issue 3).
+
+New `mutate_form_model` op **`remove_command`** (aliases `remove_form_command`, `delete_command`):
+- Resolves the target form command by `command_name` or `command_id` (the shared `resolveRequiredFormCommand`).
+- Collects every button referencing it (`collectReferencingButtons`, walking `eAllContents()` — covers both
+  the `CommandRef` wrapper and a direct reference).
+- **Refuses by default** with `METADATA_DELETE_CONFLICT` when buttons still reference it, listing them —
+  no silent orphaning. Pass `remove_referencing_buttons=true` (alias `force`) to detach those buttons from
+  their parent containers and drop them together with the command.
+- Removes the command from `getFormCommands()`; its contained `action → FormCommandHandlerContainer →
+  CommandHandler` subtree goes with it atomically (no "handler not found"). The BSL handler procedure in the
+  form module is left untouched (a harmless orphan; the module still compiles).
+
+Source-contract test `RemoveCommandContractTest` (form/EMF types resolve only in the OSGi runtime, so the
+structure is pinned like `RenameCommandContractTest`). Schema + `op`-required hint document `remove_command`.
+**Live-validated** on the sandbox (`Catalog.Catalog.Forms.ItemForm`, build `-2130`): removing an orphan form
+command succeeded (`buttons_removed=0`); removing a button-referenced command without the flag failed loud
+with `METADATA_DELETE_CONFLICT` naming the button; `remove_referencing_buttons=true` removed the command and
+its button together — and the `Form.form` on disk was left clean of both.
+
 ### BF-12936 (2026-07-20) — author a Command's `commandParameterType` + `group` (no more silent drop)
 
 Relocating form-local commands to register-owned commands was blocked: there was no plugin-only path to
