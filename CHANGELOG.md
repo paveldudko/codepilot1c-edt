@@ -9,6 +9,41 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/bsl-tuning`
 
+### BF-12936 (2026-07-20) — author a Command's `commandParameterType` + `group` (no more silent drop)
+
+Relocating form-local commands to register-owned commands was blocked: there was no plugin-only path to
+give a `Command` a `commandParameterType` or a `group`, forcing a rule-violating hand-edit of the `.mdo`.
+Root causes (all confirmed by decompiling the EDT 2025.2.3 model — `InformationRegisterCommand` →
+`BasicCommand`):
+
+- **`commandParameterType` is a containment `mcore.TypeDescription`** (like an attribute's `type`), so the
+  generic reference setter rejected it with `[INVALID_METADATA_CHANGE] Containment reference updates are not
+  supported in set`.
+- **`group` is an `mcore.CommandGroup` reference**; standard command-interface groups (e.g.
+  `FormCommandBarImportant`) are addressed by a bare name, not an FQN, so `set={group:"FormCommandBar"}`
+  hit `resolveByFqn` and failed with the misleading `[METADATA_PARENT_NOT_FOUND] Parent FQN must be …`.
+- **`add_metadata_child` silently dropped both** (and `representation`): its create path applied only
+  name/synonym for a `Command` because the property applier early-returned for any non-`BasicFeature` child.
+
+Fix — one call now authors a fully-formed command, via both `add_metadata_child` and `update_metadata`:
+
+- `applyReferenceValue` gains a TypeDescription-containment branch: a TypeDescription-valued containment
+  reference (any command's `commandParameterType`) is built from the requested type(s) — scalar or array —
+  resolved in the write-transaction namespace (`applyTypeDescriptionReference`), instead of being rejected.
+- `applyReferenceValue` gains a CommandGroup branch (`resolveCommandGroupValue`): a dotted value resolves a
+  user-defined `CommandGroup` object by FQN; a bare name resolves a standard group to a proxy through the
+  platform `IEObjectProvider` (same mechanism the plugin already uses for platform types). An unknown
+  standard name now fails loud with the **live list of valid group names** rather than a parent-FQN error.
+- `add_metadata_child` create path (single + batch) calls the new `applyCommandProperties`, routing every
+  supplied `Command` property through the shared feature setter — fail-loud on an unknown field, never a
+  silent drop.
+- `add_metadata_child` schema documents the `Command` properties (`commandParameterType`, `group`,
+  `representation`, `parameterUseMode`, `modifiesData`, `shortcut`).
+
+Unit test `AddMetadataChildToolCommandPropertiesTest` pins the tool-level plumbing (the properties survive
+validation normalization + the validation token and reach the service request). BM-level application is
+live-validated against a real EDT workspace.
+
 ### BF-13159 (2026-07-18) — `web_publication publish` Alias trailing-separator (403) + extension-services gate (404)
 
 Follow-up after the registry fix below unblocked `publish` live (build `-1751`): the call now writes a

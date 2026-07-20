@@ -124,6 +124,7 @@ import com._1c.g5.v8.dt.form.model.Titled;
 import com._1c.g5.v8.dt.form.model.Visible;
 import com._1c.g5.v8.dt.mcore.ButtonRepresentation;
 import com._1c.g5.v8.dt.mcore.Command;
+import com._1c.g5.v8.dt.mcore.CommandGroup;
 import com._1c.g5.v8.dt.mcore.CommandRef;
 import com._1c.g5.v8.dt.form.service.item.FormNewItemDescriptor;
 import com._1c.g5.v8.dt.form.service.item.IFormItemManagementService;
@@ -140,6 +141,7 @@ import com._1c.g5.v8.dt.mcore.StringQualifiers;
 import com._1c.g5.v8.dt.mcore.TypeDescription;
 import com._1c.g5.v8.dt.mcore.TypeItem;
 import com._1c.g5.v8.dt.mcore.util.McoreUtil;
+import com._1c.g5.v8.dt.metadata.mdclass.BasicCommand;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicFeature;
 import com._1c.g5.v8.dt.metadata.common.ApplicationUsePurpose;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicForm;
@@ -165,6 +167,8 @@ import com._1c.g5.v8.dt.rights.model.RightValue;
 import com._1c.g5.v8.dt.rights.model.RightsFactory;
 import com._1c.g5.v8.dt.rights.model.RoleDescription;
 import com._1c.g5.v8.dt.rights.model.util.RightsModelUtil;
+import com._1c.g5.v8.dt.platform.IEObjectProvider;
+import com._1c.g5.v8.dt.platform.version.Version;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeDescriptionInfoWithTypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeProviderService;
@@ -7525,6 +7529,7 @@ public class EdtMetadataService {
                     transaction,
                     request.parentFqn(),
                     request.name());
+            applyCommandProperties(configuration, child, request.properties(), transaction);
             createdFqns.add(buildChildFqn(request.parentFqn(), effectiveKind, request.name()));
         }
         createdFqns.addAll(addChildrenBatch(
@@ -8644,6 +8649,7 @@ public class EdtMetadataService {
                         transaction,
                         parentFqn,
                         name);
+                applyCommandProperties(configuration, child, childProperties, transaction);
                 createdFqns.add(buildChildFqn(parentFqn, kind, name));
             } catch (MetadataOperationException e) {
                 if (e.getCode() != MetadataOperationCode.METADATA_ALREADY_EXISTS) {
@@ -8759,6 +8765,46 @@ public class EdtMetadataService {
                 : TypeSpec.of(typeToApply);
         setAttributeType(feature, typeItem, effectiveSpec, transaction);
         applyBasicFeatureCreateProperties(feature, properties);
+    }
+
+    /**
+     * Applies command-specific properties (commandParameterType, group, representation,
+     * parameterUseMode, modifiesData, shortcut, toolTip, …) supplied to add_metadata_child
+     * onto a freshly created {@link BasicCommand}. Without this, the create path kept only
+     * name/synonym and silently dropped every other supplied Command property. Each key is
+     * routed through the shared feature setter — which resolves {@code commandParameterType}
+     * and {@code group} — and fails loud on an unknown field rather than dropping it.
+     */
+    private void applyCommandProperties(
+            Configuration configuration,
+            MdObject child,
+            Map<String, Object> properties,
+            IBmPlatformTransaction transaction
+    ) {
+        if (!(child instanceof BasicCommand) || properties == null || properties.isEmpty()) {
+            return;
+        }
+        Map<String, TypeItem> preResolvedTypes = new HashMap<>();
+        List<String> applied = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : properties.entrySet()) {
+            String key = entry.getKey();
+            if (key == null || key.isBlank() || isReservedCommandProperty(key)) {
+                continue;
+            }
+            setFeatureValue(configuration, child, key, entry.getValue(), transaction, preResolvedTypes);
+            applied.add(key);
+        }
+        if (!applied.isEmpty()) {
+            LOG.info("Applied %d command properties on %s (%s)", //$NON-NLS-1$
+                    Integer.valueOf(applied.size()), child.getName(), String.join(", ", applied)); //$NON-NLS-1$
+        }
+    }
+
+    private boolean isReservedCommandProperty(String key) {
+        return switch (normalizeToken(key)) {
+            case "name", "synonym", "comment", "uuid", "children", "attributes" -> true; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+            default -> false;
+        };
     }
 
     private void applyBasicFeatureCreateProperties(BasicFeature feature, Map<String, Object> properties) {
@@ -9546,7 +9592,7 @@ public class EdtMetadataService {
                     "Field is read-only: " + fieldName, false); //$NON-NLS-1$
         }
         if (eFeature instanceof EReference reference) {
-            applyReferenceValue(configuration, target, reference, value);
+            applyReferenceValue(configuration, target, reference, value, transaction);
             return;
         }
         if (eFeature.isMany()) {
@@ -11227,10 +11273,18 @@ public class EdtMetadataService {
             Configuration configuration,
             MdObject target,
             EReference reference,
-            Object value
+            Object value,
+            IBmPlatformTransaction transaction
     ) {
         if (reference.isContainment()) {
             if (applyStringMapReferenceValue(target, reference, value, configuration)) {
+                return;
+            }
+            // TypeDescription-valued containment (e.g. BasicCommand.commandParameterType,
+            // StandardCommand.commandParameterType): not a child object but a type set, so
+            // build a fresh TypeDescription from the requested type(s) instead of rejecting it.
+            if (isTypeDescriptionReference(reference)) {
+                applyTypeDescriptionReference(target, reference, value, transaction);
                 return;
             }
             throw new MetadataOperationException(
@@ -11253,8 +11307,149 @@ public class EdtMetadataService {
             return;
         }
 
+        // CommandGroup reference (e.g. BasicCommand.group): standard command-interface groups
+        // are addressed by bare name (FormCommandBarImportant, …) and resolved through the
+        // platform provider; user-defined CommandGroup objects are addressed by FQN.
+        if (isCommandGroupReference(reference)) {
+            target.eSet(reference, resolveCommandGroupValue(configuration, reference, value));
+            return;
+        }
+
         Object resolved = resolveSingleReferenceValue(configuration, reference, value);
         target.eSet(reference, resolved);
+    }
+
+    private boolean isTypeDescriptionReference(EReference reference) {
+        EClass referenceType = reference == null ? null : reference.getEReferenceType();
+        return referenceType != null && McorePackage.Literals.TYPE_DESCRIPTION.isSuperTypeOf(referenceType);
+    }
+
+    /**
+     * Builds a fresh {@link TypeDescription} for a TypeDescription-valued containment reference
+     * (notably a command's {@code commandParameterType}) from one or more requested type strings,
+     * resolving each in the write-transaction namespace of {@code target}. An empty/blank value
+     * assigns an empty TypeDescription (the "any / not specified" state), never silently dropping.
+     */
+    private void applyTypeDescriptionReference(
+            MdObject target,
+            EReference reference,
+            Object value,
+            IBmPlatformTransaction transaction
+    ) {
+        List<String> typeQueries = extractTypeQueryList(value);
+        TypeDescription typeDescription = McoreFactory.eINSTANCE.createTypeDescription();
+        for (String typeQuery : typeQueries) {
+            if (typeQuery == null || typeQuery.isBlank()) {
+                continue;
+            }
+            TypeSpec typeSpec = normalizeTypeSpec(typeQuery);
+            TypeItem typeItem = resolveTypeItemInCurrentNamespace(transaction, target, typeSpec, null);
+            if (typeItem == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Type not found for " + reference.getName() + ": " + typeQuery, false); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            typeDescription.getTypes().add(typeItem);
+        }
+        target.eSet(reference, typeDescription);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> extractTypeQueryList(Object value) {
+        if (value == null) {
+            return List.of();
+        }
+        List<Object> source = value instanceof List<?> list ? new ArrayList<>((List<Object>) list) : List.of(value);
+        List<String> queries = new ArrayList<>(source.size());
+        for (Object item : source) {
+            String query = extractReferenceFqn(item);
+            if (query != null && !query.isBlank()) {
+                queries.add(query.trim());
+            }
+        }
+        return queries;
+    }
+
+    private boolean isCommandGroupReference(EReference reference) {
+        EClass referenceType = reference == null ? null : reference.getEReferenceType();
+        return referenceType != null && McorePackage.Literals.COMMAND_GROUP.isSuperTypeOf(referenceType);
+    }
+
+    /**
+     * Resolves a {@code CommandGroup} reference value. A dotted value is treated as the FQN of a
+     * user-defined {@code CommandGroup} metadata object; a bare name is treated as a standard
+     * command-interface group and resolved to a proxy through the platform {@link IEObjectProvider}.
+     * A blank value clears the group. Unknown standard names fail loud with the live valid list.
+     */
+    private Object resolveCommandGroupValue(Configuration configuration, EReference reference, Object value) {
+        String name = extractReferenceFqn(value);
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        name = name.trim();
+        if (name.contains(".")) { //$NON-NLS-1$
+            MdObject resolved = resolveByFqn(configuration, name);
+            if (resolved == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_NOT_FOUND,
+                        "Command group not found: " + name, false); //$NON-NLS-1$
+            }
+            ensureReferenceTypeCompatible(reference, resolved, name);
+            return resolved;
+        }
+        IEObjectProvider provider = IEObjectProvider.Registry.INSTANCE.get(
+                McorePackage.Literals.COMMAND_GROUP, resolvePlatformVersion(configuration));
+        if (provider == null || provider.getEObjectDescription(name) == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Unknown standard command group '" + name + "'. Known groups: " //$NON-NLS-1$ //$NON-NLS-2$
+                            + listStandardCommandGroups(provider)
+                            + ". For a user-defined group pass its FQN (CommandGroup.<Name>).", false); //$NON-NLS-1$
+        }
+        CommandGroup proxy = provider.createProxy(name);
+        if (proxy == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Cannot create proxy for standard command group: " + name, false); //$NON-NLS-1$
+        }
+        return proxy;
+    }
+
+    private String listStandardCommandGroups(IEObjectProvider provider) {
+        if (provider == null) {
+            return "<none>"; //$NON-NLS-1$
+        }
+        Iterable<org.eclipse.xtext.resource.IEObjectDescription> descriptions =
+                provider.getEObjectDescriptions(null);
+        if (descriptions == null) {
+            return "<none>"; //$NON-NLS-1$
+        }
+        List<String> names = new ArrayList<>();
+        for (org.eclipse.xtext.resource.IEObjectDescription description : descriptions) {
+            if (description != null && description.getName() != null) {
+                names.add(description.getName().toString());
+            }
+        }
+        Collections.sort(names, String.CASE_INSENSITIVE_ORDER);
+        return names.isEmpty() ? "<none>" : String.join(", ", names); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
+     * Resolves the platform {@link Version} for provider lookups from the configuration's
+     * compatibility mode, falling back to {@code LATEST}. Mirrors {@link #resolveRuntimeVersion}
+     * but returns the typed value directly for the {@link IEObjectProvider} registry.
+     */
+    private Version resolvePlatformVersion(Configuration configuration) {
+        try {
+            Class<?> versionClass = loadBundleClass(requireBundle(PLATFORM_BUNDLE_ID), VERSION_CLASS);
+            Object version = resolveRuntimeVersion(configuration, versionClass, "cmd-group"); //$NON-NLS-1$
+            if (version instanceof Version typed) {
+                return typed;
+            }
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            LOG.debug("resolvePlatformVersion: falling back to LATEST: %s", e.getMessage()); //$NON-NLS-1$
+        }
+        return Version.LATEST;
     }
 
     @SuppressWarnings("unchecked")

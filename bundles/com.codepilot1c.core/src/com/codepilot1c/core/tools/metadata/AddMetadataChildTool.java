@@ -81,7 +81,7 @@ public class AddMetadataChildTool extends AbstractTool {
                 },
                 "properties": {
                   "type": "object",
-                  "description": "Дополнительные параметры. Для batch: children=[{name,synonym,comment}]. Для атрибутов/ресурсов/измерений: type (напр. String, Number, CatalogRef.Foo), length (для String), precision/scale (для Number), multiLine, fillChecking, и др."
+                  "description": "Дополнительные параметры. Для batch: children=[{name,synonym,comment}]. Для атрибутов/ресурсов/измерений: type (напр. String, Number, CatalogRef.Foo), length (для String), precision/scale (для Number), multiLine, fillChecking, и др. Для Command: commandParameterType (тип или массив типов, напр. [\"DocumentRef.Invoice\"]), group (стандартная группа по имени, напр. FormCommandBarImportant, либо FQN пользовательской CommandGroup.Foo), representation (Auto/Text/Picture/PictureAndText), parameterUseMode, modifiesData, shortcut."
                 },
                 "validation_token": {
                   "type": "string",
