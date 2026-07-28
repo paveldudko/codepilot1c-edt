@@ -7,7 +7,24 @@ Add an entry under **[Unreleased]** for every notable change; on a release, rena
 the section to the build/version and start a fresh **[Unreleased]**. Reference the
 commit hash in parentheses where useful.
 
-## [Unreleased] — branch `pd/bsl-tuning`
+## [Unreleased] — branch `pd/mcp-bridge-lite`
+
+### BF-13405 (2026-07-28) — `add_metadata_child` advertised malformed JSON, so the tool was uncallable
+
+`AddMetadataChildTool`'s `properties` description carried a JSON sample written as `[\"DocumentRef.Invoice\"]`
+inside a Java text block. A text block **does** process `\"` and emits a bare `"`, which terminated the JSON
+string early — the whole schema failed to parse (`MalformedJsonException: Unterminated object … path
+$.properties.properties.description`) and callers could not invoke the tool at all. Introduced by `f184637`
+(the `commandParameterType` + `group` work), where the sample was added. Correct form is `\\"`, already used
+in `EdtMetadataDetailsTool` and `MutateFormModelTool` — only this one site was wrong.
+
+`ToolSchemaValidityTest` exists for exactly this regression class (its javadoc cites the earlier `qa_run`
+unescaped-quote incident that silently bypassed the `features` filter), but its tool list was hardcoded to
+seven tools and covered no metadata or form tool — which is why the break shipped. The list now also covers
+`add_metadata_child`, `create_metadata`, `update_metadata`, `edt_metadata_details`, `rights_manage`,
+`mutate_form_model`, `apply_form_recipe`, `dcs_manage` and `web_publication`; all sixteen instantiate outside
+the OSGi runtime, so the guard stays a plain compile-cycle test. Found independently by two diagnostic passes
+over the BF-13405 and `dcs_create_main_schema` reports, and confirmed by the reporter's live parse error.
 
 ### BF-12936 / BF-12562 (2026-07-20) — `mutate_form_model remove_command`: delete a form-local command
 

@@ -7,13 +7,22 @@ import java.util.List;
 
 import org.junit.Test;
 
+import com.codepilot1c.core.tools.dcs.DcsManageTool;
 import com.codepilot1c.core.tools.diagnostics.EdtDiagnosticsTool;
+import com.codepilot1c.core.tools.forms.ApplyFormRecipeTool;
+import com.codepilot1c.core.tools.forms.MutateFormModelTool;
+import com.codepilot1c.core.tools.metadata.AddMetadataChildTool;
+import com.codepilot1c.core.tools.metadata.CreateMetadataTool;
+import com.codepilot1c.core.tools.metadata.EdtMetadataDetailsTool;
+import com.codepilot1c.core.tools.metadata.RightsManageTool;
+import com.codepilot1c.core.tools.metadata.UpdateMetadataTool;
 import com.codepilot1c.core.tools.qa.QaGenerateTool;
 import com.codepilot1c.core.tools.qa.QaInspectTool;
 import com.codepilot1c.core.tools.qa.QaRunTool;
 import com.codepilot1c.core.tools.qa.YaxunitRunTool;
 import com.codepilot1c.core.tools.workspace.ConnectInfobaseTool;
 import com.codepilot1c.core.tools.workspace.EdtLaunchAppTool;
+import com.codepilot1c.core.tools.workspace.WebPublicationTool;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -37,7 +46,20 @@ public class ToolSchemaValidityTest {
                 new QaGenerateTool(),
                 new ConnectInfobaseTool(),
                 new EdtDiagnosticsTool(),
-                new EdtLaunchAppTool());
+                new EdtLaunchAppTool(),
+                // Mutating metadata/form tools: their schemas carry long RU descriptions with
+                // embedded JSON samples, which is exactly where a bare \" slips in. add_metadata_child
+                // shipped broken this way in f184637 — the tool was uncallable until the escape was
+                // fixed, and this test did not cover it because the list was hardcoded to 7 tools.
+                new AddMetadataChildTool(),
+                new CreateMetadataTool(),
+                new UpdateMetadataTool(),
+                new EdtMetadataDetailsTool(),
+                new RightsManageTool(),
+                new MutateFormModelTool(),
+                new ApplyFormRecipeTool(),
+                new DcsManageTool(),
+                new WebPublicationTool());
 
         for (ITool tool : tools) {
             String schema = tool.getParameterSchema();
