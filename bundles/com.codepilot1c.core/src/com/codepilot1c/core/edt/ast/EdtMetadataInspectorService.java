@@ -61,7 +61,7 @@ public class EdtMetadataInspectorService {
                         .setPath(fqn)
                         .setFormatStyle(MetadataNode.FormatStyle.SIMPLE_VALUE)
                         .putProperty("exists", Boolean.FALSE) //$NON-NLS-1$
-                        .putProperty("message", "Object not found"); //$NON-NLS-1$ //$NON-NLS-2$
+                        .putProperty("message", notFoundMessage(fqn)); //$NON-NLS-1$
                 nodes.add(missing);
                 continue;
             }
@@ -168,7 +168,11 @@ public class EdtMetadataInspectorService {
      */
     private MdObject findMdObjectByFqn(Configuration config, String fqn) {
         String[] parts = fqn.split("\\."); //$NON-NLS-1$
-        if (parts.length < 2) {
+        if (parts.length != 2) {
+            // Only the leading <Type>.<Name> pair is resolved here. Reading it out of a longer FQN and
+            // returning that top object was WORSE than a false negative: asking for
+            // Subsystem.<Parent>.<Child> answered with the PARENT's properties under the requested path,
+            // so the caller believed it had the child (live 2026-07-28). Refuse and say why instead.
             return null;
         }
         String name = parts[1];
@@ -187,6 +191,21 @@ public class EdtMetadataInspectorService {
             }
         }
         return null;
+    }
+
+    /**
+     * Explains a miss instead of flatly denying it. A dotted FQN longer than {@code <Type>.<Name>} is the
+     * common caller mistake — most of all for subsystems, whose canonical FQN is flat at any nesting depth
+     * — so name the supported form rather than leaving "Object not found" to be read as "does not exist".
+     */
+    static String notFoundMessage(String fqn) {
+        if (fqn != null && fqn.split("\\.").length > 2) { //$NON-NLS-1$
+            return "Object not found: only a top-level <Type>.<Name> FQN is inspected here, and this FQN " //$NON-NLS-1$
+                    + "carries extra segments. A subsystem is always addressed flat (Subsystem.<Name>) " //$NON-NLS-1$
+                    + "even when nested, because each subsystem is its own top object. Child objects " //$NON-NLS-1$
+                    + "(attributes, forms, templates) are not addressable through this tool."; //$NON-NLS-1$
+        }
+        return "Object not found"; //$NON-NLS-1$
     }
 
     private Object formatCollectionValue(Collection<?> collection) {

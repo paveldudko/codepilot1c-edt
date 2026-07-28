@@ -96,6 +96,48 @@ public class EdtUpdateInfobaseSharedInfobaseTest {
         assertEquals("no noise for a single-project infobase", 0, payload.size()); //$NON-NLS-1$
     }
 
+    // -- post-update equality: emitted unconditionally, unlike the opt-in pre-check ----------------
+
+    @Test
+    public void postUpdateEqualityIsReportedWithoutTheOptInPreCheck() {
+        JsonObject payload = new JsonObject();
+        EdtUpdateInfobaseTool.annotatePostUpdateEquality(payload, "EQUAL", true, false); //$NON-NLS-1$
+        assertEquals("EQUAL", payload.get("equality_state_after").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("a converged update needs no warning", //$NON-NLS-1$
+                payload.has("equality_state_after_warning")); //$NON-NLS-1$
+        assertFalse("the PRE-check field stays opt-in — this must not fake it", //$NON-NLS-1$
+                payload.has("equality_state")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void successfulUpdateThatDidNotConvergeSaysSoAndForbidsARetryLoop() {
+        JsonObject payload = new JsonObject();
+        EdtUpdateInfobaseTool.annotatePostUpdateEquality(payload, "NOT_EQUAL", true, false); //$NON-NLS-1$
+        assertEquals("NOT_EQUAL", payload.get("equality_state_after").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        String warning = payload.get("equality_state_after_warning").getAsString(); //$NON-NLS-1$
+        assertTrue("the non-convergence mode must be named, not left to a second call", //$NON-NLS-1$
+                warning.contains("still differs")); //$NON-NLS-1$
+        assertTrue("re-running the same update never converges — say it", //$NON-NLS-1$
+                warning.contains("will not converge")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void dynamicOnlyUpdateLeavesTheWarningToItsOwnRicherAnnotation() {
+        JsonObject payload = new JsonObject();
+        EdtUpdateInfobaseTool.annotatePostUpdateEquality(payload, "NOT_EQUAL", true, true); //$NON-NLS-1$
+        assertEquals("NOT_EQUAL", payload.get("equality_state_after").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("dynamic_only_forward_warning already covers this — do not double-warn", //$NON-NLS-1$
+                payload.has("equality_state_after_warning")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void anUndeterminableStateAddsNothingRatherThanAFalseVerdict() {
+        JsonObject payload = new JsonObject();
+        EdtUpdateInfobaseTool.annotatePostUpdateEquality(payload, null, true, false);
+        EdtUpdateInfobaseTool.annotatePostUpdateEquality(payload, "  ", true, false); //$NON-NLS-1$
+        assertEquals("an unreadable state is silence, never a verdict", 0, payload.size()); //$NON-NLS-1$
+    }
+
     @Test
     public void siblingWarningAlwaysPointsAtThePerProjectUpdate() {
         String proceeding = EdtUpdateInfobaseTool.siblingWarning(List.of("A", "B"), false); //$NON-NLS-1$ //$NON-NLS-2$

@@ -38,7 +38,7 @@ public class AddMetadataChildTool extends AbstractTool {
                 },
                 "parent_fqn": {
                   "type": "string",
-                  "description": "FQN существующего owner object. Use this tool only when parent already exists."
+                  "description": "FQN существующего owner object. Use this tool only when parent already exists. Subsystem FQNs are FLAT at any nesting depth — always Subsystem.<Name>, even for a nested subsystem, because each subsystem is its own top object; no nested dotted form resolves, so never build one from the parent."
                 },
                 "child_kind": {
                   "type": "string",

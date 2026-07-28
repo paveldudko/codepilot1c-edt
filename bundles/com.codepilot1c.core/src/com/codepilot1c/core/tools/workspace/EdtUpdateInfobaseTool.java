@@ -324,6 +324,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 }
                 annotateWebserverConsistency(result, ibPath, status);
                 annotateDynamicOnly(result, status);
+                annotatePostUpdateEquality(result, projectName, status);
                 annotateSiblings(result, projectName, false);
                 if (!status.updated()) {
                     throw new EdtToolException(EdtToolErrorCode.UPDATE_FAILED,
@@ -569,6 +570,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             }
             annotateWebserverConsistency(result, ibPath, status);
             annotateDynamicOnly(result, status);
+            annotatePostUpdateEquality(result, projectName, status);
             annotateSiblings(result, projectName, false);
             if (!updated) {
                 JsonObject error = errorPayload(opId, projectName, workspaceRoot,
@@ -846,6 +848,54 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
     private static void annotateEqualityProceeding(JsonObject result, String equalityState) {
         result.addProperty("skipped", false); //$NON-NLS-1$
         result.addProperty("equality_state", equalityState); //$NON-NLS-1$
+    }
+
+    /**
+     * Annotates every proceeding update with the equality state read AFTER the apply, unconditionally
+     * — {@code equality_state} above is the opt-in PRE-check and is absent unless the caller passed
+     * {@code skip_if_current}, which is exactly the caller who then reads {@code updated=true} as
+     * "infobase now matches" and runs tests against stale code (feedback
+     * {@code 2026-07-24-yaxunit-run-silent-zero-tests-looks-like-passed.md}). The read is the same
+     * in-memory EDT query as the pre-check — no DESIGNER spawned — so making the result
+     * self-describing costs nothing.
+     *
+     * <p>Advisory only: a failure to read never fails an otherwise successful update, and the field is
+     * simply omitted. When the apply reported success yet the state is still NOT_EQUAL, this is the
+     * documented non-convergence mode — say so here instead of making the caller issue a second call
+     * and guess. The dynamic-only case already carries its own richer warning, so stay quiet there.</p>
+     */
+    private void annotatePostUpdateEquality(JsonObject result, String projectName,
+            EdtRuntimeService.UpdateInfobaseStatus status) {
+        String after;
+        try {
+            after = runtimeService.readInfobaseEqualityState(projectName);
+        } catch (RuntimeException | LinkageError e) {
+            // The service contract is "never throws"; LinkageError still covers a missing EDT runtime.
+            LOG.debug("update_infobase: post-update equality read failed for %s: %s", //$NON-NLS-1$
+                    projectName, e.getMessage());
+            return;
+        }
+        annotatePostUpdateEquality(result, after, status != null && status.updated(),
+                status != null && status.dynamicOnly());
+    }
+
+    /**
+     * Pure half of {@link #annotatePostUpdateEquality(JsonObject, String, EdtRuntimeService.UpdateInfobaseStatus)}
+     * — package-private so the payload shape is unit-testable without an EDT runtime.
+     */
+    static void annotatePostUpdateEquality(JsonObject result, String after, boolean applied,
+            boolean dynamicOnly) {
+        if (after == null || after.isBlank()) {
+            return;
+        }
+        result.addProperty("equality_state_after", after); //$NON-NLS-1$
+        if (applied && !dynamicOnly && !EQUALITY_EQUAL.equals(after)) {
+            result.addProperty("equality_state_after_warning", //$NON-NLS-1$
+                    "The update reported success yet the infobase still differs from the project. Do NOT " //$NON-NLS-1$
+                            + "re-run the same update expecting convergence — it will not converge. Apply " //$NON-NLS-1$
+                            + "one EXCLUSIVE update with no other client/Designer session holding the " //$NON-NLS-1$
+                            + "infobase, or treat this as advisory for a change with no schema impact."); //$NON-NLS-1$
+        }
     }
 
     /**
