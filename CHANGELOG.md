@@ -9,6 +9,345 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### bsl_list_methods / bsl_module_exports (2026-07-28) — doc-comment `См.` / `See` links are now reported, and the incoming premise was wrong
+
+The report said "EDT resolves a doc link one hop only". **That premise is wrong, and the correction matters more
+than the feature.** Decompiling `com._1c.g5.v8.dt.bsl.comment` (2025.2.3) shows
+`BslDocumentationComment.computeReturnTypes` / `computeParameterTypes` recursing into the linked comment and
+guarding loops with an `alreadyProcessingMethods` set — the resolution is already fully transitive. It only
+*looks* like a single hop because the recursion is gated on the intermediate comment being a bare link
+(`lastPart instanceof LinkPart && returnSection == null && parametersSection == null`): the first hop that
+declares its own `Параметры:` / `Возвращаемое значение:` section wins outright and its own link is never walked.
+There is nothing to fix in the resolver and nowhere to add a transitive walker — **do not write one.** Our own
+repo, meanwhile, had no `See` handling at all — zero hops, not one: `BslSemanticService.extractDocumentation`
+only scraped contiguous `//` lines.
+
+What was added is reporting, not resolution: new dependency-free `BslDocSeeChain` in `core/edt/lang` exposes
+`seeTarget` plus the in-module `seeChain` (depth 8, visited-set seeded with the start method, mirroring EDT's
+own guard) with `seeChainTruncated` / `seeChainCrossModule` on `BslMethodInfo`. Rules were taken from the
+decompiled source rather than guessed: the keywords are exactly `см.`/`see`, the link-text terminator set is
+identifier chars plus `.` `:` `/`, the bracketed `(См. X)` form extends to the `)`, `@`-tag lines are not
+scanned, and only the parameters/returns headers break a chain — `Пример:`, `Варианты вызова:`, `Устарела.`
+end the description but not the chain. The module index is built from **all** module methods, not the exported
+subset, because a chain routinely hops through a filtered-out helper. All four fields are omitted from the
+payload when absent, so an ordinary method serializes byte-for-byte as before.
+
+Three EDT parsing quirks that silently kill a chain are now pinned by tests and documented instead of being
+normalised away (normalising would claim a resolution EDT does not perform): `См. МойМетод.` dangles, because
+`LinkPart.computePartsWithOffset` splits on `.` keeping the empty tail; `См. также Модуль.Метод` links to
+`также`; `См. Модуль.Метод()` stops at `(` and leaves `()` as trailing text, which unseats the link.
+One deliberate deviation from EDT: the keyword must start at a word boundary, so `Просм.` / `Foreseen` are not
+matched — EDT's raw `indexOf` does match them, and the boundary only removes false positives.
+
+Tests: `BslDocSeeChainTest` (31 hermetic cases — both languages, case-insensitivity, link not last, cycles,
+self-reference, depth truncation, cross-module, trailing period) + two serialization pins in
+`BslSemanticToolsContractTest`. The contract sentence is single-sourced in `CONTRACT_HINT` so the two tool
+descriptions cannot drift, with the full explanation in `knowledge/edt-gotchas.md`.
+
+### get_diagnostics (2026-07-28) — review annotations from a sibling plugin were indistinguishable from EDT diagnostics
+
+`collectFromMarkers` reads `file.findMarkers(null, true, DEPTH_ZERO)` — **every** marker type, subtypes
+included, no allow-list (same on project scope with `DEPTH_INFINITE`). The sibling commit-review plugin
+contributes `com.dudko.edt.review.commentMarker` (a `org.eclipse.core.resources.textmarker` subtype,
+`persistent=true`) and never sets `IMarker.SEVERITY`, so `getAttribute(SEVERITY, -1)` returned `-1`,
+`Severity.fromMarkerSeverity` mapped the default branch to `INFO`, the entry passed the default
+`severity=info` threshold and landed in the diagnostics list with **nothing to tell it apart** — the
+provenance the record already carried (`markerType` / `source`) was printed only under the
+diagnostics-verbose debug gate.
+
+Fix is a provenance label, not a type allow-list (an allow-list would silently lose newly contributed EDT
+marker types). New dependency-free `DiagnosticOrigin` in core classifies `compiler` | `analyzer` |
+`custom-check` | `review-annotation` | `unknown` from `(markerType, source, severityDeclared,
+textMarkerSubtype)`; `EdtDiagnostic` gains an `origin` component filled by all four factories; the marker
+loops classify **before** the severity gate and the dedup key, so foreign markers never enter `seen` or the
+soft scan budget. `origin` is now rendered outside the debug gate for everything that is not
+`compiler`/`analyzer` (collapsed groups carry an `[origin: x]` tag).
+
+**Behavioural change:** the default answer is now clean diagnostics — new `origin` param defaults to
+`diagnostics`, which excludes `review-annotation`; `origin=all` brings them back in a separate
+`### Review annotations` section, and a single origin (or a comma list) narrows further. Review entries are
+**never** counted in `errorCount`/`warningCount`/`infoCount`, even with `origin=all` — a review comment is
+not an error/warning/info. Platform `taskmarker`/`bookmark` are deliberately exempt from the
+severity-less-textmarker rule (they classify as `unknown` and keep flowing) so TODO markers do not silently
+disappear.
+
+Also removed a stray NUL byte inside a string literal in `EdtDiagnosticsCollector` (line 240 group-key
+separator) which made ripgrep treat the whole file as binary and skip it in searches.
+
+Tests: `DiagnosticOriginTest` (19 — rules + filter semantics), `DiagnosticOriginWiringContractTest`
+(6 source-contract pins: origin in the record, origin rendered outside the debug gate, every
+`findMarkers(null, …)` classifies + honours the filter, counters skip review, no NUL byte),
+`GetDiagnosticsToolSchemaContractTest` (3 — the UI tool's schema parses and declares `origin`; MCP clients
+strip undeclared params). Live validation pending.
+
+### yaxunit_run (2026-07-28) — `total=0` read as "all tests passed"; red tests move to the success channel
+
+`buildResult` decided green as `failures == 0 && errors == 0 && exitCode in {null, 0}` — `report.tests` was
+never in the predicate, so an empty report satisfied it identically and a run that executed **zero** tests
+returned `status: "passed"` on the success channel. Reachable in practice: `QaJUnitReport.parseDirectory`
+returns non-null for any `*.xml` in the run dir and `getIntAttr` defaults a missing `tests` attribute to 0,
+so both `<testsuites/>` and `<testsuite tests="0">` produce `report != null, tests == 0`.
+
+The fix fixes the channel contract, not just the predicate: **the error channel means "there is no verdict —
+draw no conclusions", the success channel means "there is a verdict — read the report"** (clients reliably
+branch only on `McpHostRequestRouter`'s `isError = !result.isSuccess()`; the existing `preflight_warnings`
+were walked past in the 07-14 incident). Two coupled consequences:
+
+- A completed run with RED tests is now a **success** with `status: "tests_failed"` (was an error whose text
+  was the JSON envelope) — closes feedback `2026-07-03-yaxunit-run-red-tests-as-mcp-error.md`, which showed
+  6 of 10 "failures" in the weekly window were normal TDD iterations. Precedent: `qa_run` already returns
+  `tests_failed` as success and `no_features`/`feature_not_found` (zero resolved work) as failure.
+- A run that executed **zero tests** is now an **error**: `no_tests_found` when no filter was passed
+  (`reason: no_tests_in_infobase`, pointing at the extension being missing/safe-mode), `no_tests_matched`
+  when a filter was passed, with the cause split by EDT's equality state —
+  `infobase_stale` (NOT_EQUAL/LOADING → run `update_infobase`), `filter_matched_nothing` (EQUAL → check
+  `Модуль.Метод`, the `ИсполняемыеСценарии` registration, the `extensions` filter) or `no_match_unverified`
+  (state unreadable on a cold EDT → both hints, stale first). The old vague `status: "failed"` is gone;
+  exit≠0 with a green report is now `report_exit_mismatch` (error, inconclusive).
+
+Mechanics: the decision is a pure `static Verdict classify(report, outcome, filterPresent, equalityState)`
+(`record Verdict(status, reason, message, ok)`); `buildResult` only renders it and picks the channel.
+`EdtRuntimeService.readInfobaseEqualityState` is read in preflight (best-effort, never throws) and reported
+as `equality_state` on every run — including green ones, where it is the only cheap signal that the tests
+ran against stale code; NOT_EQUAL/LOADING also raises a `preflight_warnings` entry. `getDescription()` and
+the schema now carry the input decision ("run update_infobase after editing .bsl") instead of output-format
+prose; the empty-log detail moved to `resources/knowledge/edt-gotchas.md`.
+
+Tests: `classify_*` (8, incl. the ok=true pin for red tests) and `classifyNoReport_*` (3, previously
+uncovered) in `YaxunitRunToolTest`. Live validation pending.
+
+### yaxunit_run (2026-07-28) — the run dir is also the client's CWD, so any stray `*.xml` became "the report"
+
+`QaJUnitReport.parseDirectory` walked the whole directory for `*.xml` and summed everything it found. For
+`yaxunit_run` that directory is also the thin client's working directory (`processBuilder.directory(runDir)`),
+so any unrelated XML dropped there was silently counted as the jUnit report. New overload
+`parseDirectory(dir, maxFailureDetails, preferredFileName)`: with a preferred name only files with that name
+are parsed; when it is absent but other `*.xml` are present the legacy scan still runs but sets the new
+`fallbackScan` flag, which `yaxunit_run` surfaces as `report_source` (`junit.xml` | `fallback_xml_scan`) plus
+a `report_source_note` — back-compatible, never silent. A fallback scan that yields 0 tests is routed to the
+existing `no_report` diagnosis so the richer safe-mode hint is not lost. `qa_run` keeps the 2-arg call: its
+`junit` directory is dedicated and Vanessa writes one file per feature there, so nothing changes for it.
+
+Tests: `reportParsesEmptyRootAsZeroTests`, `reportParsesZeroTestSuiteAndMissingTestsAttribute`,
+`reportPrefersJunitXmlOverStrayXmlInTheRunDir`, `reportFlagsFallbackWhenOnlyStrayXmlIsPresent`.
+
+### qa_run (2026-07-28) — a report with zero executed tests no longer reads as `passed`
+
+Same defect class as `yaxunit_run`: `status = (failures + errors) > 0 ? "tests_failed" : "passed"` never
+looked at `report.tests`, so a parsed-but-empty jUnit report surfaced as a pass. A finished run whose report
+contains 0 executed tests is now `status: "no_tests_executed"` with a `message` (scenarios filtered out,
+Vanessa aborted before the FeaturePlayer, or the infobase does not match the EDT source) and it travels on
+the **error** channel (`QA_RUN_ERROR: the run executed 0 tests` + the full envelope) — consistent with
+`no_features`/`feature_not_found`, which already fail for zero resolved work. Red tests keep their existing
+success channel with `tests_failed`; `timeout`/`infra_error`/`update_failed` channels are unchanged.
+
+### yaxunit_run (2026-07-28) — orphaned `1cv8c` is now reaped per-infobase instead of warned about globally
+
+The preflight scanned **every** process on the machine for the substring `1cv8c` with no project/infobase
+binding and only warned: on a multi-stand box that fires on every run and cannot tell our leaked client from
+a neighbouring stand's legitimate one. And `terminateProcessTree` never cleaned the leak up, because the real
+`1cv8c` is not a descendant of the process we spawn — the launcher reparents it, and the incident logs show
+`descendants=0` on every heartbeat — so the orphan has to be found by command line and killed by PID.
+
+New `InfobaseProcessScanner.killLeakedTestClients(ibPath)` returning
+`TestClientCleanup(killed, spared, unreadable)`, reusing the existing WMI command-line overlay (mandatory —
+`ProcessHandle.info().commandLine()` is empty on Windows). The kill predicate is triple-gated: the process is
+a thin client (`1cv8c`), it carries **our** `RunUnitTests=` startup parameter (an interactive session never
+does), and its command line references **this** infobase (`matchesIb`, boundary-checked). Anything that
+cannot be attributed — a server infobase, an unresolved association, or an unreadable command line because
+WMI is unavailable — is reported loudly with its PIDs and left running: killing without an infobase match
+could take down another stand's client. `fileIbPath` is now public (the binding key is needed from
+`tools.qa`); the preflight warning is scoped to this run instead of the whole machine.
+
+Tests: `isLeakedTestClient_*` (our runner on the target IB / the same runner on another IB / an interactive
+client of the target IB / unknown IB path / thick client and designer), `isThinClientAndUnitTestRunner_areNullSafe`,
+`hasReadableCommandLine_falseWhenOnlyTheExeIsVisible`. The `ProcessHandle` scan/kill itself is
+environment-dependent and not unit-covered; live validation pending.
+
+### BF-13330 (2026-07-28) — dynamic list: `customQuery` / `queryText` / `mainTable` are finally authorable
+
+Switching a dynamic list from auto to a custom query had no working path. `set_item set:{customQuery:true}`
+failed with `Unknown form property: customQuery`, `apply_form_recipe attributes:[{set:{customQuery:…}}]` failed
+identically, and `type:"DynamicList"` failed with the opaque `Type not found in BM: DynamicList`. The property
+was never missing — it lives one level deeper, on the attribute's `form:DynamicListExtInfo`, and the generic
+feature resolver (`resolveStructuralFeatureIgnoreCase`) only ever inspects `target.eClass()`. `set_item` was a
+dead end for a second reason: it resolves form ITEMS, whose ids are an independent id space from form
+attributes, so an attribute property can never arrive there. The nested `set:{extInfo:{…}}` form did exist but
+was undocumented and threw `Attribute extInfo is not initialized for patch` whenever the extInfo was absent.
+
+- New pure-Java `DynamicListExtInfoRules` — a **strict whitelist** of the 14 `DynamicListExtInfo` features
+  (plus the `query` → `queryText` alias) with `hoist()` / `canonicalize()`. Deliberately not a generic "no such
+  feature on the target → look inside extInfo" rule: that would silently swallow typos for every ExtInfo kind
+  (ValueTable / ValueTree / DCS) and turn a fail-loud `Unknown form property` into a no-op.
+- `applyFormAttributePatch` — the single choke point all three entry points share — now hoists the flat keys
+  before the generic pass and merges them with an explicit `set:{extInfo:{…}}` block (canonicalized on both
+  sides, explicit wins on conflict). The legacy flat `dynamicDataRead` branch is kept for backward
+  compatibility but now only *contributes* to that merged patch, so the value is applied exactly once.
+- New `applyDynamicListExtInfo` reproduces the form editor's `ChangeDynamicListExtInfoCustomQueryTask` by hand
+  (that task is a `BmBasicTask1` and would open a nested transaction inside our `executeWrite`):
+  `customQuery=true` generates `queryText` from `mainTable` via `DynamicListAttributeService.createQueryText`
+  when none was passed and none is stored — and **reports the generated text back in the operation summary**,
+  so the caller sees what was written; `customQuery=false` clears `fields`/`calculatedFields`/`parameters` and
+  drops `queryText`; `mainTable` is assigned from exactly one place, so flipping `customQuery` either way
+  preserves it. A contradictory `customQuery=false` + `queryText` patch is rejected.
+- `ensureDynamicListExtInfo` materializes the missing companion (mirroring `ensureFormFieldExtInfo` /
+  `ensureFormGroupExtInfo`) instead of the old blanket refusal; a non-DynamicList attribute is rejected with its
+  real `valueType` named. `mainTable` binds from a metadata FQN through `dbViewDefs → mainView`, read
+  reflectively to avoid importing the dozens of typed `*DbViewDefs` interfaces (new `Import-Package:
+  com._1c.g5.v8.dt.metadata.dbview`).
+- The DCS containment collections (`fields`, `calculatedFields`, `parameters`, `listSettings`) are **refused
+  explicitly, not ignored**: the editor task does not populate them either, and the platform derives available
+  fields from `queryText` when `autoFillAvailableFields=true`.
+- New `mutate_form_model` op **`set_attribute_props`** (aliases `set_attribute`, `update_attribute`) — the root
+  cause of the whole episode was that `set_item` was the only visible verb for "fix one property", while
+  attributes were reachable only through `set_form_props set:{attributes:[…]}`.
+- Two guard rails so the next caller does not repeat the search: `type:"DynamicList"` is early-rejected in both
+  validators with a redirect to `customQuery`/`queryText`, and the generic resolver now answers a
+  DynamicList-only key on the wrong target by explaining the attribute-vs-item id-space split and naming the
+  working call.
+
+Tests: `DynamicListExtInfoRulesTest` (whitelist, aliases, snake/camel/kebab, explicit-block precedence, and no
+false positives on generic FormAttribute keys) + source-contract `DynamicListExtInfoContractTest` (form/EMF
+types resolve only in the OSGi runtime). Schemas of both form tools and `knowledge/managed-forms.md` document
+the auto → custom-query recipe and the `autoFillAvailableFields` caveat. Live validation pending.
+
+### BF-13330 (2026-07-28) — `add_button`: accept the `Form.Command.<Name>` a `.form` actually carries
+
+`add_button command_name:"Form.Command.X"` failed with `Form command not found`. `findFormCommandByName`
+compared the raw string against `FormCommand.getName()` (the bare name), while `Form.Command.X` is exactly the
+notation the BM serializer writes into `<commandName>` — so a caller echoing back what it had just read from
+its own `.form` was not inventing a format.
+
+- `stripFormCommandPrefix` removes `Form.Command.` / `FormCommand.` / `Command.` case-insensitively inside
+  `findFormCommandByName`; a bare name keeps working unchanged.
+- `Form.StandardCommand.*` is rejected with `INVALID_METADATA_CHANGE` explaining that standard form commands are
+  platform-provided and appear in the auto command bar on their own — they are not form-local.
+- A foreign-namespace FQN (`Catalog.X.Command.Y`, `CommonCommand.Z`) is rejected with `METADATA_NOT_FOUND`
+  explaining that `add_button` resolves only `Form.getFormCommands()`, and suggesting a form command whose
+  handler calls the object command. Object commands stay out of scope for now.
+- The not-found message now lists the form's available command names, the same courtesy `remove_command`
+  already extends, and the schema states that both formats are accepted.
+
+Source-contract test `AddButtonCommandNameContractTest`. Live validation pending.
+
+### Shared-infobase fan-out for sync-state and update reporting (2026-07-28) — a green project is not a green infobase
+
+EDT's equality state belongs to a (project, infobase) PAIR, which is correct semantics but was reported
+as if it described the infobase. When several projects share one infobase — a configuration plus its
+extensions, or two configuration projects on one `.1CD` — `get_infobase_sync_state` answered EQUAL for
+the project it was asked about while an extension sat unapplied, and `update_infobase` reported
+`skipped, equality_state=EQUAL` for the same reason. Both read as "the infobase is current". Nobody
+fanned out over the neighbours; EDT exposes no enumeration of the projects bound to an infobase
+(`IInfobaseAssociationManager.getAssociation(InfobaseReference)` is a first-match lookup).
+
+New `InfobaseSiblingResolver` runs `resolveDefaultInfobase` over the open workspace projects and matches
+on `InfobaseIdentity.canonical` — the plugin's single "same infobase" rule, already used by the lease
+guard — gated by the non-blocking `peekV8ProjectManager` peek so a cold EDT cannot park the caller for
+30 s. Relations are classified: a configuration and its extensions MUST converge, so a NOT_EQUAL there is
+a real staleness signal; two independent configuration projects are mutually exclusive by construction
+and stay informational; LOADING/absent is reported as `unknown`, never as stale. The aggregation is a
+pure function, unit-tested without EDT. `get_infobase_sync_state` now reports `siblings`,
+`shared_infobase`, `sibling_projects_stale` and `all_projects_work_ready` (opt out with
+`include_siblings=false`); `work_ready` keeps its per-project meaning for backward compatibility.
+`update_infobase` annotates `sibling_projects_stale` + `sibling_warning` on the sync, async and
+skipped-because-EQUAL payloads — output only, no new input parameters. The `dynamic_only` payload also
+gained a forward-warning that a later EQUAL does not prove the deferred restructure ran.
+
+### In-flight update guard keyed by infobase, not project (2026-07-28) — shared-IB double-fire now refused
+
+EDT applies an update through a Designer session that is single-connection per INFOBASE, but the BF-12705
+guard was keyed by project name. Two different projects bound to the same infobase therefore both passed
+the guard and collided on the one Designer connection — exactly the failure the guard exists to prevent.
+
+The guard key is now the canonical infobase identity (`InfobaseIdentity.canonical`, tolerant of slash
+direction, case and a trailing separator), falling back to the project name when the infobase does not
+resolve; dry runs neither acquire the slot nor pay for the resolution. The slot value now carries the
+owning project alongside the job id, and the `UPDATE_ALREADY_RUNNING` payload reports `in_flight_project`
+with a message that names the *other* project holding the infobase — without it, "already running" reads
+as nonsense for a project that started no update. This is a deliberate behaviour change: on a shared
+infobase some calls that previously proceeded now get UPDATE_ALREADY_RUNNING.
+
+### Damaged target database classified instead of masked as IB_LOCKED (2026-07-28)
+
+A physically damaged target database ("the integrity of configuration structure is violated") failed its
+config-export step with a temp `xml.zip` message, and `isBlockedByLockedIB` matches a bare "xml.zip"
+substring anywhere in the cause chain — so a broken database was reported as IB_LOCKED and the caller was
+sent hunting for a lock holder that did not exist. Tools that read only the EDT model (`get_diagnostics`,
+`metadata_smoke`) stayed green throughout, reinforcing the wrong conclusion.
+
+New `TARGET_INFOBASE_DAMAGED` error code with an `isTargetDbDamaged` cause-chain predicate (EN + RU
+platform tokens), evaluated BEFORE the locked-IB heuristic so the specific cause wins. The payload
+explains that the TARGET DATABASE is damaged — not the configuration in git and not a lock — gives the
+concrete repair command (`chdbfl.exe -s "<ib-dir>\1Cv8.1CD"`, or Designer → Testing and repair) and notes
+that EDT-model-only tools are green here by design. Because the platform's exact wording has never been
+observed live, both a successful classification and every unclassified UPDATE_FAILED now echo the raw
+cause chain into `raw_error` and the bundle log, so the first live occurrence confirms or refutes the
+token set without a separate diagnostic build.
+
+### metadata_smoke states its non-goal (2026-07-28) — wording only
+
+"Use metadata_smoke for headless verification" invited the reading that a green smoke report meant the
+environment was verified. It never did: the tool creates and deletes temporary objects through the EDT
+metadata API and probes a read-only BM transaction against the PROJECT MODEL, and never opens the target
+infobase. The dispatcher description, the tool description and the report header (`scope: EDT metadata
+API (project model only) — target infobase NOT verified`) now say so explicitly and point at
+`get_infobase_sync_state` / `update_infobase` for infobase readiness. No logic changed; a unit test pins
+the wording against regression.
+
+### BF-13159 (2026-07-28) — `web_publication register_server`: raw `SWTException: Invalid thread access`
+
+`register_server` returned a non-JSON `Exception: Invalid thread access` while `list_servers` afterwards showed
+the server as registered. Not a response-marshalling problem: decompiling services.core 21.0 shows
+`WebServerManager.add` first `save(webServers)` (persist + reload event) and only then, **synchronously on the
+calling thread**, `fireWebServerAddedEvent`. `WebPublicationTool.doExecute` runs on an MCP worker thread, so the
+unguarded UI listeners in `com._1c.g5.v8.dt.platform.services.ui` — `WebServerEditor.webServersReloaded` →
+`bind(...)` and `AbstractPublicationEditor`/`InfobasePublicationEditor.webServersReloaded` → `close(false)` —
+throw off-thread *after* the registration is already durable. The trigger is an OPEN web-server/publication
+editor, not an open view (`WebServersView` is `asyncExec`-guarded). The raw text escaped because `doExecute`
+only caught `EdtToolException`, and an async failure bypasses `AbstractTool.execute`'s synchronous try/catch, so
+`ToolExecutionService` rendered `"Exception: " + message`.
+
+Fixed in two layers:
+- `EdtWebPublicationService.onUiThread(Supplier)` (+ `uiThreadDisplay()`): hops the mutation onto the SWT UI
+  thread via `syncExec` with a RuntimeException relay, inline when already on the UI thread or headless.
+  Never calls `Display.getDefault()` (that would create a display on the worker thread). Wraps
+  `manager.add(server)` and — same hole, `firePublicationRemovedEvent` → `AbstractPublicationEditor
+  .publicationRemoved` → unguarded `close(false)` — `manager.remove(server, publication)` in
+  `removePublication`. `publish` was never affected because we drive the publish delegate directly and
+  `firePublishedEvent` never runs. Own seam rather than `UiThreadExecutor`, which reports failures as the
+  wrong exception family (`EdtAstException`); `protected` so tests can replace the hop.
+- `WebPublicationTool`: a `catch (RuntimeException)` belt next to the `EdtToolException` one always answers
+  structured JSON (`WEB_SERVER_ACCESS_FAILED` + the failure type and message), and `doRegisterServer` now
+  re-reads the registry through the new `EdtWebPublicationService.findServer(name)` on a runtime failure — a
+  registration that persisted is reported as success with `registered_with_ui_warning: true`, a `ui_warning`
+  advisory and `status: "ok_with_warning"` instead of a failure the caller cannot act on.
+
+Tests: `registerServerRuntimeFailureReturnsStructuredError`, `registerServerSurvivesUiListenerFailureWithAdvisory`,
+`unexpectedRuntimeFailureIsStructuredJson`. The `syncExec` hop itself is not unit-covered — the tests bundle runs
+on plain maven-surefire with no workbench. Live validation pending: the reproduction needs a web-server editor
+open in EDT, and the `syncExec` hop wants one deliberate "register while the EDT UI thread is busy" pass to rule
+out a deadlock.
+
+### BF-13159 (2026-07-28) — `web_publication`: the inline probe of publish/restart never got credentials
+
+`publish`/`restart` have run the same `runProbe` as `action=probe` since `da405ea` — `probe_user`/`probe_password`
+are read from the shared parameter map and passed straight to `EdtWebPublicationService.probe(url, timeoutMs,
+user, password)`, and `ToolArgumentParser` does not filter by schema. The defect was purely in the schema texts:
+both credential params were documented starting with `probe: …`, so a caller read them as "only for
+action=probe" and never sent them with a publish. The inline self-verification then went out unauthenticated and
+any 1C HTTP/web service with mandatory authentication answered 401 — a guaranteed false "the publication does
+not work" right after a publication that was in fact fine.
+
+`probe_url`, `probe_user` and `probe_password` are now all prefixed `publish/restart/probe:` and say explicitly
+that the credentials apply to the inline check too, and that without them it is UNAUTHENTICATED and returns 401
+on a protected endpoint. `getDescription()` gained one sentence: publish/restart self-verify in the same call
+when `probe_url` is given. No behaviour change — text only. Pinned by
+`WebPublicationToolStandaloneTest.publishInlineProbeCarriesCredentials` /
+`restartInlineProbeCarriesCredentials`, which assert the stub receives both user and password for
+`action=publish` and `action=restart`.
+
+Deliberately NOT done: reusing the `infobase_connection` credentials for the probe (not confirmed by the owner).
+
 ### BF-13405 (2026-07-28) — `add_metadata_child` advertised malformed JSON, so the tool was uncallable
 
 `AddMetadataChildTool`'s `properties` description carried a JSON sample written as `[\"DocumentRef.Invoice\"]`
