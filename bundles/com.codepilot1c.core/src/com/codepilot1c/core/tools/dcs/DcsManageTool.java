@@ -87,11 +87,11 @@ public class DcsManageTool extends AbstractTool {
                 },
                 "template_name": {
                   "type": "string",
-                  "description": "(create_schema) Optional DCS template name"
+                  "description": "(create_schema) Optional DCS template name, default MainDataCompositionSchema. Matched case-insensitively against existing templates"
                 },
                 "force_replace": {
                   "type": "boolean",
-                  "description": "(create_schema) Replace binding if schema exists"
+                  "description": "(create_schema) Replace the existing schema: reuses the template of that name (or the owner's existing DCS template), resets its content and rebinds it. Without it an existing schema is reported as-is and nothing changes"
                 },
                 "dataset_name": {
                   "type": "string",

@@ -5,6 +5,10 @@ import com.codepilot1c.core.edt.metadata.MetadataOperationException;
 
 /**
  * Request to create and bind main DCS schema for owner object.
+ *
+ * <p>{@code forceReplace} means REPLACE, not "add": a template already carrying the requested name
+ * is reused and its schema content reset, so the owner never ends up with two {@code <templates>}
+ * entries under one name.</p>
  */
 public record DcsCreateMainSchemaRequest(
         String projectName,
@@ -38,7 +42,7 @@ public record DcsCreateMainSchemaRequest(
 
     public String effectiveTemplateName() {
         if (templateName == null || templateName.isBlank()) {
-            return "MainDataCompositionSchema"; //$NON-NLS-1$
+            return DcsSchemaSupport.DEFAULT_TEMPLATE_NAME;
         }
         return templateName.trim();
     }
