@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import com.codepilot1c.core.edt.ast.EdtAstException;
+import com.codepilot1c.core.edt.lang.BslDocSeeChain;
 import com.codepilot1c.core.edt.lang.BslModuleExportsResult;
 import com.codepilot1c.core.edt.lang.BslModuleMethodsRequest;
 import com.codepilot1c.core.edt.lang.BslSemanticService;
@@ -48,7 +49,8 @@ public class BslModuleExportsTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Lists only the exported procedures and functions of a single BSL module."; //$NON-NLS-1$
+        return "Lists only the exported procedures and functions of a single BSL module. " //$NON-NLS-1$
+                + BslDocSeeChain.CONTRACT_HINT;
     }
 
     @Override

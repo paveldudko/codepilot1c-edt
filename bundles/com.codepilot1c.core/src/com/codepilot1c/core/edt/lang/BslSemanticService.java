@@ -233,9 +233,12 @@ public class BslSemanticService {
         int total = filtered.size();
         int from = Math.min(request.getOffset(), total);
         int to = Math.min(from + request.getLimit(), total);
+        // Index the whole module, not the filtered page: a See chain routinely runs through methods
+        // the caller's name/kind filter dropped.
+        BslDocSeeChain.ModuleDocs docs = moduleDocs(methods);
         List<BslMethodInfo> page = new ArrayList<>();
         for (int i = from; i < to; i++) {
-            page.add(filtered.get(i).toInfo());
+            page.add(filtered.get(i).toInfo(docs));
         }
 
         return new BslModuleMethodsResult(
@@ -367,6 +370,8 @@ public class BslSemanticService {
         List<ResolvedMethod> methods = collectMethods(context.module(), context.text(), new LineIndex(context.text()));
 
         String nameFilter = request.normalizedNameContains();
+        // Index the whole module, not just the exports: a See chain may hop through a local helper.
+        BslDocSeeChain.ModuleDocs docs = moduleDocs(methods);
         List<BslMethodInfo> filtered = new ArrayList<>();
         for (ResolvedMethod method : methods) {
             if (!method.exportFlag()) {
@@ -375,7 +380,7 @@ public class BslSemanticService {
             if (!nameFilter.isEmpty() && !normalize(method.name()).contains(nameFilter)) {
                 continue;
             }
-            filtered.add(method.toInfo());
+            filtered.add(method.toInfo(docs));
         }
 
         int total = filtered.size();
@@ -935,6 +940,21 @@ public class BslSemanticService {
         return result;
     }
 
+    /**
+     * Indexes the documentation comments of every method of the module so a {@code См.} / {@code See}
+     * chain can be followed without a second parse pass. Same-named methods (broken code) keep the
+     * first declaration, mirroring how method lookup resolves them.
+     */
+    private BslDocSeeChain.ModuleDocs moduleDocs(List<ResolvedMethod> methods) {
+        Map<String, String> docs = new LinkedHashMap<>();
+        for (ResolvedMethod method : methods) {
+            if (method.name() != null && !docs.containsKey(method.name())) {
+                docs.put(method.name(), method.documentation());
+            }
+        }
+        return BslDocSeeChain.ModuleDocs.of(docs);
+    }
+
     private List<BslMethodParamInfo> collectParams(Method method) {
         List<FormalParam> formalParams = method.getFormalParams();
         if (formalParams.isEmpty()) {
@@ -1180,7 +1200,9 @@ public class BslSemanticService {
             List<BslMethodParamInfo> params,
             List<String> pragmas,
             String documentation) {
-        BslMethodInfo toInfo() {
+        BslMethodInfo toInfo(BslDocSeeChain.ModuleDocs moduleDocs) {
+            BslDocSeeChain.ChainResult seeChain =
+                    BslDocSeeChain.resolveChain(name, documentation, moduleDocs);
             return new BslMethodInfo(
                     name,
                     kind,
@@ -1192,7 +1214,11 @@ public class BslSemanticService {
                     usedFlag,
                     params,
                     pragmas,
-                    documentation);
+                    documentation,
+                    BslDocSeeChain.effectiveTarget(documentation).orElse(null),
+                    seeChain.chain(),
+                    seeChain.truncated(),
+                    seeChain.crossModule());
         }
     }
 

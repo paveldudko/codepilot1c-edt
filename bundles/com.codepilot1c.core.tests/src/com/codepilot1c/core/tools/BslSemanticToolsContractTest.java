@@ -63,6 +63,55 @@ public class BslSemanticToolsContractTest {
     }
 
     @Test
+    public void listMethodsSerializesSeeChainOnlyWhenPresent() {
+        FakeBslSemanticService service = new FakeBslSemanticService();
+        service.methodsResult = new BslModuleMethodsResult(
+                "DemoConfiguration", //$NON-NLS-1$
+                "CommonModules/Orders/Module.bsl", //$NON-NLS-1$
+                2,
+                false,
+                List.of(sampleMethod(true), sampleMethodWithSeeChain()));
+
+        ToolResult result = new BslListMethodsTool(service).execute(Map.of(
+                "projectName", "DemoConfiguration", //$NON-NLS-1$ //$NON-NLS-2$
+                "filePath", "CommonModules/Orders/Module.bsl" //$NON-NLS-1$ //$NON-NLS-2$
+        )).join();
+
+        JsonObject json = JsonParser.parseString(result.getContent()).getAsJsonObject();
+        JsonObject plain = json.getAsJsonArray("items").get(0).getAsJsonObject(); //$NON-NLS-1$
+        JsonObject linked = json.getAsJsonArray("items").get(1).getAsJsonObject(); //$NON-NLS-1$
+        assertTrue(result.isSuccess());
+        assertFalse("a method without a See link must not pay for the fields", //$NON-NLS-1$
+                plain.has("seeTarget") || plain.has("seeChain")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(plain.has("seeChainTruncated")); //$NON-NLS-1$
+        assertEquals("ОбработатьЗаказ", linked.get("seeTarget").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(2, linked.getAsJsonArray("seeChain").size()); //$NON-NLS-1$
+        assertTrue(linked.get("seeChainCrossModule").getAsBoolean()); //$NON-NLS-1$
+        assertFalse("false flags stay out of the payload", linked.has("seeChainTruncated")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void moduleExportsSerializesSeeChain() {
+        FakeBslSemanticService service = new FakeBslSemanticService();
+        service.moduleExportsResult = new BslModuleExportsResult(
+                "DemoConfiguration", //$NON-NLS-1$
+                "CommonModules/Orders/Module.bsl", //$NON-NLS-1$
+                1,
+                false,
+                List.of(sampleMethodWithSeeChain()));
+
+        ToolResult result = new BslModuleExportsTool(service).execute(Map.of(
+                "projectName", "DemoConfiguration", //$NON-NLS-1$ //$NON-NLS-2$
+                "filePath", "CommonModules/Orders/Module.bsl" //$NON-NLS-1$ //$NON-NLS-2$
+        )).join();
+
+        JsonObject item = JsonParser.parseString(result.getContent()).getAsJsonObject()
+                .getAsJsonArray("items").get(0).getAsJsonObject(); //$NON-NLS-1$
+        assertEquals("ОбработатьЗаказ", //$NON-NLS-1$
+                item.getAsJsonArray("seeChain").get(0).getAsString()); //$NON-NLS-1$
+    }
+
+    @Test
     public void getMethodBodySerializesAmbiguousCandidates() {
         FakeBslSemanticService service = new FakeBslSemanticService();
         service.failure = new BslMethodLookupException(
@@ -191,6 +240,25 @@ public class BslSemanticToolsContractTest {
                 List.of(new BslMethodParamInfo("Ссылка", true, null)), //$NON-NLS-1$
                 List.of("AtServer"), //$NON-NLS-1$
                 "Документация"); //$NON-NLS-1$
+    }
+
+    private static BslMethodInfo sampleMethodWithSeeChain() {
+        return new BslMethodInfo(
+                "ПровестиЗаказПоРегистрам", //$NON-NLS-1$
+                "procedure", //$NON-NLS-1$
+                30,
+                34,
+                true,
+                false,
+                false,
+                true,
+                List.of(new BslMethodParamInfo("Ссылка", true, null)), //$NON-NLS-1$
+                List.of(),
+                "См. ОбработатьЗаказ", //$NON-NLS-1$
+                "ОбработатьЗаказ", //$NON-NLS-1$
+                List.of("ОбработатьЗаказ", "ОбщегоНазначения.ЗначениеРеквизитаОбъекта"), //$NON-NLS-1$ //$NON-NLS-2$
+                false,
+                true);
     }
 
     private static final class FakeBslSemanticService extends BslSemanticService {

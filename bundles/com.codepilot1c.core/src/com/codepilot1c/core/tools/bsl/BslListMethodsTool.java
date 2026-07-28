@@ -8,6 +8,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import com.codepilot1c.core.edt.ast.EdtAstException;
+import com.codepilot1c.core.edt.lang.BslDocSeeChain;
 import com.codepilot1c.core.edt.lang.BslModuleMethodsRequest;
 import com.codepilot1c.core.edt.lang.BslModuleMethodsResult;
 import com.codepilot1c.core.edt.lang.BslSemanticService;
@@ -49,7 +50,8 @@ public class BslListMethodsTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Lists the procedures and functions of a single BSL module with signatures and line ranges."; //$NON-NLS-1$
+        return "Lists the procedures and functions of a single BSL module with signatures and line ranges. " //$NON-NLS-1$
+                + BslDocSeeChain.CONTRACT_HINT;
     }
 
     @Override
