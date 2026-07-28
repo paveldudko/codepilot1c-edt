@@ -9,6 +9,219 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### create_metadata adopt_existing (2026-07-28) — BF-13405: exists:false and "FQN already in use" for the same object
+
+There are two independent metadata indexes. **A** is the configuration composition: the flat typed lists
+in `Configuration.mdo`, which in EMF are non-containment `refers X[]` references on `Configuration`.
+**B** is the BM top-object FQN registry: every `.mdo` on disk is imported as its own top object and its
+FQN registered in the namespace regardless of whether `Configuration.mdo` ever mentioned it.
+`create_metadata` consulted A (`existsTopLevel` said "absent"), then created and called `attachTopObject`,
+which consults B ("occupied"). Hence the reported pair: `edt_metadata_details` → `exists:false`,
+`create_metadata` → FQN already in use, `update_infobase` → "Unknown metadata object". The BM state is
+not corrupt — the object is loaded and attached; exactly one thing is missing, the entry in
+`Configuration.<collection>`.
+
+It surfaced as `EDT_TRANSACTION_FAILED` because `BmFqnAlreadyInUseException` and
+`BmNameAlreadyInUseException` are siblings with **no common base class** and only the latter had a catch
+arm, so the FQN clash fell into the generic `RuntimeException` handler. Both `executeWrite` and
+`attachTopLevelObject` now translate it to `METADATA_ALREADY_EXISTS` with text that names the
+disagreement and the cure — an honest backstop that stands on its own, independent of the verb below.
+
+`create_metadata` now probes index B before creating (`getTopObjectByFqn`, best-effort: a probe failure
+degrades to null and creation proceeds as before). On a hit, the default — `adopt_existing` unset — is a
+loud, actionable refusal that changes nothing and offers both exits: adopt, or delete the `.mdo`
+directory. With `adopt_existing=true` the existing top object is registered into its typed collection
+and nothing else: strictly additive, one entry in one list, no `createTopLevelObject`, no re-attach, no
+uuid rewrite. This is the mirror image of the `rights_manage` defect (`c990eaa`): there an object was
+reachable by model reference but was not a resolvable top object; here it IS a resolvable top object but
+is not reachable from the configuration. The method transfers, not the direction — do not trust one
+index, probe the other before acting. Because the registration is additive to a single collection, it
+also closes the "Configuration.mdo flat-list registration conflict" report (a git merge had dropped
+`<roles>` entries) without the risk of a `changes.set.roles` rewrite of ~1300 entries.
+
+Adoption never mutates the object it registers: `properties` passed together with `adopt_existing=true`
+are **refused** (`INVALID_METADATA_CHANGE`, pointing at `update_metadata`) rather than silently dropped,
+and a FQN held by an object of another EClass is refused too instead of blowing up in the typed cast.
+The result carries the distinction: a new `CreateMetadataOutcome` adds `adopted: true|false` and
+`registered_into: Configuration.<collection>` to the tool output, leaving the shared
+`MetadataOperationResult` that other tools consume untouched.
+
+Contract changes: new optional `adopt_existing` (alias `adopt`), default false; it must be passed in the
+`edt_validate_request` payload too — the token payload is authoritative for every field of a mutation, so
+a token issued without the flag is refused with `INVALID_VALIDATION_TOKEN` rather than quietly downgraded,
+and `edt_validate_request` now always echoes `adopt_existing` in its normalized payload. `create_metadata`
+output gains two lines. An FQN clash that used to read `EDT_TRANSACTION_FAILED` now reads
+`METADATA_ALREADY_EXISTS`, so playbooks branching on that code change path.
+
+**Caution for live validation:** `rebindTopLevelIntoConfiguration` removes the object from
+`Configuration.getContent()` by name. In an EXTENSION project `<content>` is meaningful (it lists adopted
+base objects), so adoption there could strip a legitimate entry. BF-13405 is a base configuration and the
+same removal already ran on every create, but do not exercise adoption on a live extension first.
+
+### Subsystem FQNs and the kind→collection map (2026-07-28) — nested subsystems were unaddressable, half the kinds reported exists:false
+
+A subsystem's canonical EDT FQN is FLAT at every nesting depth — `Subsystem.PaymentCalendar`, never
+`Subsystem.Finance.Subsystem.PaymentCalendar`. Both subsystem collections (`Configuration.subsystems`
+and `Subsystem.subsystems`) are non-containment, so a nested subsystem has `eContainer() == null`, and
+`MdUtil.getFullyQualifiedName` falls back to a two-segment name when `eContainingFeature()` is null;
+each nested subsystem is a top object with its own `.mdo`. So the flat form the caller wrote was
+canonically CORRECT and still failed: `findTopLevel` resolved SUBSYSTEM through
+`configuration.getSubsystems()`, i.e. the first level only. The nested spelling failed too, in a
+different place — `findNestedChild` iterates containment references, and `subsystems` is not one.
+
+Resolution is now recursive (new pure `SubsystemTree`, generic over a node accessor so the traversal is
+unit-testable without EMF, with an identity-based visited set because a non-containment link can cycle).
+A name shared by two subsystems under different parents is **refused, not resolved**: a flat FQN cannot
+address one of them, so the error names every colliding parent and points at the nested alias, instead of
+silently returning whichever the traversal reached first. The nested chain is accepted as a tolerant
+alias, deliberately narrow — only the `subsystems` feature of a `Subsystem` — because `Subsystem.content`
+is also a non-containment many reference and a generic rule would turn every content member into an
+addressable child.
+
+The same fix removes a whole family of false negatives. The kind→collection mapping existed in FOUR
+divergent copies, and every kind absent from a copy silently became "does not exist" for whatever read
+it: `EdtMetadataInspectorService.findMdObjectByFqn` carried a nine-kind switch with
+`default -> List.of()`, so `edt_metadata_details` answered `exists:false` for Subsystem, Role,
+ExchangePlan, DefinedType and every register beyond information/accumulation — objects that plainly
+existed. All four copies are now one `TopLevelCollections`: `forKind` (typed getters, exhaustive switch,
+so a kind added to the enum is a compile error rather than a silent gap), `configurationTag` and
+`indexScopeToken`. `existsTopLevel` collapses from 48 arms to one line, `scan_metadata_index` from 48
+hand-written calls to a loop over `MetadataKind.values()`, and the inspector derives its kind through
+`MetadataKind.fromString`, so plural and Russian type tokens work there too. The index token stays a
+separate mapping on purpose: `scan_metadata_index` has always reported `chartofaccounts` (singular
+"chart") and its scope-alias table keys off that spelling. The 47 non-subsystem getters, all 48
+`.mdo` tags and all 47 index token→getter pairings were diffed against the previous switches to keep the
+refactor byte-identical where it must be.
+
+Contract changes: `Subsystem.<Name>` now resolves for nested subsystems in `update_metadata`,
+`add_metadata_child` and `edt_metadata_details` (was `METADATA_NOT_FOUND` / `exists:false`); the nested
+chain resolves too; `scan_metadata_index` now lists nested subsystems, so totals and `scope=subsystems`
+grow; `edt_metadata_details` returns real data for ~39 kinds that used to report `exists:false`; and a
+duplicate subsystem name — previously first-match-wins — is now a loud `METADATA_ALREADY_EXISTS`, which
+can turn a call that "worked" on such a configuration into a refusal. `create_metadata kind=Subsystem`
+also now refuses a name already taken by a NESTED subsystem, which is correct: it occupies the same flat
+FQN in the BM namespace.
+
+### yaxunit_run (2026-07-28) — the runtime resolution was invisible, and the version parameter had the wrong name
+
+`resolveThinClientFile` returned a bare `File` and had two failure branches, both blind: one returned
+`null` without logging a single line, the other logged a warning only into the plugin log while the
+caller surfaced the generic `Thin client (1cv8c.exe) runtime component not resolved`. `launch_app` and
+`update_infobase` have reported `runtime_used` since `b8ad7c7`; `yaxunit_run` reported nothing, so a
+resolve-fail cost the owner four blind install rounds and the request to print the chosen version and the
+paths tried stood open from 2026-07-03.
+
+The resolution is now a record — `ThinClientResolution` with `file`, `versionWithBuild`, `location`,
+`source`, `candidatesTried` and `rejectReasons` — and BOTH failure branches log the whole audit trail.
+A dedicated `ThinClientNotResolvedException` carries it, so a tool can render the structure instead of a
+sentence; `resolveThinClientFile` stays a null-returning delegate, so nothing existing changed shape.
+`yaxunit_run` reports `runtime_used {version, location, source, requested, binary}` plus
+`candidates_tried` / `reject_reasons` on every outcome — success, failure, and `dry_run`, which is the
+only cheap way to ask which client would be launched without spending a 300-second run. An unresolvable
+runtime is now `status="runtime_not_resolved"` with the candidates and the reason each one lost, not an
+opaque string.
+
+The version parameter was also the odd one out: `launch_app`, `update_infobase` and `connect_infobase`
+all take `runtime_version`, this tool took `version_mask` — a trap for the calling model rather than a
+cosmetic inconsistency. `runtime_version` is now the primary name, `version_mask` a synonym (on a
+conflict `runtime_version` wins and the loser is echoed back as `ignored_version_mask`). Priority is the
+same chain `launch_app` applies: explicit parameter → the project's `.launch` pin (`USE_AUTO=false`) →
+project+infobase auto-resolution, so the two tools can no longer resolve to different platforms for the
+same project. Reading the pin is best-effort and never fails the run.
+
+### thin-client resolution (2026-07-28) — a client launch asked EDT as if it were an infobase update, and took a single newest-wins shot
+
+`InfobaseAccessType` has exactly two values and every path passed `UPDATE`, including all four thin-client
+launches. Decompiling `ResolvableRuntimeInstallationManager` shows the access type selects the version
+compatibility filter (`filterUpdateVersionCompatible` vs `filterClientLaunchVersionCompatible`), so a
+platform the EDT launch UI had selected for launching a client could be filtered out when asked for under
+`UPDATE`. Client launches now ask under `CLIENT_LAUNCH`; the infobase update path keeps `UPDATE`
+(`resolveInstallation` grew the parameter, the old overload still defaults to `UPDATE`, so
+`update_infobase`, `import_project` and the thick/designer launch paths are untouched).
+
+The second half was the single shot. `resolveByProjectAndInfobase` is newest-wins, and its compatibility
+filter goes through `getCompatibilityModeIfStarted(IV8Project)` — an empty `Optional` on a project whose
+DT model has not started, i.e. the filter silently switches off and the newest installed platform (a
+pre-release) wins. Worse, one bad pick sank the whole resolution: an installation registered in
+Preferences whose directory is gone resolved to a path that does not exist. The resolver now walks
+candidates from `findUsefulForProjectAndInfobase(..., CLIENT_LAUNCH)` (falling back to the full registry,
+then to EDT's single shot) and accepts the first whose `resolve` + `resolveExecutor` yields a `1cv8c.exe`
+that is actually on disk, recording why each loser lost. A ghost registry entry now costs one line of
+diagnostics instead of the run.
+
+There is no "pre-release" flag to filter on — `RuntimeInstallation` exposes only version, build,
+location, arch and isTraining — so the beta is de-selected by ordering: an explicit mask, then the
+EDT-stored per-project+infobase pin (read straight from `IInfobaseAccessManager`, because EDT itself drops
+the pin when the project version cannot be calculated on a cold project), then the version the infobase
+is bound to, then newest. An explicit mask keeps its old semantics exactly: EDT's own
+`resolveByVersionOrMask` answer remains the first candidate and only other builds of the same requested
+line queue behind it, so a caller's pin is never silently substituted.
+
+**Touches the live-validated `qa_run` arc — both spawn paths resolve the thin client here, so the BDD
+suite (7/7) must be re-run live before this is relied on.** Deliberately NOT extended to `launch_app`'s
+thick/designer paths: they are client launches too, but switching them would widen the re-validation
+surface beyond what the diagnosis establishes. The parameter now exists, so that is a one-token change
+later. The CompatibilityMode line was also left out of the preference chain on purpose — the only public
+route (`IV8Project → getConfiguration() → getCompatibilityMode()`) triggers a BM configuration load
+exactly on the cold-project case this fix targets.
+
+### dcs_manage create_schema (2026-07-28) — the schema was never attached to the BM, so nothing reached disk
+
+`DcsFactory.createDataCompositionSchema()` was assigned straight into `template.setTemplate(schema)`.
+`BasicTemplate.template` is a **transient, non-containment** reference — the same flags as `Role.rights`
+and `BasicForm.form` — and the schema is a SEPARATE top-object serialized into
+`Templates/<name>/Template.dcs`. So the freshly created schema was an orphan: the model accepted the
+write, `attachTopObject` was never called in any branch, and the tool reported success with no artifact.
+Exactly scenario "b" of the `rights_manage` defect (`c990eaa`), and the repo already documented the
+failure text in the `attachBootstrappedRoleDescription` javadoc.
+
+`createMainSchema` now attaches the schema as an external top-object, in the order the FQN generator
+requires: `setName` + `setTemplateType(DataCompositionSchema)` + insertion into the owner's `templates`
+list FIRST, only then `generateExternalPropertyFqn(template, BASIC_TEMPLATE__TEMPLATE)` — decompiling
+`MdTopObjectFqnGeneratorDelegate` shows it appends `capitalize(reference.getName())` to the owner's
+qualified name and throws a bare `AssertionFailedException` when that name is null, which is what a
+template outside the container chain yields. Then: BM namespace, a defensive `getTopObjectByFqn` reuse
+probe, `attachTopObject`, a re-read of the attached object from the transaction, and only THAT object
+written into the reference. The generation call is wrapped so the failure surfaces as an actionable
+message instead of a multi-line assertion dump.
+
+Four defects of the same tool that would each have produced a second round are fixed with it.
+**No force-export:** every `EdtMetadataService` mutator follows its transaction with `forceExport` plus a
+derived-data flush; the DCS path did nothing, and since the schema is its own file, exporting only the
+owner writes `Report.mdo` and leaves the schema unwritten — so `create_schema` and all three upserts now
+export the owner AND the schema FQN in one batch (new `DcsExportSupport`, a deliberate copy of the
+metadata-service plumbing rather than a hoist that would touch ~30 hot call sites).
+**No EOL guard:** the path rewrites `Report.mdo`, which the BM serializer emits as CRLF regardless of the
+file's convention; all four mutators now snapshot and restore per-file EOL, with `dcs` added to the
+managed extensions. **Duplicate `<templates>`:** the old code checked "does a schema exist", never "is
+the NAME taken", so `force_replace` only ever appended — the requested name is now matched
+case-insensitively and `force_replace` REPLACES (reuses the template, resets the schema content).
+**Empty schema:** `createDataCompositionSchema()` produces no `dataSource`, while every real `.dcs`
+carries `<dataSource><name>DataSource1</name><dataSourceType>Local</dataSourceType></dataSource>`
+(`dataSourceType` is a plain string, not an enum) — one is now seeded.
+
+The result no longer claims success blind: it reports `schemaFqn`, `schemaExternalFqn`, the expected
+`src/<Folder>/<Owner>/Templates/<Name>/Template.dcs`, whether that file actually exists, and a warning
+when it does not. A schema present in the model but missing on disk — the reported state — triggers a
+repair export and a re-probe rather than another artifact-free success. `[dcs]` diagnostics log the
+generated external FQN against its expected shape, the `getTopObjectByFqn` verdict, the export target
+list and the file probe, so a single install round confirms or refutes the fix by itself.
+
+Contract change: `force_replace=true` now replaces instead of adding, and with no same-name template it
+rebinds the owner's existing DCS template rather than creating a second one (the `template_name` default
+is materialized into the validated payload, so an explicitly requested different name is not
+recoverable downstream — fixing that properly means `normalizeDcsCreateMainSchemaPayload` must stop
+defaulting and pass null through). A same-name template of another `templateType` is refused without the
+flag and converted with it, detaching the foreign top-object from the FQN slot — destructive, but
+explicitly opt-in and log-warned. All four DCS mutators now block on the export pipeline (default 120 s)
+and can fail where they previously returned success immediately; that is the point, but it is a latency
+and failure-mode change for callers.
+
+Tests: `DcsSchemaSupportTest` (17), `DcsCreateMainSchemaRequestTest` (7),
+`DcsMainSchemaPersistenceContractTest` (21 source-contract pins on the operation order, the extraFqn
+export, the EOL guard and the honest state). First DCS tests in the repo. `attachTopObject` itself and
+the `.dcs` appearing on disk stay live-only.
+
 ### bsl_list_methods / bsl_module_exports (2026-07-28) — doc-comment `См.` / `See` links are now reported, and the incoming premise was wrong
 
 The report said "EDT resolves a doc link one hop only". **That premise is wrong, and the correction matters more
