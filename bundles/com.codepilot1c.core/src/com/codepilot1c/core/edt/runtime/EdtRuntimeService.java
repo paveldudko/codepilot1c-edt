@@ -4,8 +4,12 @@ import java.io.File;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import com._1c.g5.v8.dt.core.platform.IExtensionProject;
@@ -61,6 +65,22 @@ public class EdtRuntimeService {
             "com._1c.g5.v8.dt.platform.services.core.componentTypes.ThickClient"; //$NON-NLS-1$
     private static final String COMPONENT_TYPE_THIN_CLIENT =
             "com._1c.g5.v8.dt.platform.services.core.componentTypes.ThinClient"; //$NON-NLS-1$
+
+    /**
+     * Where the version that drove a runtime resolution came from. Same vocabulary
+     * {@code edt_launch_app} already reports in {@code runtime_source}, so every tool that surfaces a
+     * resolved runtime speaks one language.
+     */
+    public static final String RUNTIME_SOURCE_PARAM = "param"; //$NON-NLS-1$
+    public static final String RUNTIME_SOURCE_LAUNCH_CONFIG = "launch_config"; //$NON-NLS-1$
+    public static final String RUNTIME_SOURCE_AUTO = "auto"; //$NON-NLS-1$
+
+    /**
+     * Upper bound on how many installations a single thin-client resolution probes. Each probe costs a
+     * {@code resolve} + {@code resolveExecutor} round-trip, and a box with more than a handful of
+     * installed platforms does not need an exhaustive walk to find a working one.
+     */
+    private static final int MAX_RUNTIME_CANDIDATES = 8;
 
     private final EdtRuntimeGateway gateway;
     private final InfobaseLeaseGuard leaseGuard;
@@ -446,13 +466,25 @@ public class EdtRuntimeService {
      */
     private IResolvableRuntimeInstallation resolveInstallation(String versionMask, IProject project,
             InfobaseReference infobase) throws MatchingRuntimeNotFound {
+        return resolveInstallation(versionMask, project, infobase, InfobaseAccessType.UPDATE);
+    }
+
+    /**
+     * Same as {@link #resolveInstallation(String, IProject, InfobaseReference)} but with an explicit
+     * access type. {@link InfobaseAccessType} has exactly two values and they are not
+     * interchangeable — EDT runs a different version-compatibility filter for {@code UPDATE} than for
+     * {@code CLIENT_LAUNCH} — so an infobase UPDATE must ask under {@code UPDATE} and a client launch
+     * under {@code CLIENT_LAUNCH}.
+     */
+    private IResolvableRuntimeInstallation resolveInstallation(String versionMask, IProject project,
+            InfobaseReference infobase, InfobaseAccessType accessType) throws MatchingRuntimeNotFound {
         IResolvableRuntimeInstallationManager installationManager =
                 gateway.getResolvableRuntimeInstallationManager();
         if (versionMask != null && !versionMask.isBlank()) {
             return installationManager.resolveByVersionOrMask(RUNTIME_TYPE_ENTERPRISE_PLATFORM, versionMask);
         }
         return installationManager.resolveByProjectAndInfobase(RUNTIME_TYPE_ENTERPRISE_PLATFORM,
-                project, infobase, InfobaseAccessType.UPDATE);
+                project, infobase, accessType);
     }
 
     /**
@@ -488,29 +520,466 @@ public class EdtRuntimeService {
      * {@link IThinClientLauncher} / {@link #COMPONENT_TYPE_THIN_CLIENT}. Returns the binary
      * {@link File} only — downstream {@link RuntimeExecutionCommandBuilder} accepts the same
      * ENTERPRISE arg shape for either binary; only the executable path differs.</p>
+     *
+     * <p>Prefer {@link #resolveThinClient(InfobaseReference, String, IProject)} in new code: it reports
+     * which installation was picked and why the others were rejected, which a bare {@code null} cannot.</p>
      */
     public File resolveThinClientFile(InfobaseReference infobase, String versionMask) {
         return resolveThinClientFile(infobase, versionMask, null);
     }
 
     public File resolveThinClientFile(InfobaseReference infobase, String versionMask, IProject project) {
-        IRuntimeComponentManager runtimeComponentManager = gateway.getRuntimeComponentManager();
+        return resolveThinClient(infobase, versionMask, project).file();
+    }
+
+    /**
+     * What a thin-client resolution produced — and, when it produced nothing, WHY.
+     *
+     * <p>The predecessor of this record was a bare {@code File}, and both of its failure branches were
+     * invisible: one returned {@code null} without logging a single line, the other logged a warning
+     * only into the plugin's own log while the caller surfaced a generic "runtime component not
+     * resolved" string. Four blind owner-side attempts were spent on that (feedback 2026-07-03), so the
+     * resolution now always carries the version it picked, where it lives, and the full audit trail of
+     * candidates and rejection reasons.</p>
+     *
+     * @param file            the resolved {@code 1cv8c.exe}, or {@code null} when nothing resolved
+     * @param versionWithBuild full version of the picked installation ({@code 8.3.27.2074}) or {@code null}
+     * @param location        installation root URI as a string, or {@code null} when unknown
+     * @param source          what selected the version — {@link EdtRuntimeService#RUNTIME_SOURCE_PARAM},
+     *                        {@link EdtRuntimeService#RUNTIME_SOURCE_LAUNCH_CONFIG} or
+     *                        {@link EdtRuntimeService#RUNTIME_SOURCE_AUTO}
+     * @param candidatesTried human-readable label per installation that was probed, in probe order
+     * @param rejectReasons   one entry per rejected candidate, saying what disqualified it
+     */
+    public record ThinClientResolution(File file, String versionWithBuild, String location, String source,
+            List<String> candidatesTried, List<String> rejectReasons) {
+
+        public ThinClientResolution {
+            candidatesTried = candidatesTried == null ? List.of() : List.copyOf(candidatesTried);
+            rejectReasons = rejectReasons == null ? List.of() : List.copyOf(rejectReasons);
+        }
+
+        public boolean resolved() {
+            return file != null;
+        }
+
+        /**
+         * Same resolution re-labelled with the source the CALLER knows about. The service can only tell
+         * {@code param} from {@code auto}; a tool that fed the mask from a project's {@code .launch} pin
+         * knows it was {@link EdtRuntimeService#RUNTIME_SOURCE_LAUNCH_CONFIG}.
+         */
+        public ThinClientResolution withSource(String newSource) {
+            return new ThinClientResolution(file, versionWithBuild, location, newSource, candidatesTried,
+                    rejectReasons);
+        }
+
+        /** One-line description of the picked runtime, for logs and success payloads. */
+        public String describe() {
+            return (versionWithBuild == null ? "unknown version" : versionWithBuild) //$NON-NLS-1$
+                    + (location == null ? "" : " at " + location) //$NON-NLS-1$ //$NON-NLS-2$
+                    + " (source=" + (source == null ? "unknown" : source) + ")"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        }
+
+        /** Actionable failure text: what was tried and why each candidate lost. */
+        public String describeFailure() {
+            return formatResolutionFailure(candidatesTried, rejectReasons);
+        }
+    }
+
+    /**
+     * Thrown instead of a bare {@link IllegalStateException} when no installed platform yields a usable
+     * {@code 1cv8c.exe}. Carries the {@link ThinClientResolution} so a tool can put the candidate list
+     * and the rejection reasons into its own structured payload instead of only a message string.
+     */
+    public static class ThinClientNotResolvedException extends IllegalStateException {
+
+        private static final long serialVersionUID = 1L;
+
+        private final ThinClientResolution resolution;
+
+        public ThinClientNotResolvedException(String purpose, ThinClientResolution resolution) {
+            super("Thin client (1cv8c.exe) runtime component not resolved" //$NON-NLS-1$
+                    + (purpose == null || purpose.isBlank() ? "" : " — " + purpose) //$NON-NLS-1$ //$NON-NLS-2$
+                    + ". " + (resolution == null ? "" : resolution.describeFailure())); //$NON-NLS-1$ //$NON-NLS-2$
+            this.resolution = resolution;
+        }
+
+        public ThinClientResolution getResolution() {
+            return resolution;
+        }
+    }
+
+    /**
+     * Resolves the thin client and reports the resolution, never throwing. Walks the candidate
+     * installations from the most preferred to the next until one yields a {@code 1cv8c.exe} that
+     * actually exists on disk — a registered installation whose directory has been removed (a ghost
+     * entry in <em>Preferences &gt; 1C:Enterprise &gt; Runtimes</em>) therefore no longer sinks the
+     * whole resolution, it just loses its turn with a recorded reason.
+     *
+     * @param versionMask version line ({@code 8.3.27}) or exact build ({@code 8.3.27.2074}); when set it
+     *                    is a HARD constraint — a candidate outside it is rejected, never substituted
+     */
+    public ThinClientResolution resolveThinClient(InfobaseReference infobase, String versionMask, IProject project) {
+        String source = versionMask == null || versionMask.isBlank() ? RUNTIME_SOURCE_AUTO : RUNTIME_SOURCE_PARAM;
+        List<String> candidatesTried = new ArrayList<>();
+        List<String> rejectReasons = new ArrayList<>();
+        AppArch appArch = infobase != null ? infobase.getAppArch() : AppArch.AUTO;
+
+        IRuntimeComponentManager runtimeComponentManager;
+        List<IResolvableRuntimeInstallation> candidates;
         try {
-            IResolvableRuntimeInstallation resolvable = resolveInstallation(versionMask, project, infobase);
-            AppArch appArch = infobase != null ? infobase.getAppArch() : AppArch.AUTO;
-            RuntimeInstallation installation = resolvable.resolve(List.of(COMPONENT_TYPE_THIN_CLIENT), appArch);
-            ComponentExecutorInfo<ILaunchableRuntimeComponent, IThinClientLauncher> executorInfo =
-                    runtimeComponentManager.resolveExecutor(ILaunchableRuntimeComponent.class,
-                            IThinClientLauncher.class, installation, COMPONENT_TYPE_THIN_CLIENT);
-            if (executorInfo == null || executorInfo.getComponent() == null
-                    || executorInfo.getComponent().getFile() == null) {
-                return null;
-            }
-            return executorInfo.getComponent().getFile();
+            runtimeComponentManager = gateway.getRuntimeComponentManager();
+            candidates = thinClientCandidates(versionMask, project, infobase, rejectReasons);
         } catch (Exception | NoSuchMethodError e) {
-            LOG.warn("Failed to resolve thin client (possible EDT API incompatibility): " + e.getMessage(), e); //$NON-NLS-1$
+            rejectReasons.add("candidate lookup failed: " + describeThrowable(e)); //$NON-NLS-1$
+            return failedThinClientResolution(source, candidatesTried, rejectReasons, versionMask, project);
+        }
+
+        for (IResolvableRuntimeInstallation resolvable : candidates) {
+            String label = describeResolvable(resolvable);
+            RuntimeInstallation installation;
+            try {
+                installation = resolvable.resolve(List.of(COMPONENT_TYPE_THIN_CLIENT), appArch);
+            } catch (Exception | NoSuchMethodError e) {
+                candidatesTried.add(label);
+                rejectReasons.add(label + ": no thin-client component (" + describeThrowable(e) + ")"); //$NON-NLS-1$ //$NON-NLS-2$
+                continue;
+            }
+            String versionWithBuild = installation == null ? null : installation.getVersionWithBuild();
+            String location = installation == null || installation.getLocation() == null ? null
+                    : installation.getLocation().toString();
+            label = describeInstallation(versionWithBuild, location, label);
+            candidatesTried.add(label);
+            if (versionMask != null && !versionMask.isBlank()
+                    && !matchesVersionLine(versionWithBuild, versionMask)) {
+                rejectReasons.add(label + ": outside the requested version " + versionMask); //$NON-NLS-1$
+                continue;
+            }
+            File file;
+            try {
+                ComponentExecutorInfo<ILaunchableRuntimeComponent, IThinClientLauncher> executorInfo =
+                        runtimeComponentManager.resolveExecutor(ILaunchableRuntimeComponent.class,
+                                IThinClientLauncher.class, installation, COMPONENT_TYPE_THIN_CLIENT);
+                file = executorInfo == null || executorInfo.getComponent() == null ? null
+                        : executorInfo.getComponent().getFile();
+            } catch (Exception | NoSuchMethodError e) {
+                rejectReasons.add(label + ": resolveExecutor failed (" + describeThrowable(e) + ")"); //$NON-NLS-1$ //$NON-NLS-2$
+                continue;
+            }
+            if (file == null) {
+                rejectReasons.add(label + ": the thin-client launcher reported no executable path"); //$NON-NLS-1$
+                continue;
+            }
+            if (!file.isFile()) {
+                rejectReasons.add(label + ": 1cv8c.exe missing on disk at " + file.getAbsolutePath() //$NON-NLS-1$
+                        + " (stale entry in Preferences > 1C:Enterprise > Runtimes)"); //$NON-NLS-1$
+                continue;
+            }
+            ThinClientResolution resolution = new ThinClientResolution(file, versionWithBuild, location, source,
+                    candidatesTried, rejectReasons);
+            LOG.info("Resolved thin client %s -> %s (project=%s, requested=%s, candidates tried=%d, rejected=%d)", //$NON-NLS-1$
+                    resolution.describe(), file.getAbsolutePath(),
+                    project == null ? "<none>" : project.getName(), //$NON-NLS-1$
+                    versionMask == null ? "<auto>" : versionMask, //$NON-NLS-1$
+                    Integer.valueOf(candidatesTried.size()), Integer.valueOf(rejectReasons.size()));
+            return resolution;
+        }
+        return failedThinClientResolution(source, candidatesTried, rejectReasons, versionMask, project);
+    }
+
+    /**
+     * Logs and packages an exhausted thin-client resolution. The whole point of this method existing is
+     * that BOTH failure branches are loud: the previous code had one branch that returned {@code null}
+     * silently, so a resolve-fail was indistinguishable from a missing binary in the logs.
+     */
+    private static ThinClientResolution failedThinClientResolution(String source, List<String> candidatesTried,
+            List<String> rejectReasons, String versionMask, IProject project) {
+        ThinClientResolution resolution =
+                new ThinClientResolution(null, null, null, source, candidatesTried, rejectReasons);
+        LOG.warn("Failed to resolve thin client (project=%s, requested=%s): %s", //$NON-NLS-1$
+                project == null ? "<none>" : project.getName(), //$NON-NLS-1$
+                versionMask == null ? "<auto>" : versionMask, resolution.describeFailure()); //$NON-NLS-1$
+        return resolution;
+    }
+
+    /**
+     * Resolves the thin client or fails loud with the full candidate audit trail.
+     *
+     * @param purpose why this call needs a thin client, appended to the failure message
+     */
+    private ThinClientResolution requireThinClient(InfobaseReference infobase, String versionMask, IProject project,
+            String purpose) {
+        ThinClientResolution resolution = resolveThinClient(infobase, versionMask, project);
+        if (!resolution.resolved()) {
+            throw new ThinClientNotResolvedException(purpose, resolution);
+        }
+        return resolution;
+    }
+
+    /**
+     * Candidate installations for a THIN-CLIENT launch, most preferred first.
+     *
+     * <p>Two departures from what every path used to do (a single
+     * {@code resolveByProjectAndInfobase(..., UPDATE)} shot):</p>
+     * <ol>
+     * <li>the access type is {@link InfobaseAccessType#CLIENT_LAUNCH}, not {@code UPDATE}. The enum has
+     * exactly two values and a client launch is not an update: EDT applies a different version
+     * compatibility filter per access type, so a pin stored by the EDT launch UI for launching a client
+     * could be filtered away when asked for under {@code UPDATE};</li>
+     * <li>the result is a LIST. EDT's single-shot resolution is newest-wins, and its compatibility
+     * filter is silently disabled for a project whose DT model has not started (the compatibility mode
+     * comes back as an empty {@code Optional}), so the newest installed platform — typically a
+     * pre-release — wins by default and a ghost registry entry kills the resolution outright.</li>
+     * </ol>
+     *
+     * <p>{@link RuntimeInstallation} carries no "pre-release" flag (only version / build / location /
+     * arch / isTraining), so a beta can only be de-selected by policy: an explicit mask first, then the
+     * EDT-stored per-project+infobase pin, then the version the infobase itself is bound to, then
+     * newest.</p>
+     *
+     * <p>An explicit {@code versionMask} keeps its old semantics unchanged: EDT's own
+     * {@code resolveByVersionOrMask} answer stays the FIRST candidate (it deliberately ignores
+     * project/infobase compatibility, which is what makes a caller pin a pin), and the walk only adds
+     * other builds of the same requested line behind it. Nothing outside the mask is ever tried.</p>
+     */
+    private List<IResolvableRuntimeInstallation> thinClientCandidates(String versionMask, IProject project,
+            InfobaseReference infobase, List<String> rejectReasons) throws MatchingRuntimeNotFound {
+        IResolvableRuntimeInstallationManager installationManager =
+                gateway.getResolvableRuntimeInstallationManager();
+        List<IResolvableRuntimeInstallation> pool = new ArrayList<>();
+        try {
+            List<IResolvableRuntimeInstallation> useful = installationManager.findUsefulForProjectAndInfobase(
+                    RUNTIME_TYPE_ENTERPRISE_PLATFORM, project, infobase, InfobaseAccessType.CLIENT_LAUNCH);
+            if (useful != null) {
+                pool.addAll(useful);
+            }
+        } catch (Exception | NoSuchMethodError e) {
+            LOG.warn("findUsefulForProjectAndInfobase(CLIENT_LAUNCH) failed; falling back to the full runtime" //$NON-NLS-1$
+                    + " registry: %s", describeThrowable(e)); //$NON-NLS-1$
+        }
+        if (pool.isEmpty()) {
+            Collection<IResolvableRuntimeInstallation> all =
+                    installationManager.getAll(RUNTIME_TYPE_ENTERPRISE_PLATFORM);
+            if (all != null) {
+                pool.addAll(all);
+            }
+        }
+        boolean pinned = versionMask != null && !versionMask.isBlank();
+        if (pool.isEmpty()) {
+            // Nothing enumerable at all: fall back to EDT's own single-shot resolution so this is never
+            // worse than the behaviour it replaces (and so MatchingRuntimeNotFound still surfaces).
+            return List.of(resolveInstallation(versionMask, project, infobase, InfobaseAccessType.CLIENT_LAUNCH));
+        }
+        String pinnedLine = readSelectedInstallationMask(project, infobase);
+        String infobaseVersion = infobase == null ? null : infobase.getVersion();
+        pool.sort(Comparator
+                .comparingInt((IResolvableRuntimeInstallation candidate) -> runtimePreferenceRank(
+                        resolvableVersionKey(candidate), versionMask, pinnedLine, infobaseVersion))
+                .thenComparing(EdtRuntimeService::resolvableVersionKey,
+                        EdtRuntimeService::compareVersionsDescending));
+        if (!pinned) {
+            return capCandidates(pool);
+        }
+        List<IResolvableRuntimeInstallation> masked = new ArrayList<>();
+        try {
+            masked.add(installationManager.resolveByVersionOrMask(RUNTIME_TYPE_ENTERPRISE_PLATFORM, versionMask));
+        } catch (MatchingRuntimeNotFound e) {
+            rejectReasons.add("no installed platform matches the requested version " + versionMask //$NON-NLS-1$
+                    + " (" + describeThrowable(e) + ")"); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        for (IResolvableRuntimeInstallation candidate : pool) {
+            if (!masked.contains(candidate)
+                    && relatedVersionLine(resolvableVersionKey(candidate), versionMask)) {
+                masked.add(candidate);
+            }
+        }
+        return capCandidates(masked);
+    }
+
+    private static List<IResolvableRuntimeInstallation> capCandidates(List<IResolvableRuntimeInstallation> pool) {
+        return pool.size() <= MAX_RUNTIME_CANDIDATES ? pool
+                : new ArrayList<>(pool.subList(0, MAX_RUNTIME_CANDIDATES));
+    }
+
+    /**
+     * Version mask of the installation EDT has stored as the selected one for this project+infobase
+     * pair, or {@code null}. Read straight from {@code IInfobaseAccessManager} on purpose: EDT's own
+     * lookup discards the pin when the project's version cannot be calculated (a cold DT project), and
+     * that is exactly the situation in which honouring the owner's pin matters most.
+     */
+    private String readSelectedInstallationMask(IProject project, InfobaseReference infobase) {
+        if (project == null || infobase == null) {
             return null;
         }
+        try {
+            Optional<IResolvableRuntimeInstallation> pinned =
+                    gateway.getInfobaseAccessManager().loadSelectedInstallation(project, infobase);
+            return pinned.map(IResolvableRuntimeInstallation::getVersionMask).orElse(null);
+        } catch (Exception | NoSuchMethodError e) {
+            LOG.warn("Failed to read the EDT-stored selected installation for project %s: %s", //$NON-NLS-1$
+                    project.getName(), describeThrowable(e));
+            return null;
+        }
+    }
+
+    /**
+     * Preference rank of a candidate version; lower wins. Policy stand-in for the "pre-release" flag the
+     * EDT API does not expose — see {@link #thinClientCandidates}. Pure and package-visible for tests.
+     */
+    static int runtimePreferenceRank(String versionWithBuild, String versionMask, String pinnedVersion,
+            String infobaseVersion) {
+        if (relatedVersionLine(versionWithBuild, versionMask)) {
+            return 0;
+        }
+        if (relatedVersionLine(versionWithBuild, pinnedVersion)) {
+            return 1;
+        }
+        if (relatedVersionLine(versionWithBuild, infobaseVersion)) {
+            return 2;
+        }
+        return 3;
+    }
+
+    /**
+     * {@code true} when {@code versionWithBuild} is exactly {@code lineOrBuild} or a build inside that
+     * line ({@code 8.3.27.2074} is inside {@code 8.3.27}). Directional: used as the HARD filter for an
+     * explicit mask, so {@code 8.3.27} does NOT satisfy a request for {@code 8.3.27.2074}.
+     */
+    static boolean matchesVersionLine(String versionWithBuild, String lineOrBuild) {
+        if (versionWithBuild == null || lineOrBuild == null) {
+            return false;
+        }
+        String version = versionWithBuild.trim();
+        String line = lineOrBuild.trim();
+        if (version.isEmpty() || line.isEmpty()) {
+            return false;
+        }
+        return version.equals(line) || version.startsWith(line + "."); //$NON-NLS-1$
+    }
+
+    /**
+     * Symmetric variant of {@link #matchesVersionLine} used for ORDERING only: a candidate advertising
+     * the line {@code 8.3.27} and a pin naming the build {@code 8.3.27.2074} are the same intent, and
+     * for ranking purposes either containment direction counts.
+     */
+    static boolean relatedVersionLine(String left, String right) {
+        return matchesVersionLine(left, right) || matchesVersionLine(right, left);
+    }
+
+    /**
+     * Compares dotted 1C versions newest-first. Missing segments count as zero
+     * ({@code 8.3.27} &lt; {@code 8.3.27.1}); a non-numeric segment falls back to a case-insensitive
+     * lexicographic comparison so an unexpected label can never blow up a resolution. Pure and
+     * package-visible for tests.
+     */
+    static int compareVersionsDescending(String left, String right) {
+        if (left == null && right == null) {
+            return 0;
+        }
+        if (left == null) {
+            return 1;
+        }
+        if (right == null) {
+            return -1;
+        }
+        String[] leftParts = left.trim().split("\\."); //$NON-NLS-1$
+        String[] rightParts = right.trim().split("\\."); //$NON-NLS-1$
+        int size = Math.max(leftParts.length, rightParts.length);
+        for (int i = 0; i < size; i++) {
+            String leftPart = i < leftParts.length ? leftParts[i] : "0"; //$NON-NLS-1$
+            String rightPart = i < rightParts.length ? rightParts[i] : "0"; //$NON-NLS-1$
+            Integer leftNumber = parseSegment(leftPart);
+            Integer rightNumber = parseSegment(rightPart);
+            int comparison;
+            if (leftNumber != null && rightNumber != null) {
+                comparison = leftNumber.compareTo(rightNumber);
+            } else {
+                comparison = leftPart.compareToIgnoreCase(rightPart);
+            }
+            if (comparison != 0) {
+                return -comparison;
+            }
+        }
+        return 0;
+    }
+
+    private static Integer parseSegment(String segment) {
+        try {
+            return Integer.valueOf(Integer.parseInt(segment));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Renders the "what was tried and why it lost" half of a failed resolution. Pure and
+     * package-visible so the exact wording the caller sees is covered by a unit test.
+     */
+    static String formatResolutionFailure(List<String> candidatesTried, List<String> rejectReasons) {
+        boolean noCandidates = candidatesTried == null || candidatesTried.isEmpty();
+        boolean noReasons = rejectReasons == null || rejectReasons.isEmpty();
+        if (noCandidates && noReasons) {
+            return "No platform installation was even considered: the EDT runtime registry returned no " //$NON-NLS-1$
+                    + "candidate for this project and infobase (check Preferences > 1C:Enterprise > Runtimes)."; //$NON-NLS-1$
+        }
+        StringBuilder text = new StringBuilder();
+        if (noCandidates) {
+            text.append("No platform installation could be probed."); //$NON-NLS-1$
+        } else {
+            text.append("Tried ").append(candidatesTried.size()).append(" installation(s): ") //$NON-NLS-1$ //$NON-NLS-2$
+                    .append(String.join("; ", candidatesTried)).append('.'); //$NON-NLS-1$
+        }
+        if (!noReasons) {
+            text.append(" Rejected: ").append(String.join("; ", rejectReasons)).append('.'); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        return text.toString();
+    }
+
+    /** Best-effort label for a candidate before it has been resolved to a concrete installation. */
+    private static String describeResolvable(IResolvableRuntimeInstallation resolvable) {
+        if (resolvable == null) {
+            return "<null candidate>"; //$NON-NLS-1$
+        }
+        try {
+            String mask = resolvable.getVersionMask();
+            if (mask != null && !mask.isBlank()) {
+                return mask;
+            }
+            String name = resolvable.getName();
+            return name == null || name.isBlank() ? resolvable.toString() : name;
+        } catch (Exception | NoSuchMethodError e) {
+            return "<unreadable candidate: " + describeThrowable(e) + ">"; //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    /** Sort key of a candidate: its version mask, which is what the preference policy ranks. */
+    private static String resolvableVersionKey(IResolvableRuntimeInstallation resolvable) {
+        if (resolvable == null) {
+            return ""; //$NON-NLS-1$
+        }
+        try {
+            String mask = resolvable.getVersionMask();
+            return mask == null ? "" : mask; //$NON-NLS-1$
+        } catch (Exception | NoSuchMethodError e) {
+            return ""; //$NON-NLS-1$
+        }
+    }
+
+    private static String describeInstallation(String versionWithBuild, String location, String fallback) {
+        if (versionWithBuild == null || versionWithBuild.isBlank()) {
+            return fallback;
+        }
+        return location == null || location.isBlank() ? versionWithBuild
+                : versionWithBuild + " (" + location + ")"; //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    private static String describeThrowable(Throwable t) {
+        if (t == null) {
+            return "unknown"; //$NON-NLS-1$
+        }
+        String message = t.getMessage();
+        return message == null || message.isBlank() ? t.getClass().getSimpleName()
+                : t.getClass().getSimpleName() + ": " + message; //$NON-NLS-1$
     }
 
     public RuntimeExecutionCommandBuilder buildTestManagerCommand(String projectName, File epfPath,
@@ -541,11 +1010,8 @@ public class EdtRuntimeService {
         // pre-FeaturePlayer with descendants=0 and a zero-byte va.log (manual repro Test D in
         // codepilot1c-feedback/2026-05-28-qa-run-thin-client-breakthrough.md). Both qa_run spawn
         // paths (TestManager and SingleClient) flow through here, so both must use thin.
-        File clientFile = resolveThinClientFile(infobase, versionMask, gateway.resolveProject(projectName));
-        if (clientFile == null) {
-            throw new IllegalStateException(
-                    "Thin client (1cv8c.exe) runtime component not resolved — Vanessa-Automation requires it"); //$NON-NLS-1$
-        }
+        File clientFile = requireThinClient(infobase, versionMask, gateway.resolveProject(projectName),
+                "Vanessa-Automation requires it").file(); //$NON-NLS-1$
 
         RuntimeExecutionCommandBuilder builder = new RuntimeExecutionCommandBuilder(clientFile,
                 ThickClientMode.ENTERPRISE);
@@ -600,11 +1066,8 @@ public class EdtRuntimeService {
         // pre-FeaturePlayer with descendants=0 and a zero-byte va.log (manual repro Test D in
         // codepilot1c-feedback/2026-05-28-qa-run-thin-client-breakthrough.md). Both qa_run spawn
         // paths (TestManager and SingleClient) flow through here, so both must use thin.
-        File clientFile = resolveThinClientFile(infobase, versionMask, gateway.resolveProject(projectName));
-        if (clientFile == null) {
-            throw new IllegalStateException(
-                    "Thin client (1cv8c.exe) runtime component not resolved — Vanessa-Automation requires it"); //$NON-NLS-1$
-        }
+        File clientFile = requireThinClient(infobase, versionMask, gateway.resolveProject(projectName),
+                "Vanessa-Automation requires it").file(); //$NON-NLS-1$
 
         RuntimeExecutionCommandBuilder builder = new RuntimeExecutionCommandBuilder(clientFile,
                 ThickClientMode.ENTERPRISE);
@@ -651,11 +1114,8 @@ public class EdtRuntimeService {
     public RuntimeExecutionCommandBuilder buildTestClientCommand(String projectName, Integer port,
             String testClientId, File logFile, String versionMask, AccessSettings accessSettings) {
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
-        File clientFile = resolveThinClientFile(infobase, versionMask, gateway.resolveProject(projectName));
-        if (clientFile == null) {
-            throw new IllegalStateException(
-                    "Thin client (1cv8c.exe) runtime component not resolved — required to launch the Vanessa TestClient"); //$NON-NLS-1$
-        }
+        File clientFile = requireThinClient(infobase, versionMask, gateway.resolveProject(projectName),
+                "required to launch the Vanessa TestClient").file(); //$NON-NLS-1$
         RuntimeExecutionCommandBuilder builder = new RuntimeExecutionCommandBuilder(clientFile,
                 ThickClientMode.ENTERPRISE);
         if (infobase.getConnectionString() == null) {
@@ -694,19 +1154,51 @@ public class EdtRuntimeService {
     public RuntimeExecutionCommandBuilder buildUnitTestCommand(String projectName, File configPath, File logFile,
                                                                String versionMask,
                                                                AccessSettings explicitAccessSettings) {
+        return buildUnitTestCommandInternal(projectName, configPath, logFile, versionMask, explicitAccessSettings)
+                .builder();
+    }
+
+    /**
+     * A ready-to-start YAxUnit thin-client process together with the runtime it resolved to.
+     *
+     * <p>Deliberately made of plain JDK types: {@code yaxunit_run} needs the resolved runtime for its
+     * {@code runtime_used} envelope field, and handing it a {@link ProcessBuilder} instead of an EDT
+     * command builder keeps the tool (and its unit tests) free of EDT runtime classes.</p>
+     */
+    public record UnitTestLaunch(ProcessBuilder processBuilder, ThinClientResolution runtime) {
+    }
+
+    /**
+     * Same as {@link #buildUnitTestCommand(String, File, File, String, AccessSettings)} but also reports
+     * WHICH platform installation the thin client came from, so the caller can surface it (including on
+     * a {@code dry_run}, the only cheap diagnostic entry point into this resolution).
+     *
+     * @throws ThinClientNotResolvedException when no installed platform yields a usable
+     *         {@code 1cv8c.exe}; the exception carries the candidate audit trail
+     */
+    public UnitTestLaunch buildUnitTestLaunch(String projectName, File configPath, File logFile,
+                                              String versionMask, AccessSettings explicitAccessSettings) {
+        UnitTestCommand command = buildUnitTestCommandInternal(projectName, configPath, logFile, versionMask,
+                explicitAccessSettings);
+        return new UnitTestLaunch(command.builder().toProcessBuilder(), command.runtime());
+    }
+
+    private record UnitTestCommand(RuntimeExecutionCommandBuilder builder, ThinClientResolution runtime) {
+    }
+
+    private UnitTestCommand buildUnitTestCommandInternal(String projectName, File configPath, File logFile,
+                                                         String versionMask,
+                                                         AccessSettings explicitAccessSettings) {
         if (configPath == null) {
             throw new IllegalArgumentException("YAxUnit config path is required"); //$NON-NLS-1$
         }
         InfobaseReference infobase = resolveDefaultInfobase(projectName);
         // Thin client (1cv8c.exe) is this plugin's validated launch surface on EDT 2025.2
         // (resolveExecutor path). YAxUnit runs fine in-process on it; thick is unnecessary.
-        File clientFile = resolveThinClientFile(infobase, versionMask, gateway.resolveProject(projectName));
-        if (clientFile == null) {
-            throw new IllegalStateException(
-                    "Thin client (1cv8c.exe) runtime component not resolved — YAxUnit requires a 1C client"); //$NON-NLS-1$
-        }
+        ThinClientResolution runtime = requireThinClient(infobase, versionMask,
+                gateway.resolveProject(projectName), "YAxUnit requires a 1C client"); //$NON-NLS-1$
 
-        RuntimeExecutionCommandBuilder builder = new RuntimeExecutionCommandBuilder(clientFile,
+        RuntimeExecutionCommandBuilder builder = new RuntimeExecutionCommandBuilder(runtime.file(),
                 ThickClientMode.ENTERPRISE);
         if (infobase.getConnectionString() == null) {
             throw new IllegalStateException("Infobase connection string not available"); //$NON-NLS-1$
@@ -723,7 +1215,7 @@ public class EdtRuntimeService {
         if (logFile != null) {
             builder.logTo(logFile, true);
         }
-        return builder;
+        return new UnitTestCommand(builder, runtime);
     }
 
     public RuntimeExecutionCommandBuilder buildUpdateCommand(String projectName, File logFile) {
@@ -807,7 +1299,10 @@ public class EdtRuntimeService {
         File clientFile;
         ThickClientMode clientMode;
         if (requested.equalsIgnoreCase("thin")) { //$NON-NLS-1$
-            clientFile = resolveThinClientFile(infobase, runtimeVersionMask, project);
+            // Fails loud with the candidate audit trail instead of the generic "not resolved for mode"
+            // below — the thin path is the one that regularly loses to a ghost registry entry.
+            clientFile = requireThinClient(infobase, runtimeVersionMask, project,
+                    "launch mode 'thin' needs 1cv8c.exe").file(); //$NON-NLS-1$
             clientMode = ThickClientMode.ENTERPRISE;
         } else if (requested.equalsIgnoreCase("designer")) { //$NON-NLS-1$
             clientFile = resolveThickClientInfo(infobase, runtimeVersionMask, project).component().getFile();

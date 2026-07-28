@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 import org.eclipse.core.resources.IWorkspaceRoot;
 import org.eclipse.core.resources.ResourcesPlugin;
 
+import com.codepilot1c.core.edt.runtime.EdtProjectResolver;
 import com.codepilot1c.core.edt.runtime.EdtRuntimeService;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
@@ -151,13 +152,17 @@ public class YaxunitRunTool extends AbstractTool {
                   "type": "integer",
                   "description": "Таймаут прогона в секундах (default 300). По истечении дерево процессов убивается."
                 },
+                "runtime_version": {
+                  "type": "string",
+                  "description": "Версия платформы 1С для запуска клиента: линия ('8.3.27' — новейший установленный билд линии) или точный билд ('8.3.27.2074'). Без неё берётся pin из .launch проекта, иначе auto. Синоним: version_mask. Что реально выбрано — в runtime_used (возвращается и при dry_run)."
+                },
                 "version_mask": {
                   "type": "string",
-                  "description": "Маска версии платформы для резолва клиента (необязательно)."
+                  "description": "Синоним runtime_version (историческое имя). При указании обоих побеждает runtime_version."
                 },
                 "dry_run": {
                   "type": "boolean",
-                  "description": "Собрать config.json и команду без запуска процесса."
+                  "description": "Собрать config.json и команду без запуска процесса. Рантайм при этом всё равно резолвится — это самый дешёвый способ проверить, какой клиент будет запущен."
                 }
               },
               "required": ["project_name"]
@@ -166,14 +171,21 @@ public class YaxunitRunTool extends AbstractTool {
 
     private final EdtRuntimeService runtimeService;
     private final ProcessStarter processStarter;
+    private final EdtProjectResolver projectResolver;
 
     public YaxunitRunTool() {
         this(new EdtRuntimeService(), ProcessBuilder::start);
     }
 
     public YaxunitRunTool(EdtRuntimeService runtimeService, ProcessStarter processStarter) {
+        this(runtimeService, processStarter, new EdtProjectResolver());
+    }
+
+    public YaxunitRunTool(EdtRuntimeService runtimeService, ProcessStarter processStarter,
+            EdtProjectResolver projectResolver) {
         this.runtimeService = runtimeService;
         this.processStarter = processStarter;
+        this.projectResolver = projectResolver;
     }
 
     @Override
@@ -204,9 +216,32 @@ public class YaxunitRunTool extends AbstractTool {
             if (timeoutSeconds <= 0) {
                 return ToolResult.failure("timeout_s must be a positive integer"); //$NON-NLS-1$
             }
-            String versionMask = asOptionalString(parameters == null ? null : parameters.get("version_mask")); //$NON-NLS-1$
+            // runtime_version is the fleet-wide name (launch_app / update_infobase / connect_infobase all
+            // use it); version_mask was this tool's own historical spelling and stays a synonym, because
+            // the divergence itself was a trap for the calling model.
+            String requestedVersion = asOptionalString(parameters == null ? null
+                    : parameters.get("runtime_version")); //$NON-NLS-1$
+            String legacyVersionMask = asOptionalString(parameters == null ? null
+                    : parameters.get("version_mask")); //$NON-NLS-1$
+            String ignoredVersionMask = null;
+            if (requestedVersion == null) {
+                requestedVersion = legacyVersionMask;
+            } else if (legacyVersionMask != null && !legacyVersionMask.equals(requestedVersion)) {
+                ignoredVersionMask = legacyVersionMask;
+                LOG.warn("[%s] yaxunit_run: both runtime_version=%s and version_mask=%s given; using" //$NON-NLS-1$
+                        + " runtime_version", opId, requestedVersion, legacyVersionMask); //$NON-NLS-1$
+            }
 
             File workspaceRoot = getWorkspaceRoot();
+            // Runtime pin priority: explicit param > the project's .launch pin (USE_AUTO=false) >
+            // project+infobase-aware auto-resolution. Same order edt_launch_app applies, so the two
+            // tools cannot resolve to different platforms for the same project.
+            String pinnedVersion = requestedVersion != null ? null
+                    : resolvePinnedRuntimeVersion(opId, projectName, workspaceRoot);
+            String versionMask = requestedVersion != null ? requestedVersion : pinnedVersion;
+            String runtimeSource = requestedVersion != null ? EdtRuntimeService.RUNTIME_SOURCE_PARAM
+                    : (pinnedVersion != null ? EdtRuntimeService.RUNTIME_SOURCE_LAUNCH_CONFIG
+                            : EdtRuntimeService.RUNTIME_SOURCE_AUTO);
             File runDir = buildRunDirectory(workspaceRoot, opId);
             File configFile = new File(runDir, "config.json"); //$NON-NLS-1$
             File junitFile = new File(runDir, JUNIT_REPORT_NAME);
@@ -223,15 +258,19 @@ public class YaxunitRunTool extends AbstractTool {
                 EdtRuntimeService.AccessSettings access = resolveAccessSettings(opId, parameters);
                 // onecLog gets the 1C client's own /Out log (builder.logTo); launchLog gets the OS
                 // process stdout. Keeping them separate avoids interleaved double-writes.
-                var builder = runtimeService.buildUnitTestCommand(projectName, configFile, onecLog, versionMask,
-                        access);
-                ProcessBuilder processBuilder = builder.toProcessBuilder();
+                EdtRuntimeService.UnitTestLaunch launch = runtimeService.buildUnitTestLaunch(projectName,
+                        configFile, onecLog, versionMask, access);
+                EdtRuntimeService.ThinClientResolution runtime = relabel(launch.runtime(), runtimeSource);
+                ProcessBuilder processBuilder = launch.processBuilder();
                 processBuilder.directory(runDir);
                 processBuilder.redirectErrorStream(true);
                 processBuilder.redirectOutput(ProcessBuilder.Redirect.appendTo(launchLog));
 
                 JsonObject result = baseResult(opId, projectName, runDir, configFile, junitFile, launchLog);
                 result.addProperty("onec_log_path", onecLog.getAbsolutePath()); //$NON-NLS-1$
+                addRuntimeUsed(result, runtime, requestedVersion, ignoredVersionMask);
+                LOG.info("[%s] yaxunit_run runtime: %s", opId, //$NON-NLS-1$
+                        runtime == null ? "unknown" : runtime.describe()); //$NON-NLS-1$
                 JsonObject filter = filterJson(parameters);
                 result.add("filter", filter); //$NON-NLS-1$
                 boolean filterPresent = !filter.entrySet().isEmpty();
@@ -272,6 +311,18 @@ public class YaxunitRunTool extends AbstractTool {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return ToolResult.failure("yaxunit_run interrupted"); //$NON-NLS-1$
+            } catch (EdtRuntimeService.ThinClientNotResolvedException e) {
+                // The one failure the caller could previously only see as a generic sentence. Report the
+                // structured audit trail (what was tried, why each candidate lost) instead — this is the
+                // whole reason the resolution became a record.
+                JsonObject failure = baseResult(opId, projectName, runDir, configFile, junitFile, launchLog);
+                failure.addProperty("status", "runtime_not_resolved"); //$NON-NLS-1$ //$NON-NLS-2$
+                failure.addProperty("reason", "thin_client_not_resolved"); //$NON-NLS-1$ //$NON-NLS-2$
+                failure.addProperty("message", e.getMessage()); //$NON-NLS-1$
+                addRuntimeUsed(failure, relabel(e.getResolution(), runtimeSource), requestedVersion,
+                        ignoredVersionMask);
+                LOG.warn("[%s] yaxunit_run runtime not resolved: %s", opId, e.getMessage()); //$NON-NLS-1$
+                return ToolResult.failure(pretty(failure));
             } catch (RuntimeException e) {
                 LOG.warn("[%s] yaxunit_run failure: %s", opId, e.getMessage()); //$NON-NLS-1$
                 return ToolResult.failure("yaxunit_run failed: " + e.getMessage()); //$NON-NLS-1$
@@ -309,6 +360,74 @@ public class YaxunitRunTool extends AbstractTool {
             config.put("filter", filter); //$NON-NLS-1$
         }
         return new GsonBuilder().setPrettyPrinting().create().toJson(config);
+    }
+
+    /**
+     * Writes the {@code runtime_used} block: which platform actually got launched, where it came from,
+     * and — whether the resolution succeeded or not — the candidates that were probed with the reason
+     * each rejected one lost.
+     *
+     * <p>Present on EVERY outcome including {@code dry_run}, because a dry run is the only cheap way to
+     * ask "which client would you start?" without spending a real 300-second run. Package-visible so the
+     * payload shape is unit-tested.</p>
+     */
+    static void addRuntimeUsed(JsonObject result, EdtRuntimeService.ThinClientResolution runtime,
+            String requestedVersion, String ignoredVersionMask) {
+        JsonObject runtimeUsed = new JsonObject();
+        runtimeUsed.addProperty("version", //$NON-NLS-1$
+                runtime == null || runtime.versionWithBuild() == null ? "" : runtime.versionWithBuild()); //$NON-NLS-1$
+        runtimeUsed.addProperty("location", //$NON-NLS-1$
+                runtime == null || runtime.location() == null ? "" : runtime.location()); //$NON-NLS-1$
+        runtimeUsed.addProperty("source", //$NON-NLS-1$
+                runtime == null || runtime.source() == null ? "" : runtime.source()); //$NON-NLS-1$
+        runtimeUsed.addProperty("requested", requestedVersion == null ? "" : requestedVersion); //$NON-NLS-1$ //$NON-NLS-2$
+        if (runtime != null && runtime.file() != null) {
+            runtimeUsed.addProperty("binary", runtime.file().getAbsolutePath()); //$NON-NLS-1$
+        }
+        if (ignoredVersionMask != null) {
+            runtimeUsed.addProperty("ignored_version_mask", ignoredVersionMask); //$NON-NLS-1$
+        }
+        if (runtime != null && !runtime.candidatesTried().isEmpty()) {
+            runtimeUsed.add("candidates_tried", toJsonArray(runtime.candidatesTried())); //$NON-NLS-1$
+        }
+        if (runtime != null && !runtime.rejectReasons().isEmpty()) {
+            runtimeUsed.add("reject_reasons", toJsonArray(runtime.rejectReasons())); //$NON-NLS-1$
+        }
+        result.add("runtime_used", runtimeUsed); //$NON-NLS-1$
+    }
+
+    private static JsonArray toJsonArray(List<String> values) {
+        JsonArray array = new JsonArray();
+        values.forEach(array::add);
+        return array;
+    }
+
+    /**
+     * Re-labels a service-level resolution with the source THIS tool derived. {@link EdtRuntimeService}
+     * can only distinguish an explicit mask from auto-resolution; only the tool knows the mask came from
+     * the project's {@code .launch} pin. Keeps the logged {@code describe()} and the envelope in sync.
+     */
+    private static EdtRuntimeService.ThinClientResolution relabel(
+            EdtRuntimeService.ThinClientResolution runtime, String runtimeSource) {
+        return runtime == null ? null : runtime.withSource(runtimeSource);
+    }
+
+    /**
+     * Runtime version pinned in the project's {@code .launch} configuration, or {@code null}. Inherited
+     * so an environment owner's explicit pin wins over "newest installed platform" — auto-resolution
+     * happily picks a pre-release build, and unlike {@code launch_app} this tool never used to look at
+     * the pin at all. Best-effort: never throws, never blocks the run.
+     */
+    private String resolvePinnedRuntimeVersion(String opId, String projectName, File workspaceRoot) {
+        if (projectResolver == null || workspaceRoot == null) {
+            return null;
+        }
+        try {
+            return projectResolver.resolvePinnedRuntimeVersion(projectName, workspaceRoot);
+        } catch (RuntimeException e) {
+            LOG.warn("[%s] yaxunit_run: could not read the .launch runtime pin: %s", opId, e.getMessage()); //$NON-NLS-1$
+            return null;
+        }
     }
 
     private static JsonObject filterJson(Map<String, Object> parameters) {
