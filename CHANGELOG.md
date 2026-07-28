@@ -109,7 +109,11 @@ Mechanics: the decision is a pure `static Verdict classify(report, outcome, filt
 (`record Verdict(status, reason, message, ok)`); `buildResult` only renders it and picks the channel.
 `EdtRuntimeService.readInfobaseEqualityState` is read in preflight (best-effort, never throws) and reported
 as `equality_state` on every run — including green ones, where it is the only cheap signal that the tests
-ran against stale code; NOT_EQUAL/LOADING also raises a `preflight_warnings` entry. `getDescription()` and
+ran against stale code; NOT_EQUAL/LOADING also raises a `preflight_warnings` entry.
+**Read `equality_state` on every run, not only when something looks wrong.** A green run against a stale
+infobase is the one failure mode this tool cannot detect for you: the tests really did pass, just not
+against the code you just wrote. `equality_state` is the cheapest available proof that they did — checking
+it always is strictly better than reaching for `get_infobase_sync_state` after a result looks suspicious. `getDescription()` and
 the schema now carry the input decision ("run update_infobase after editing .bsl") instead of output-format
 prose; the empty-log detail moved to `resources/knowledge/edt-gotchas.md`.
 
@@ -156,7 +160,13 @@ a thin client (`1cv8c`), it carries **our** `RunUnitTests=` startup parameter (a
 does), and its command line references **this** infobase (`matchesIb`, boundary-checked). Anything that
 cannot be attributed — a server infobase, an unresolved association, or an unreadable command line because
 WMI is unavailable — is reported loudly with its PIDs and left running: killing without an infobase match
-could take down another stand's client. `fileIbPath` is now public (the binding key is needed from
+could take down another stand's client.
+
+The gate encodes a rule worth reusing wherever this plugin destroys something: **what you could not
+attribute, you do not destroy — you report it.** An unreadable command line is not permission to guess; it
+is the reason to stop and name the PIDs so a human can decide. Note the asymmetry that makes this cheap:
+failing to reap a leaked client costs one warning and a retry, while killing a neighbouring stand's client
+costs someone else's session with no way to tell them why it died. `fileIbPath` is now public (the binding key is needed from
 `tools.qa`); the preflight warning is scoped to this run instead of the whole machine.
 
 Tests: `isLeakedTestClient_*` (our runner on the target IB / the same runner on another IB / an interactive
