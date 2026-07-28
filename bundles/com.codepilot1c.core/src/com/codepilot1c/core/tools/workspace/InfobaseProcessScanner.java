@@ -27,9 +27,14 @@ import java.util.stream.Collectors;
  * {@code locking_processes} listing was noisy because it included every 1C/Apache process
  * rather than only the holders of the target infobase.</p>
  *
- * <p>The pure classification / path-matching helpers are package-private and unit-tested;
- * the {@link ProcessHandle}-based scan and kill are environment dependent, best-effort and
- * never throw.</p>
+ * <p>It also terminates the thin clients ({@code 1cv8c}) that {@code yaxunit_run} leaks on a test
+ * infobase — see {@link #killLeakedTestClients(String)}; both kill paths require an infobase match,
+ * so a neighbouring stand's process is never a candidate.</p>
+ *
+ * <p>The pure classification / path-matching helpers are package-private (except
+ * {@link #fileIbPath(String)}, which callers outside this package need as the binding key) and
+ * unit-tested; the {@link ProcessHandle}-based scan and kill are environment dependent, best-effort
+ * and never throw.</p>
  */
 public final class InfobaseProcessScanner {
 
@@ -65,8 +70,11 @@ public final class InfobaseProcessScanner {
      * Extracts the file-infobase path from an EDT connection string
      * ({@code File="C:\db\demo";}). Returns {@code null} for server/standalone
      * connection strings or when no {@code File} token is present.
+     *
+     * <p>Public because tools outside this package (e.g. {@code yaxunit_run}) need the same
+     * infobase-binding key before they may terminate anything.</p>
      */
-    static String fileIbPath(String connectionString) {
+    public static String fileIbPath(String connectionString) {
         if (connectionString == null) {
             return null;
         }
@@ -133,6 +141,44 @@ public final class InfobaseProcessScanner {
             idx = hay.indexOf(normalizedIbPath, idx + 1);
         }
         return false;
+    }
+
+    /** True when the (lowercased) command line or exe path is the thin client ({@code 1cv8c}). */
+    static boolean isThinClient(String commandLower) {
+        return commandLower != null && commandLower.contains("1cv8c"); //$NON-NLS-1$
+    }
+
+    /**
+     * True when the (lowercased) command line is one of OUR YAxUnit runs: the thin client is started
+     * with the {@code RunUnitTests=<config>} startup parameter, which an interactive session never
+     * carries. This is what separates "a client this plugin leaked" from "the owner's open session".
+     */
+    static boolean isUnitTestRunner(String commandLineLower) {
+        return commandLineLower != null && commandLineLower.contains("rununittests"); //$NON-NLS-1$
+    }
+
+    /**
+     * True when a thin client may be auto-terminated: it runs YAxUnit AND references the target
+     * infobase. Both conditions are mandatory — on a multi-stand machine a bare {@code 1cv8c} match
+     * is somebody else's client, and killing it on a guess is the worse failure.
+     */
+    static boolean isLeakedTestClient(String commandLineLower, String normalizedIbPath) {
+        return isThinClient(commandLineLower) && isUnitTestRunner(commandLineLower)
+                && matchesIb(commandLineLower, normalizedIbPath);
+    }
+
+    /**
+     * True when the process's command line is actually readable, i.e. carries arguments beyond the
+     * executable path. On Windows both {@code ProcessHandle.info().commandLine()} and the WMI
+     * overlay can come back empty/exe-only, and then no infobase attribution is possible at all —
+     * callers must report that loudly instead of guessing.
+     */
+    static boolean hasReadableCommandLine(String command, String commandLine) {
+        if (commandLine == null || commandLine.isBlank()) {
+            return false;
+        }
+        String cmd = command == null ? "" : command.trim(); //$NON-NLS-1$
+        return cmd.isEmpty() || !commandLine.trim().equalsIgnoreCase(cmd);
     }
 
     // --- environment-dependent scan (best-effort) -------------------------------------------
@@ -269,5 +315,54 @@ public final class InfobaseProcessScanner {
             }
         }
         return killed;
+    }
+
+    /**
+     * Outcome of {@link #killLeakedTestClients(String)}: the PIDs terminated, the thin clients left
+     * running, and — a subset of {@code spared} — those whose command line could not be read at all,
+     * so no infobase attribution was possible for them.
+     */
+    public record TestClientCleanup(List<Long> killed, List<Long> spared, List<Long> unreadable) {
+    }
+
+    /**
+     * Terminates thin clients ({@code 1cv8c}) that a previous YAxUnit run leaked on {@code ibPath}.
+     *
+     * <p>A leaked client keeps the infobase's named pipe, and the next run then burns its whole
+     * timeout with no report. Killing the process tree does not help: the real {@code 1cv8c} is not a
+     * descendant of the process the plugin spawns (the launcher reparents it —
+     * {@code descendants=0} on every heartbeat), so the orphan has to be found by command line and
+     * killed by PID.</p>
+     *
+     * <p>Safety: only clients matching {@link #isLeakedTestClient} are killed — the command line must
+     * both reference this infobase and carry our {@code RunUnitTests=} parameter. Everything else
+     * (another stand's client, an interactive session, a client whose command line is unreadable
+     * because WMI is unavailable) is returned in {@code spared}/{@code unreadable} for the caller to
+     * report, never terminated. Best-effort; never throws.</p>
+     */
+    public static TestClientCleanup killLeakedTestClients(String ibPath) {
+        String normIb = normalizePath(ibPath);
+        List<Long> killed = new ArrayList<>();
+        List<Long> spared = new ArrayList<>();
+        List<Long> unreadable = new ArrayList<>();
+        for (LockingProcess p : scan(ibPath)) {
+            String cmdLower = p.commandLine() == null ? null : p.commandLine().toLowerCase(Locale.ROOT);
+            String exeLower = p.command() == null ? null : p.command().toLowerCase(Locale.ROOT);
+            if (!isThinClient(cmdLower) && !isThinClient(exeLower)) {
+                continue; // designers, thick clients and web servers are not this probe's business
+            }
+            if (normIb != null && isLeakedTestClient(cmdLower, normIb)) {
+                Optional<ProcessHandle> handle = ProcessHandle.of(p.pid());
+                if (handle.isPresent() && handle.get().destroy()) {
+                    killed.add(p.pid());
+                    continue;
+                }
+            }
+            spared.add(p.pid());
+            if (!hasReadableCommandLine(p.command(), p.commandLine())) {
+                unreadable.add(p.pid());
+            }
+        }
+        return new TestClientCleanup(List.copyOf(killed), List.copyOf(spared), List.copyOf(unreadable));
     }
 }

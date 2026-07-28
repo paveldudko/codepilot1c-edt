@@ -26,6 +26,14 @@ public class QaJUnitReport {
     public List<String> files = new ArrayList<>();
 
     /**
+     * {@code true} when a preferred report file name was requested but not present, so the counts
+     * above come from a directory-wide {@code *.xml} scan instead — i.e. from files that were never
+     * proven to be this run's jUnit report. Callers must surface it rather than treat the totals as
+     * authoritative. Always {@code false} for the plain directory-scan parse.
+     */
+    public boolean fallbackScan;
+
+    /**
      * Tests that neither failed, errored, nor were skipped. Clamped at zero so a malformed report
      * (e.g. a suite that under-reports {@code tests}) can never yield a negative count.
      */
@@ -34,20 +42,56 @@ public class QaJUnitReport {
         return value < 0 ? 0 : value;
     }
 
+    /**
+     * Parses every {@code *.xml} found under {@code junitDir} and sums the counts. Suitable for a
+     * dedicated report directory (Vanessa writes one file per feature there).
+     */
     public static QaJUnitReport parseDirectory(File junitDir, int maxFailureDetails) throws IOException {
+        return parseDirectory(junitDir, maxFailureDetails, null);
+    }
+
+    /**
+     * Parses the jUnit report under {@code junitDir}, preferring the file named
+     * {@code preferredFileName} (case-insensitive) when one is given.
+     *
+     * <p>The preferred-name form exists because a run directory may double as the 1C client's
+     * working directory: any unrelated {@code *.xml} dropped there would otherwise be summed in as
+     * "the report". When the preferred name is absent but other {@code *.xml} files are present, the
+     * legacy directory-wide scan still runs and {@link #fallbackScan} is set so the caller can say
+     * so out loud instead of silently trusting foreign counts. Passing {@code null} keeps the plain
+     * directory-scan behaviour.</p>
+     */
+    public static QaJUnitReport parseDirectory(File junitDir, int maxFailureDetails, String preferredFileName)
+            throws IOException {
         if (junitDir == null || !junitDir.exists() || !junitDir.isDirectory()) {
             return null;
         }
-        List<File> xmlFiles = new ArrayList<>();
+        List<File> discovered = new ArrayList<>();
         try (var stream = Files.walk(junitDir.toPath())) {
             stream.filter(path -> path.toString().toLowerCase().endsWith(".xml"))
-                    .forEach(path -> xmlFiles.add(path.toFile()));
+                    .forEach(path -> discovered.add(path.toFile()));
         }
-        if (xmlFiles.isEmpty()) {
+        if (discovered.isEmpty()) {
             return null;
         }
+        List<File> selected = discovered;
+        boolean fallback = false;
+        if (preferredFileName != null && !preferredFileName.isBlank()) {
+            List<File> preferred = new ArrayList<>();
+            for (File file : discovered) {
+                if (preferredFileName.equalsIgnoreCase(file.getName())) {
+                    preferred.add(file);
+                }
+            }
+            if (preferred.isEmpty()) {
+                fallback = true;
+            } else {
+                selected = preferred;
+            }
+        }
         QaJUnitReport report = new QaJUnitReport();
-        for (File file : xmlFiles) {
+        report.fallbackScan = fallback;
+        for (File file : selected) {
             report.files.add(file.getAbsolutePath());
             parseFile(file, report, maxFailureDetails);
         }

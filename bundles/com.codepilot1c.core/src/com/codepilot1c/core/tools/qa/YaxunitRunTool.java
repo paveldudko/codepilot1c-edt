@@ -33,6 +33,7 @@ import com.codepilot1c.core.tools.AbstractTool;
 import com.codepilot1c.core.tools.ToolMeta;
 import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolResult;
+import com.codepilot1c.core.tools.workspace.InfobaseProcessScanner;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -65,6 +66,8 @@ public class YaxunitRunTool extends AbstractTool {
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(YaxunitRunTool.class);
 
     private static final int DEFAULT_TIMEOUT_SECONDS = 300;
+    /** The one report file YAxUnit is told to write; any other {@code *.xml} in the run dir is foreign. */
+    private static final String JUNIT_REPORT_NAME = "junit.xml"; //$NON-NLS-1$
     private static final int MAX_FAILURE_DETAILS = 50;
     private static final int LOG_TAIL_LINES = 50;
     private static final long HEARTBEAT_MILLIS = 30_000L;
@@ -84,10 +87,29 @@ public class YaxunitRunTool extends AbstractTool {
             "безопасн", "защита от опасных", "опасных действий", "safe mode", "safemode",
             "нарушение прав доступа", "недостаточно прав"};
 
+    /**
+     * Owner-only remediation for the safe-mode / dangerous-action failure mode. Shared by the
+     * no-report diagnosis and by the "zero tests, no filter" verdict — both land on the same fix.
+     */
+    private static final String SAFE_MODE_REMEDIATION =
+            "The YAxUnit extension must run UNPROTECTED: in Designer open Configuration > Extensions, " //$NON-NLS-1$
+            + "select the YAxUnit extension and uncheck \"Безопасный режим\" / \"Защита от опасных " //$NON-NLS-1$
+            + "действий\", then update the infobase (this is an owner action — the plugin cannot change it)."; //$NON-NLS-1$
+
+    /** Filter hints for a run that executed nothing while the infobase was current. */
+    private static final String FILTER_HINT =
+            "check the test name spelling (Модуль.Метод), that the test is registered in the module's " //$NON-NLS-1$
+            + "YAxUnit ИсполняемыеСценарии handler, and that the 'extensions' filter names the extension " //$NON-NLS-1$
+            + "the tests actually live in"; //$NON-NLS-1$
+
+    /** Remediation for an infobase that no longer matches the EDT source. */
+    private static final String STALE_HINT =
+            "IB differs from EDT source — run update_infobase, then retry"; //$NON-NLS-1$
+
     private static final String SCHEMA = """
             {
               "type": "object",
-              "description": "Запускает YAxUnit unit-тесты проекта EDT (тонкий клиент, RunUnitTests, без TestManager). Парсит jUnit-отчёт в структурированный результат. При успешном прогоне onec.log/launch.log могут быть пустыми (closeAfterTests закрывает клиент до flush) — это нормально; полный лог движка в yaxunit.log.",
+              "description": "Запускает YAxUnit unit-тесты проекта EDT (тонкий клиент, RunUnitTests, без TestManager). После правки .bsl сначала вызови update_infobase: устаревшая ИБ выполнит ноль тестов. Пустые onec.log/launch.log при успешном прогоне — норма (детали в knowledge/edt-gotchas.md).",
               "properties": {
                 "project_name": {
                   "type": "string",
@@ -156,8 +178,9 @@ public class YaxunitRunTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Runs a project's YAxUnit unit tests in EDT via the thin client (RunUnitTests, no TestManager) " //$NON-NLS-1$
-                + "and returns a structured jUnit result."; //$NON-NLS-1$
+        return "Runs a project's YAxUnit unit tests in EDT via the thin client (RunUnitTests, no TestManager). " //$NON-NLS-1$
+                + "Run update_infobase after editing .bsl and before running tests — a stale infobase executes " //$NON-NLS-1$
+                + "zero tests."; //$NON-NLS-1$
     }
 
     @Override
@@ -186,7 +209,7 @@ public class YaxunitRunTool extends AbstractTool {
             File workspaceRoot = getWorkspaceRoot();
             File runDir = buildRunDirectory(workspaceRoot, opId);
             File configFile = new File(runDir, "config.json"); //$NON-NLS-1$
-            File junitFile = new File(runDir, "junit.xml"); //$NON-NLS-1$
+            File junitFile = new File(runDir, JUNIT_REPORT_NAME);
             File exitCodeFile = new File(runDir, "exitcode.txt"); //$NON-NLS-1$
             File yaxunitLog = new File(runDir, "yaxunit.log"); //$NON-NLS-1$
             File onecLog = new File(runDir, "onec.log"); //$NON-NLS-1$
@@ -209,7 +232,9 @@ public class YaxunitRunTool extends AbstractTool {
 
                 JsonObject result = baseResult(opId, projectName, runDir, configFile, junitFile, launchLog);
                 result.addProperty("onec_log_path", onecLog.getAbsolutePath()); //$NON-NLS-1$
-                result.add("filter", filterJson(parameters)); //$NON-NLS-1$
+                JsonObject filter = filterJson(parameters);
+                result.add("filter", filter); //$NON-NLS-1$
+                boolean filterPresent = !filter.entrySet().isEmpty();
                 addCommand(result, processBuilder.command());
 
                 if (dryRun) {
@@ -217,7 +242,19 @@ public class YaxunitRunTool extends AbstractTool {
                     return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE, result);
                 }
 
-                List<String> preflightWarnings = checkStaledClientProcesses(opId, timeoutSeconds);
+                // Preflight: reap our own leaked thin clients (they hold the named pipe) and read
+                // EDT's project-vs-infobase equality state. The equality state is reported even on a
+                // green run — it is the only cheap signal that the tests just ran against stale code.
+                List<String> preflightWarnings = checkStaledClientProcesses(opId, timeoutSeconds,
+                        resolveFileIbPath(opId, projectName));
+                String equalityState = readEqualityState(opId, projectName);
+                result.addProperty("equality_state", equalityState == null ? "unknown" : equalityState); //$NON-NLS-1$ //$NON-NLS-2$
+                if (isStaleState(equalityState)) {
+                    String staleWarning = "PREFLIGHT WARNING: equality_state=" + equalityState + " — " //$NON-NLS-1$ //$NON-NLS-2$
+                            + STALE_HINT + " (otherwise the run executes stale code, or no tests at all)."; //$NON-NLS-1$
+                    preflightWarnings.add(staleWarning);
+                    LOG.warn("[%s] %s", opId, staleWarning); //$NON-NLS-1$
+                }
                 if (!preflightWarnings.isEmpty()) {
                     JsonArray arr = new JsonArray();
                     preflightWarnings.forEach(arr::add);
@@ -228,7 +265,7 @@ public class YaxunitRunTool extends AbstractTool {
                         exitCodeFile, junitFile, launchLog);
 
                 return buildResult(result, opId, runDir, junitFile, exitCodeFile, yaxunitLog, onecLog, launchLog,
-                        outcome);
+                        outcome, filterPresent, equalityState);
             } catch (IOException e) {
                 LOG.warn("[%s] yaxunit_run IO failure: %s", opId, e.getMessage()); //$NON-NLS-1$
                 return ToolResult.failure("yaxunit_run failed: " + e.getMessage()); //$NON-NLS-1$
@@ -324,7 +361,8 @@ public class YaxunitRunTool extends AbstractTool {
 
     // ---- process execution ------------------------------------------------------------------
 
-    private record RunOutcome(boolean finished, int processExitCode, Integer yaxunitExitCode, boolean exitCodeSeen,
+    /** Package-visible so the pure {@link #classify} verdict logic can be unit-tested. */
+    record RunOutcome(boolean finished, int processExitCode, Integer yaxunitExitCode, boolean exitCodeSeen,
             boolean timedOut) {
     }
 
@@ -408,22 +446,125 @@ public class YaxunitRunTool extends AbstractTool {
 
     // ---- result assembly --------------------------------------------------------------------
 
+    /**
+     * The classified outcome of a run: the envelope {@code status}, a machine-readable {@code reason}
+     * (empty when the status already says everything), the human-readable {@code message} (empty when
+     * none is needed) and the MCP channel — {@code ok=true} → success, {@code ok=false} → error.
+     */
+    record Verdict(String status, String reason, String message, boolean ok) {
+    }
+
+    /**
+     * Maps a finished run onto its verdict. Pure and package-visible so the matrix is unit-tested.
+     *
+     * <p>Channel contract: the MCP <b>error</b> channel means "there is no verdict — draw no
+     * conclusions", the <b>success</b> channel means "there is a verdict — read the report". Two
+     * consequences, both deliberate:</p>
+     * <ul>
+     * <li>A completed run with RED tests is a <b>success</b> ({@code tests_failed}): the verdict
+     * exists and the next action is reading {@code failures}, not re-diagnosing the environment
+     * (feedback {@code 2026-07-03-yaxunit-run-red-tests-as-mcp-error.md}).</li>
+     * <li>A run that executed ZERO tests is an <b>error</b> even though nothing failed: zero resolved
+     * work carries no verdict. Previously {@code total == 0} satisfied the green predicate
+     * identically, so an empty report read as "all tests passed".</li>
+     * </ul>
+     *
+     * @param filterPresent whether the caller passed any filter (modules/tests/tags/...) — splits
+     *                      "the filter matched nothing" from "the infobase holds no tests at all"
+     * @param equalityState EDT's project-vs-infobase equality state ({@code EQUAL}, {@code NOT_EQUAL},
+     *                      {@code LOADING}), or {@code null} when it could not be read (cold EDT) —
+     *                      splits "the infobase is stale" from "the filter matched nothing"
+     */
+    static Verdict classify(QaJUnitReport report, RunOutcome outcome, boolean filterPresent, String equalityState) {
+        if (outcome != null && outcome.timedOut()) {
+            return new Verdict("timeout", "", "Run timed out; partial report parsed", false); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        }
+        if (report == null || report.tests <= 0) {
+            return classifyZeroTests(filterPresent, equalityState);
+        }
+        Integer exitCode = outcome == null ? null : outcome.yaxunitExitCode();
+        boolean reportGreen = report.failures == 0 && report.errors == 0;
+        boolean exitGreen = exitCode == null || exitCode.intValue() == 0;
+        if (reportGreen && exitGreen) {
+            return new Verdict("passed", "", "", true); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        }
+        if (reportGreen) {
+            // The runner says "failed" while the report shows nothing red: the report is partial, or
+            // something blew up outside a testcase. No coherent verdict → error channel.
+            return new Verdict("report_exit_mismatch", "exit_code_nonzero_report_green", //$NON-NLS-1$ //$NON-NLS-2$
+                    "YAxUnit exited with code " + exitCode + " but the parsed report contains no failed or " //$NON-NLS-1$ //$NON-NLS-2$
+                    + "errored test — the report is likely partial, or a failure happened outside a test " //$NON-NLS-1$
+                    + "case. Treat the run as inconclusive and inspect junit.xml / yaxunit.log.", false); //$NON-NLS-1$
+        }
+        return new Verdict("tests_failed", "", "", true); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+    }
+
+    /**
+     * Verdict for a run that produced a report with zero executed tests. Always the error channel —
+     * nothing ran, so there is nothing to conclude — but the reason narrows the cause down to an
+     * action: a stale infobase, a filter that matched nothing, or no tests in the infobase at all.
+     */
+    private static Verdict classifyZeroTests(boolean filterPresent, String equalityState) {
+        String state = equalityState == null ? null : equalityState.trim().toUpperCase(Locale.ROOT);
+        if (!filterPresent) {
+            return new Verdict("no_tests_found", "no_tests_in_infobase", //$NON-NLS-1$ //$NON-NLS-2$
+                    "YAxUnit executed 0 tests and no filter was passed, so nothing at all was discovered: " //$NON-NLS-1$
+                    + "the YAxUnit extension is most likely not installed / not attached to this infobase, " //$NON-NLS-1$
+                    + "or it is attached in safe mode. " + SAFE_MODE_REMEDIATION, false); //$NON-NLS-1$
+        }
+        if (isStaleState(state)) {
+            return new Verdict("no_tests_matched", "infobase_stale", //$NON-NLS-1$ //$NON-NLS-2$
+                    "YAxUnit executed 0 tests and equality_state=" + state + ": " + STALE_HINT + ".", false); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        }
+        if ("EQUAL".equals(state)) { //$NON-NLS-1$
+            return new Verdict("no_tests_matched", "filter_matched_nothing", //$NON-NLS-1$ //$NON-NLS-2$
+                    "YAxUnit executed 0 tests while the infobase matches the EDT source, so the filter " //$NON-NLS-1$
+                    + "matched nothing: " + FILTER_HINT + ".", false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        // Cold EDT: readInfobaseEqualityState is best-effort and returns null. Both causes stay open,
+        // stale first because it is the cheaper thing to rule out.
+        return new Verdict("no_tests_matched", "no_match_unverified", //$NON-NLS-1$ //$NON-NLS-2$
+                "YAxUnit executed 0 tests and the infobase equality state could not be read, so both causes " //$NON-NLS-1$
+                + "stay open. Most likely: " + STALE_HINT + ". If the infobase is already current, the filter " //$NON-NLS-1$ //$NON-NLS-2$
+                + "matched nothing: " + FILTER_HINT + ".", false); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /** {@code true} for the equality states that mean the infobase no longer matches the EDT source. */
+    private static boolean isStaleState(String equalityState) {
+        String state = equalityState == null ? "" : equalityState.trim().toUpperCase(Locale.ROOT); //$NON-NLS-1$
+        return "NOT_EQUAL".equals(state) || "LOADING".equals(state); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
     private ToolResult buildResult(JsonObject result, String opId, File runDir, File junitFile, File exitCodeFile,
-            File yaxunitLog, File onecLog, File launchLog, RunOutcome outcome) {
+            File yaxunitLog, File onecLog, File launchLog, RunOutcome outcome, boolean filterPresent,
+            String equalityState) {
         result.addProperty("yaxunit_exit_code", //$NON-NLS-1$
                 outcome.yaxunitExitCode() == null ? "" : String.valueOf(outcome.yaxunitExitCode())); //$NON-NLS-1$
         result.addProperty("process_exit_code", outcome.processExitCode()); //$NON-NLS-1$
 
         QaJUnitReport report = null;
         try {
-            report = QaJUnitReport.parseDirectory(runDir, MAX_FAILURE_DETAILS);
+            // The run directory doubles as the client's working directory, so parse the one file
+            // YAxUnit was told to write instead of every *.xml that happens to land there.
+            report = QaJUnitReport.parseDirectory(runDir, MAX_FAILURE_DETAILS, JUNIT_REPORT_NAME);
         } catch (IOException e) {
             LOG.warn("[%s] yaxunit_run report parse failed: %s", opId, e.getMessage()); //$NON-NLS-1$
         }
+        if (report != null) {
+            result.addProperty("report_source", //$NON-NLS-1$
+                    report.fallbackScan ? "fallback_xml_scan" : JUNIT_REPORT_NAME); //$NON-NLS-1$
+            if (report.fallbackScan) {
+                result.addProperty("report_source_note", //$NON-NLS-1$
+                        "junit.xml was not produced in the run directory; " + report.files.size() //$NON-NLS-1$
+                        + " unrelated *.xml file(s) found there were parsed instead — their counts are not " //$NON-NLS-1$
+                        + "proven to come from this YAxUnit run."); //$NON-NLS-1$
+            }
+        }
 
-        if (report == null) {
-            // No jUnit XML was produced — the most common cause is the YAxUnit extension being
-            // attached in safe mode / not installed, which fails on the BSL side before reporting.
+        // No usable report: either nothing was parsed at all, or only foreign *.xml with zero tests
+        // was found — in both cases YAxUnit produced nothing, and the richer no-report diagnosis
+        // (safe mode / extension not attached) is what the caller needs.
+        if (report == null || (report.fallbackScan && report.tests <= 0)) {
             String tail = tail(onecLog, LOG_TAIL_LINES) + "\n" + tail(yaxunitLog, LOG_TAIL_LINES) //$NON-NLS-1$
                     + "\n" + tail(launchLog, LOG_TAIL_LINES); //$NON-NLS-1$
             String hint = classifyNoReport(tail, outcome);
@@ -443,31 +584,32 @@ public class YaxunitRunTool extends AbstractTool {
         result.add("suites", suitesJson(report)); //$NON-NLS-1$
         result.add("failures", failuresJson(report)); //$NON-NLS-1$
 
-        boolean green = report.failures == 0 && report.errors == 0
-                && (outcome.yaxunitExitCode() == null || outcome.yaxunitExitCode() == 0);
-        if (outcome.timedOut()) {
-            result.addProperty("status", "timeout"); //$NON-NLS-1$ //$NON-NLS-2$
-            result.addProperty("message", "Run timed out; partial report parsed"); //$NON-NLS-1$ //$NON-NLS-2$
-            return ToolResult.failure(pretty(result));
+        Verdict verdict = classify(report, outcome, filterPresent, equalityState);
+        result.addProperty("status", verdict.status()); //$NON-NLS-1$
+        if (!verdict.reason().isEmpty()) {
+            result.addProperty("reason", verdict.reason()); //$NON-NLS-1$
         }
-        result.addProperty("status", green ? "passed" : "failed"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        return green
+        if (!verdict.message().isEmpty()) {
+            result.addProperty("message", verdict.message()); //$NON-NLS-1$
+        }
+        LOG.info("[%s] yaxunit_run verdict: status=%s, reason=%s, total=%d, failed=%d, errors=%d, equality=%s", //$NON-NLS-1$
+                opId, verdict.status(), verdict.reason(), Integer.valueOf(report.tests),
+                Integer.valueOf(report.failures), Integer.valueOf(report.errors), String.valueOf(equalityState));
+        return verdict.ok()
                 ? ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE, result)
                 : ToolResult.failure(pretty(result));
     }
 
-    private static String classifyNoReport(String tail, RunOutcome outcome) {
+    /** Package-visible for unit tests: the diagnosis for a run that produced no jUnit report. */
+    static String classifyNoReport(String tail, RunOutcome outcome) {
         String lower = tail == null ? "" : tail.toLowerCase(Locale.ROOT); //$NON-NLS-1$
         for (String marker : SAFE_MODE_MARKERS) {
             if (lower.contains(marker)) {
                 return "YAxUnit produced no report and the log mentions safe mode / dangerous-action " //$NON-NLS-1$
-                        + "protection. The YAxUnit extension must run UNPROTECTED: in Designer open " //$NON-NLS-1$
-                        + "Configuration > Extensions, select the YAxUnit extension and uncheck " //$NON-NLS-1$
-                        + "\"Безопасный режим\" / \"Защита от опасных действий\", then update the infobase " //$NON-NLS-1$
-                        + "(this is an owner action — the plugin cannot change it)."; //$NON-NLS-1$
+                        + "protection. " + SAFE_MODE_REMEDIATION; //$NON-NLS-1$
             }
         }
-        if (!outcome.exitCodeSeen()) {
+        if (outcome == null || !outcome.exitCodeSeen()) {
             return "YAxUnit produced neither a jUnit report nor an exitCode file. Verify the YAxUnit " //$NON-NLS-1$
                     + "extension is installed and active in the infobase, and that the RunUnitTests " //$NON-NLS-1$
                     + "startup handler is registered. See tail_log for the client output."; //$NON-NLS-1$
@@ -524,30 +666,46 @@ public class YaxunitRunTool extends AbstractTool {
     // ---- small helpers ----------------------------------------------------------------------
 
     /**
-     * Returns a list of human-readable warnings about already-running 1cv8c processes.
+     * Reaps the thin clients this tool leaked on {@code ibPath} and warns about the rest.
      *
-     * <p>A stuck thin-client process holding the named pipe is the most common silent cause of a
-     * 300-second timeout (lesson from BF-12678 Phase 4). Probing upfront costs nothing and gives
-     * the caller a chance to act before the full timeout burns.</p>
+     * <p>A stuck {@code 1cv8c} holding the infobase's named pipe is the most common silent cause of a
+     * 300-second timeout (BF-12678 Phase 4). {@link #terminateProcessTree} never cleaned it up
+     * because the real client is not a descendant of the process we spawn — the launcher reparents it,
+     * and the heartbeat logs {@code descendants=0} throughout — so the orphan has to be matched by
+     * command line and killed by PID.</p>
+     *
+     * <p>The previous version only warned, and it warned about EVERY {@code 1cv8c} on the machine:
+     * on a multi-stand box that fires on every run and cannot tell our leaked client from a
+     * neighbour's legitimate one. Now only clients that reference THIS infobase and carry our own
+     * {@code RunUnitTests=} parameter are terminated; anything unattributable (server infobase,
+     * unresolved association, unreadable command line because WMI is unavailable) is reported loudly
+     * and left running — killing on a guess would take down another stand.</p>
      */
-    private static List<String> checkStaledClientProcesses(String opId, int timeoutSeconds) {
+    private static List<String> checkStaledClientProcesses(String opId, int timeoutSeconds, String ibPath) {
         List<String> warnings = new ArrayList<>();
         try {
-            List<ProcessHandle> running = ProcessHandle.allProcesses()
-                    .filter(ph -> {
-                        var cmd = ph.info().command();
-                        return cmd.isPresent()
-                                && cmd.get().toLowerCase(Locale.ROOT).contains("1cv8c"); //$NON-NLS-1$
-                    })
-                    .collect(Collectors.toList());
-            if (!running.isEmpty()) {
-                String pids = running.stream()
-                        .map(ph -> String.valueOf(ph.pid()))
-                        .collect(Collectors.joining(", ")); //$NON-NLS-1$
-                String msg = "PREFLIGHT WARNING: " + running.size() + " 1cv8c process(es) already running " //$NON-NLS-1$ //$NON-NLS-2$
-                        + "(PIDs: " + pids + "). If any of them hold the named pipe for this project, " //$NON-NLS-1$ //$NON-NLS-2$
-                        + "yaxunit_run will time out silently after " + timeoutSeconds + "s. " //$NON-NLS-1$ //$NON-NLS-2$
-                        + "Kill stale 1cv8c processes before running tests."; //$NON-NLS-1$
+            InfobaseProcessScanner.TestClientCleanup cleanup =
+                    InfobaseProcessScanner.killLeakedTestClients(ibPath);
+            if (!cleanup.killed().isEmpty()) {
+                String msg = "PREFLIGHT: terminated " + cleanup.killed().size() + " leaked YAxUnit thin-client " //$NON-NLS-1$ //$NON-NLS-2$
+                        + "process(es) of this infobase (PIDs: " + joinPids(cleanup.killed()) + "). They hold the " //$NON-NLS-1$ //$NON-NLS-2$
+                        + "named pipe and would have made this run time out after " + timeoutSeconds + "s."; //$NON-NLS-1$ //$NON-NLS-2$
+                warnings.add(msg);
+                LOG.warn("[%s] %s", opId, msg); //$NON-NLS-1$
+            }
+            if (!cleanup.spared().isEmpty()) {
+                String msg = "PREFLIGHT WARNING: " + cleanup.spared().size() + " other 1cv8c process(es) are " //$NON-NLS-1$ //$NON-NLS-2$
+                        + "running (PIDs: " + joinPids(cleanup.spared()) + ") that could NOT be attributed to " //$NON-NLS-1$ //$NON-NLS-2$
+                        + "this run" //$NON-NLS-1$
+                        + (ibPath == null
+                                ? " (this project's infobase path did not resolve — server infobase or no " //$NON-NLS-1$
+                                        + "association, so no client can be attributed at all)" //$NON-NLS-1$
+                                : " (another infobase, an interactive session, or an unreadable command line)") //$NON-NLS-1$
+                        + (cleanup.unreadable().isEmpty() ? "" //$NON-NLS-1$
+                                : "; " + cleanup.unreadable().size() + " of them expose no command line at all " //$NON-NLS-1$ //$NON-NLS-2$
+                                        + "(WMI unavailable) — identification is impossible for those") //$NON-NLS-1$
+                        + ". They were left running: without an infobase match a kill could take down another " //$NON-NLS-1$
+                        + "stand's client. If this run times out after " + timeoutSeconds + "s, check them by hand."; //$NON-NLS-1$ //$NON-NLS-2$
                 warnings.add(msg);
                 LOG.warn("[%s] %s", opId, msg); //$NON-NLS-1$
             }
@@ -555,6 +713,45 @@ public class YaxunitRunTool extends AbstractTool {
             LOG.warn("[%s] yaxunit_run preflight process scan failed: %s", opId, e.getMessage()); //$NON-NLS-1$
         }
         return warnings;
+    }
+
+    private static String joinPids(List<Long> pids) {
+        return pids.stream().map(String::valueOf).collect(Collectors.joining(", ")); //$NON-NLS-1$
+    }
+
+    /**
+     * Best-effort file-infobase path of the project's default infobase — the binding key that makes
+     * the orphan kill safe. {@code null} for a server infobase or when the association does not
+     * resolve; the caller must then warn instead of terminating anything. Never throws.
+     */
+    private String resolveFileIbPath(String opId, String projectName) {
+        try {
+            var infobase = runtimeService.resolveDefaultInfobase(projectName);
+            if (infobase == null || infobase.getConnectionString() == null) {
+                return null;
+            }
+            return InfobaseProcessScanner.fileIbPath(infobase.getConnectionString().asConnectionString());
+        } catch (RuntimeException e) {
+            LOG.warn("[%s] yaxunit_run: infobase path unresolved, orphan clients cannot be attributed: %s", //$NON-NLS-1$
+                    opId, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Reads EDT's project-vs-infobase equality state. Best-effort by contract: {@code null} on a cold
+     * EDT or an older API, which the verdict must degrade into {@code no_match_unverified} rather than
+     * fail on.
+     */
+    private String readEqualityState(String opId, String projectName) {
+        try {
+            String state = runtimeService.readInfobaseEqualityState(projectName);
+            LOG.info("[%s] yaxunit_run equality_state=%s", opId, String.valueOf(state)); //$NON-NLS-1$
+            return state;
+        } catch (RuntimeException e) {
+            LOG.warn("[%s] yaxunit_run: equality state unavailable: %s", opId, e.getMessage()); //$NON-NLS-1$
+            return null;
+        }
     }
 
     static Integer readExitCode(File exitCodeFile) {

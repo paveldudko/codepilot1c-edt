@@ -69,6 +69,15 @@ public class QaRunTool extends AbstractTool {
     private static final String DEFAULT_CONFIG_PATH = "tests/qa/qa-config.json"; //$NON-NLS-1$
     private static final String BUNDLED_STEPS_CATALOG = "com/codepilot1c/core/qa/steps_catalog.json"; //$NON-NLS-1$
 
+    /**
+     * Status of a finished run whose jUnit report contains zero executed tests. Zero resolved work
+     * carries no verdict, so it is neither {@code passed} nor {@code tests_failed} and it travels on
+     * the error channel — same rule as {@code no_features}/{@code feature_not_found} above, and the
+     * same defect class {@code yaxunit_run} carried (the tests count was never in the green
+     * predicate, so an empty report read as "all green").
+     */
+    static final String STATUS_NO_TESTS_EXECUTED = "no_tests_executed"; //$NON-NLS-1$
+
     private static final int DEFAULT_TIMEOUT_SECONDS = 3600;
     private static final int MIN_TIMEOUT_SECONDS = 300;
     private static final int MAX_FAILURE_DETAILS = 20;
@@ -624,6 +633,12 @@ public class QaRunTool extends AbstractTool {
                         screenshotsDir, logFile, processResult, report, durationMs, preferenceEpfPath, templatePath,
                         unknownStepsSummary);
                 String json = new GsonBuilder().setPrettyPrinting().create().toJson(result);
+                // Red tests stay on the success channel (the verdict exists — read the report), but a
+                // run that executed nothing has no verdict and must not read as success.
+                if (STATUS_NO_TESTS_EXECUTED.equals(statusOf(result))) {
+                    LOG.warn("[%s] qa_run finished with 0 executed tests — reporting as an error", opId); //$NON-NLS-1$
+                    return ToolResult.failure("QA_RUN_ERROR: the run executed 0 tests\n" + json); //$NON-NLS-1$
+                }
                 return ToolResult.success(json, ToolResult.ToolResultType.CODE);
             } catch (Exception e) {
                 LOG.error("[" + opId + "] qa_run failed", e); //$NON-NLS-1$ //$NON-NLS-2$
@@ -1556,6 +1571,15 @@ public class QaRunTool extends AbstractTool {
             status = processResult.timeoutDiagnostics != null && processResult.timeoutDiagnostics.hasResidualActivity()
                     ? "timeout_with_activity" //$NON-NLS-1$
                     : "timeout"; //$NON-NLS-1$
+        } else if (report != null && report.tests <= 0) {
+            // The report parsed but nothing ran. `report.tests` used to be absent from the predicate,
+            // so an empty jUnit report satisfied "no failures" and surfaced as `passed`.
+            status = STATUS_NO_TESTS_EXECUTED;
+            result.addProperty("message", //$NON-NLS-1$
+                    "The run produced a jUnit report with 0 executed tests, so there is no verdict: the " //$NON-NLS-1$
+                    + "scenarios were filtered out, Vanessa aborted before the FeaturePlayer, or the " //$NON-NLS-1$
+                    + "infobase does not match the EDT source (run update_infobase). Check log_tail and " //$NON-NLS-1$
+                    + "the junit_dir contents."); //$NON-NLS-1$
         } else if (report != null) {
             status = (report.failures + report.errors) > 0 ? "tests_failed" : "passed"; //$NON-NLS-1$ //$NON-NLS-2$
         }
@@ -1581,6 +1605,13 @@ public class QaRunTool extends AbstractTool {
             result.add("unknown_steps_precheck", unknownStepsJson); //$NON-NLS-1$
         }
         return result;
+    }
+
+    /** Reads the {@code status} of an assembled run result; empty when absent. */
+    static String statusOf(JsonObject result) {
+        return result != null && result.has("status") //$NON-NLS-1$
+                ? result.get("status").getAsString() //$NON-NLS-1$
+                : ""; //$NON-NLS-1$
     }
 
     private static void addResolvedPath(JsonObject target, String property, String rawPath, File workspaceRoot) {

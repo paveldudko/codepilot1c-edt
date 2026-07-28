@@ -132,4 +132,75 @@ public class InfobaseProcessScannerTest {
         assertFalse(InfobaseProcessScanner.matchesIb("anything", null)); //$NON-NLS-1$
         assertFalse(InfobaseProcessScanner.matchesIb(null, "c:/ib")); //$NON-NLS-1$
     }
+
+    // --- leaked test clients ----------------------------------------------------------------
+
+    /** A thin-client command line for {@code ibPath}, with or without our YAxUnit parameter. */
+    private static String thinClient(String ibPath, boolean unitTests) {
+        return ("\"c:\\program files\\1cv8\\8.3.27.2074\\bin\\1cv8c.exe\" enterprise /IBConnectionString " //$NON-NLS-1$
+                + "\"File=\"\"" + ibPath + "\"\";\"" //$NON-NLS-1$ //$NON-NLS-2$
+                + (unitTests ? " /C\"RunUnitTests=c:\\ws\\.codepilot\\runs\\yaxunit_run\\op\\config.json\"" : "")) //$NON-NLS-1$ //$NON-NLS-2$
+                        .toLowerCase(Locale.ROOT);
+    }
+
+    @Test
+    public void isLeakedTestClient_matchesOurRunnerOnTheTargetInfobase() {
+        String norm = InfobaseProcessScanner.normalizePath("C:\\1C\\Repos\\IB"); //$NON-NLS-1$
+        assertTrue(InfobaseProcessScanner.isLeakedTestClient(
+                thinClient("C:\\1C\\Repos\\IB", true), norm)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void isLeakedTestClient_sparesTheSameRunnerOnAnotherInfobase() {
+        // The multi-stand safety case: a neighbouring stand's YAxUnit client must never be killed.
+        String norm = InfobaseProcessScanner.normalizePath("C:\\1C\\Repos\\IB"); //$NON-NLS-1$
+        assertFalse(InfobaseProcessScanner.isLeakedTestClient(
+                thinClient("C:\\1C\\Repos\\other_ib", true), norm)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void isLeakedTestClient_sparesAnInteractiveClientOfTheTargetInfobase() {
+        // No RunUnitTests parameter → it is somebody's open session, not a leak of ours.
+        String norm = InfobaseProcessScanner.normalizePath("C:\\1C\\Repos\\IB"); //$NON-NLS-1$
+        assertFalse(InfobaseProcessScanner.isLeakedTestClient(
+                thinClient("C:\\1C\\Repos\\IB", false), norm)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void isLeakedTestClient_sparesEverythingWhenTheInfobasePathIsUnknown() {
+        // Server infobase / unresolved association: attribution is impossible → never kill.
+        assertFalse(InfobaseProcessScanner.isLeakedTestClient(thinClient("C:\\1C\\Repos\\IB", true), null)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void isLeakedTestClient_sparesTheThickClientAndTheDesigner() {
+        String norm = InfobaseProcessScanner.normalizePath("C:\\1C\\Repos\\IB"); //$NON-NLS-1$
+        String thick = "\"c:\\1cv8\\bin\\1cv8.exe\" enterprise /f\"c:\\1c\\repos\\ib\" /c\"rununittests=c:\\cfg\"" //$NON-NLS-1$
+                .toLowerCase(Locale.ROOT);
+        String designer = "\"c:\\1cv8\\bin\\1cv8.exe\" designer /f\"c:\\1c\\repos\\ib\" /agentmode" //$NON-NLS-1$
+                .toLowerCase(Locale.ROOT);
+
+        assertFalse(InfobaseProcessScanner.isLeakedTestClient(thick, norm));
+        assertFalse(InfobaseProcessScanner.isLeakedTestClient(designer, norm));
+    }
+
+    @Test
+    public void isThinClientAndUnitTestRunner_areNullSafe() {
+        assertFalse(InfobaseProcessScanner.isThinClient(null));
+        assertFalse(InfobaseProcessScanner.isUnitTestRunner(null));
+        assertTrue(InfobaseProcessScanner.isThinClient("c:\\1cv8\\bin\\1cv8c.exe")); //$NON-NLS-1$
+        assertFalse("1cv8.exe is the thick client, not 1cv8c", //$NON-NLS-1$
+                InfobaseProcessScanner.isThinClient("c:\\1cv8\\bin\\1cv8.exe")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void hasReadableCommandLine_falseWhenOnlyTheExeIsVisible() {
+        // Windows/WMI blindness: no arguments → no infobase attribution → fail loud, never kill.
+        assertFalse(InfobaseProcessScanner.hasReadableCommandLine("c:\\1cv8\\bin\\1cv8c.exe", null)); //$NON-NLS-1$
+        assertFalse(InfobaseProcessScanner.hasReadableCommandLine("c:\\1cv8\\bin\\1cv8c.exe", "   ")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse(InfobaseProcessScanner.hasReadableCommandLine("c:\\1cv8\\bin\\1cv8c.exe", //$NON-NLS-1$
+                "C:\\1CV8\\bin\\1cv8c.exe")); //$NON-NLS-1$
+        assertTrue(InfobaseProcessScanner.hasReadableCommandLine("c:\\1cv8\\bin\\1cv8c.exe", //$NON-NLS-1$
+                "c:\\1cv8\\bin\\1cv8c.exe enterprise /f\"c:\\ib\"")); //$NON-NLS-1$
+    }
 }
