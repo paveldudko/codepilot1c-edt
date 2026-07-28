@@ -9,6 +9,100 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Composite `type.types` is written whole (2026-07-28) — BF-12936 case 1
+
+Asking for a composite type wrote only the first one, with no error anywhere. Three call sites shared one
+root: the request normalizer collapsed a list to its first element, and the writer then built a **fresh
+single-element** `TypeDescription` and assigned it, replacing any multi-type already there. The same
+collapse happened during pre-resolution, so even the type-name pre-pass saw one name. Fixed together —
+`update_metadata` on any `BasicFeature` (every register's Dimension, Resource, Attribute), the
+`add_metadata_child` create path, and form attributes/parameters/columns — because fixing one would just
+move the bug. The form path additionally validated the whole list recursively while applying one element;
+now it applies all of them.
+
+The split of raw input into one carrier per requested type moved into a pure, EDT-free `TypeValueSplitter`,
+and the assembly into one `buildTypeDescription` that **fails loud on any element it cannot resolve**
+rather than skipping it — a silent drop is what this whole entry is about. Each element keeps its own
+qualifiers (`String(100)` next to a `CatalogRef`), with outer qualifiers inherited and per-element ones
+winning. Every element resolves against the pre-mutation state and the description is assigned once, so a
+composite applies atomically. No new tool parameters: the `type` shapes already accepted a list.
+
+The single-type path had to stay behaviourally identical — it is the hot path of nearly every metadata
+mutation — so the splitter returns the caller's own object (asserted by identity, maps are not copied) and
+branches to synthetic carriers only when more than one type is actually requested; the qualifier blocks
+were transplanted line for line, defaults included, and the error texts are unchanged. One intended
+delta: a one-element list now yields the element, so an inline qualifier in `["String(100)"]` survives —
+without it a list of one would lose what a list of two keeps.
+
+`DefinedType` (and `commandParameterType`) travel a different path that `f184637` had already made
+multi-type, and the recon expected it to merely lose qualifiers. It was worse: that path built its type
+from a bare query string extracted by a reader that only understands `fqn`/`target_fqn`, so an element
+like `{type: "String", length: 100}` resolved to null and was **dropped whole**. Both the qualifiers and
+that second silent drop are closed. Qualifier support there is strictly additive — the block appears only
+if asked for or already present.
+
+Known adjacent gap, pre-existing and deliberately left: a **map** carrier written as
+`{type: "String(100)"}` resolves the type but loses the bracketed length (falling back to 150), because
+the inline form is parsed only when the carrier is itself a string. Composites are unaffected (their
+carriers are raw strings); changing it would alter the single-carrier path this change was careful to
+freeze.
+
+### update_infobase: post-update equality is no longer opt-in (2026-07-28)
+
+The sibling/equality work below made `equality_state` available in the update result, but only behind
+`skip_if_current=true` (default false) — and the caller who does not know that flag is exactly the caller
+who reads `updated: true` as "the infobase now matches" and then runs tests against stale code. The
+result now always carries `equality_state_after`, read after the apply with the same in-memory EDT query
+as the pre-check (no DESIGNER spawned, advisory only: an unreadable state omits the field rather than
+inventing a verdict). `equality_state` keeps its old meaning — the opt-in PRE-check — so nothing that
+already parses it changes. When the apply reported success yet the state is still `NOT_EQUAL`, the payload
+names the documented non-convergence mode and says outright that re-running the same update will not
+converge, instead of leaving the caller to issue a second call and guess. The dynamic-only case stays
+quiet here because `dynamic_only_forward_warning` already carries the richer explanation.
+
+### Live validation of the 2026-07-28 wave on build `0.1.7.20260728-1704`
+
+Validated against a real EDT (sandbox workspace, `plugin_version` confirmed through the beacon), not only
+unit tests. Confirmed live: the DCS main schema reaches disk (`match=true`, `attached=true`,
+`dataSourceSeeded=true`, `Template.dcs` present with a seeded `<dataSource>`); `runtime_used` with
+`candidates_tried` on `dry_run` and `reject_reasons` plus a loud `runtime_not_resolved` on an unmatchable
+version; zero executed tests yield `status=no_tests_matched` with a `reason` (`infobase_stale` takes
+precedence over `filter_matched_nothing`, with the filter echoed back) instead of a green verdict; red
+tests return on the success channel as `status=tests_failed`; `equality_state` and `preflight_warnings`
+ride along in the run result; a foreign `1cv8c` was **spared** with an explicit warning naming its PID,
+proving the three-way orphan-kill guard (thin client **and** `RunUnitTests=` marker **and** infobase
+match) holds in the presence of other stands' clients; the shared-infobase fan-out fields on the read
+path; `edt_metadata_details` resolving a `Subsystem` (no more false `exists:false`); and `adopt_existing`
+refusing to hijack an already-registered object.
+
+Two findings the wave did not deliver, corrected here rather than left in the changelog as done:
+
+* **Nested subsystem addressing.** The flat canonical form works, but no dotted form resolves at all —
+  neither `Subsystem.<Parent>.<Child>` (`METADATA_PARENT_NOT_FOUND`) nor the marker/name pair
+  `Subsystem.<Parent>.Subsystem.<Child>` (`METADATA_NOT_FOUND`). The tolerant alias the recon planned is
+  not in the build, so the schema texts for `update_metadata`, `add_metadata_child` and
+  `edt_metadata_details` document the flat form as the only one and tell the caller not to build a nested
+  one. The `must be marker/name pairs` message is actively misleading for subsystems — it points at a form
+  that also fails.
+* **`edt_metadata_details` answered a nested FQN with the wrong object.** It read the leading
+  `<Type>.<Name>` pair out of a longer dotted FQN and returned whatever that resolved to, so
+  `Subsystem.<Parent>.<Child>` came back carrying the **parent's** properties under the requested path —
+  a silent wrong answer, strictly worse than the `exists:false` this same method was fixed to stop
+  emitting. A longer FQN is now a miss with a message that names the supported form (flat for subsystems,
+  child objects out of scope) instead of a confident lie.
+* **Half-linked nesting.** `set.parentSubsystem` writes only the child side. EDT itself writes nesting on
+  both: `<subsystems><Child></subsystems>` (bare name) on the parent and
+  `<parentSubsystem>Subsystem.<Parent></parentSubsystem>` on the child, so after our call the parent does
+  not list the child.
+
+Not reproducible locally, delegated to the stacks that hold the fixtures: the `qa_run` BDD suite (no
+`qa-config.json`/`.feature` in the sandbox clone) and the `adopt_existing` orphan path (the two-index
+desync cannot be synthesised). Also recorded: in auto mode `candidates_tried` lists only the installations
+actually tried, so "rejected" and "never enumerated" stay indistinguishable — on this box `8.5.1.1302` is
+installed, auto picked `8.3.27.2074` and tried nothing else, while an explicit `runtime_version=8.5.1`
+resolves it, which points the pre-release autoselect reports at a project pin or EDT's preferred runtime
+rather than at the resolver preferring the newest install.
+
 ### create_metadata adopt_existing (2026-07-28) — BF-13405: exists:false and "FQN already in use" for the same object
 
 There are two independent metadata indexes. **A** is the configuration composition: the flat typed lists
