@@ -26,6 +26,8 @@ import com.codepilot1c.core.edt.runtime.EdtProjectResolver;
 import com.codepilot1c.core.edt.runtime.EdtToolErrorCode;
 import com.codepilot1c.core.edt.runtime.EdtToolException;
 import com.codepilot1c.core.edt.runtime.EdtRuntimeService;
+import com.codepilot1c.core.edt.runtime.InfobaseIdentity;
+import com.codepilot1c.core.edt.runtime.InfobaseSiblingResolver;
 import com.codepilot1c.core.internal.VibeCorePlugin;
 import com.codepilot1c.core.logging.LogSanitizer;
 import com.codepilot1c.core.logging.VibeLogger;
@@ -74,13 +76,22 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
      * per infobase — a re-fired update on the same IB does not run twice, it collides ("Infobase … is
      * already connected") and can wedge the platform. Live finding BF-12705 (2026-07-10): a caller
      * re-fired an async update while the first job was still RUNNING; the two Designer sessions contended
-     * and the update hung ~51 min. Keyed by project name; value holds the in-flight {@code job_id} (or a
-     * sentinel while it is being registered / for a synchronous run) so a rejected caller is told which
-     * job to poll instead of piling on. Static so it is shared across tool instances, matching EDT's
-     * per-infobase single-connection reality. Dry runs never acquire it (no Designer session).
+     * and the update hung ~51 min.
+     *
+     * <p>Keyed by the CANONICAL INFOBASE IDENTITY (not the project name): the Designer connection is
+     * single-per-INFOBASE, so two DIFFERENT projects bound to the same infobase — a configuration and
+     * its extension, or two configuration projects on one {@code .1CD} — collide in exactly the same
+     * way, and under the old per-project key both were let through. Falls back to the project name when
+     * the infobase does not resolve. The slot value carries the in-flight {@code job_id} (or a sentinel
+     * while it is being registered / for a synchronous run) plus the owning project, so a rejected
+     * caller learns which job to poll and which project holds this infobase instead of piling on.
+     * Static so it is shared across tool instances. Dry runs never acquire it (no Designer session).</p>
      */
-    private static final ConcurrentMap<String, AtomicReference<String>> IN_FLIGHT_UPDATES =
+    private static final ConcurrentMap<String, UpdateSlot> IN_FLIGHT_UPDATES =
             new ConcurrentHashMap<>();
+
+    /** Max characters of a raw cause chain echoed into a payload / the bundle log. */
+    private static final int MAX_RAW_ERROR_CHARS = 1200;
 
     /** EDT {@code InfobaseEqualityState.EQUAL} constant name — the skip_if_current trigger. */
     private static final String EQUALITY_EQUAL = "EQUAL"; //$NON-NLS-1$
@@ -132,14 +143,21 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
 
     private final EdtProjectResolver projectResolver;
     private final EdtRuntimeService runtimeService;
+    private final InfobaseSiblingResolver siblingResolver;
 
     public EdtUpdateInfobaseTool() {
         this(new EdtProjectResolver(), new EdtRuntimeService());
     }
 
     public EdtUpdateInfobaseTool(EdtProjectResolver projectResolver, EdtRuntimeService runtimeService) {
+        this(projectResolver, runtimeService, new InfobaseSiblingResolver());
+    }
+
+    public EdtUpdateInfobaseTool(EdtProjectResolver projectResolver, EdtRuntimeService runtimeService,
+            InfobaseSiblingResolver siblingResolver) {
         this.projectResolver = projectResolver;
         this.runtimeService = runtimeService;
+        this.siblingResolver = siblingResolver;
     }
 
     @Override
@@ -191,12 +209,12 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             // flag so the caller knows the async request was intentionally ignored.
             LOG.info("[%s] edt_update_infobase async+dry_run: running sync (async_ignored)", opId); //$NON-NLS-1$
         } else if (async) {
-            String updateKey = updateKey(projectName);
-            AtomicReference<String> slot = new AtomicReference<>(SLOT_SENTINEL_STARTING);
-            String inFlight = tryAcquireUpdate(updateKey, slot);
+            String updateKey = resolveUpdateKey(projectName);
+            UpdateSlot slot = new UpdateSlot(projectName, SLOT_SENTINEL_STARTING);
+            UpdateSlot inFlight = tryAcquireUpdate(updateKey, slot);
             if (inFlight != null) {
-                LOG.warn("[%s] edt_update_infobase async rejected: update already in flight for project %s", //$NON-NLS-1$
-                        opId, projectName);
+                LOG.warn("[%s] edt_update_infobase async rejected: an update is already in flight on this " //$NON-NLS-1$
+                        + "infobase (requested by %s, held by %s)", opId, projectName, inFlight.project()); //$NON-NLS-1$
                 return CompletableFuture.completedFuture(
                         ToolResult.failure(pretty(alreadyRunningPayload(opId, projectName, workspaceRoot, inFlight))));
             }
@@ -214,7 +232,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                                 releaseUpdate(updateKey, slot);
                             }
                         });
-                slot.set(jobId); // upgrade "starting" -> real job_id so a concurrent caller polls it
+                slot.setJobId(jobId); // upgrade "starting" -> real job_id so a concurrent caller polls it
                 LOG.info("[%s] edt_update_infobase scheduled async job=%s", opId, jobId); //$NON-NLS-1$
                 JsonObject accepted = basePayload(opId, "scheduled", projectName, false, workspaceRoot); //$NON-NLS-1$
                 accepted.addProperty("async", true); //$NON-NLS-1$
@@ -243,16 +261,17 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             LOG.info("[%s] START edt_update_infobase", opId); //$NON-NLS-1$
             String ibPath = null;
             // Guard a synchronous (schema) update the same way as the async path: refuse a second
-            // concurrent update of this project rather than let two Designer sessions collide. Dry runs
-            // spawn no Designer session, so they never acquire the guard. BF-12705 (2026-07-10).
-            String updateKey = updateKey(projectName);
-            AtomicReference<String> slot = null;
+            // concurrent update of this INFOBASE rather than let two Designer sessions collide. Dry runs
+            // spawn no Designer session, so they neither acquire the guard nor pay for its key
+            // resolution. BF-12705 (2026-07-10).
+            String updateKey = dryRun ? null : resolveUpdateKey(projectName);
+            UpdateSlot slot = null;
             if (!dryRun) {
-                slot = new AtomicReference<>(SLOT_SENTINEL_SYNC);
-                String inFlight = tryAcquireUpdate(updateKey, slot);
+                slot = new UpdateSlot(projectName, SLOT_SENTINEL_SYNC);
+                UpdateSlot inFlight = tryAcquireUpdate(updateKey, slot);
                 if (inFlight != null) {
-                    LOG.warn("[%s] edt_update_infobase rejected: update already in flight for project %s", //$NON-NLS-1$
-                            opId, projectName);
+                    LOG.warn("[%s] edt_update_infobase rejected: an update is already in flight on this " //$NON-NLS-1$
+                            + "infobase (requested by %s, held by %s)", opId, projectName, inFlight.project()); //$NON-NLS-1$
                     return ToolResult.failure(
                             pretty(alreadyRunningPayload(opId, projectName, workspaceRoot, inFlight)));
                 }
@@ -280,6 +299,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                     equalityState = runtimeService.readInfobaseEqualityState(projectName);
                     if (EQUALITY_EQUAL.equals(equalityState)) {
                         fillSkippedEqual(result);
+                        // "skipped because EQUAL" is the strongest false-green on a shared infobase:
+                        // this project matches, a sibling extension may not. Name them here.
+                        annotateSiblings(result, projectName, true);
                         LOG.info("[%s] edt_update_infobase skip_if_current: EQUAL, update skipped", opId); //$NON-NLS-1$
                         return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
                     }
@@ -301,16 +323,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                     annotateEqualityProceeding(result, equalityState);
                 }
                 annotateWebserverConsistency(result, ibPath, status);
-                if (status.dynamicOnly()) {
-                    // EDT could not acquire an exclusive lock (existing client/test sessions hold
-                    // the infobase). The platform fell back to a dynamic-mode update, which does
-                    // not apply schema changes (new handlers, new metadata). Surface the flag so
-                    // callers know to close TC sessions and rerun, or verify via inspect_metadata.
-                    result.addProperty("dynamic_only", true); //$NON-NLS-1$
-                    result.addProperty("dynamic_only_reason", //$NON-NLS-1$
-                            "Could not acquire exclusive lock; existing client/test " //$NON-NLS-1$
-                                    + "sessions blocked the update. Schema changes are NOT live."); //$NON-NLS-1$
-                }
+                annotateDynamicOnly(result, status);
+                annotateSiblings(result, projectName, false);
                 if (!status.updated()) {
                     throw new EdtToolException(EdtToolErrorCode.UPDATE_FAILED,
                             "EDT update returned false for project: " + projectName); //$NON-NLS-1$
@@ -319,7 +333,13 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             } catch (EdtToolException e) {
                 return ToolResult.failure(pretty(errorPayloadFrom(opId, projectName, workspaceRoot, e)));
             } catch (Exception e) {
-                if (isBlockedByLockedIB(e)) {
+                // Damaged-target-DB FIRST: isBlockedByLockedIB matches a bare "xml.zip" substring
+                // anywhere in the chain, which a broken database's config-export failure also carries —
+                // it would mask the real cause as IB_LOCKED and send the caller hunting for a holder.
+                if (isTargetDbDamaged(e)) {
+                    return ToolResult.failure(
+                            pretty(damagedTargetDbPayload(opId, projectName, workspaceRoot, ibPath, e)));
+                } else if (isBlockedByLockedIB(e)) {
                     return ToolResult.failure(pretty(lockedIbPayload(opId, projectName, workspaceRoot, ibPath)));
                 } else if (isBlockedByHttpClients(e)) {
                     JsonObject error = errorPayload(opId, projectName, workspaceRoot,
@@ -327,8 +347,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                     error.addProperty("hint", HTTP_CLIENTS_HINT); //$NON-NLS-1$
                     return ToolResult.failure(pretty(error));
                 }
-                return ToolResult.failure(pretty(errorPayload(opId, projectName, workspaceRoot,
-                        EdtToolErrorCode.UPDATE_FAILED, e.getMessage())));
+                JsonObject failure = errorPayload(opId, projectName, workspaceRoot,
+                        EdtToolErrorCode.UPDATE_FAILED, e.getMessage());
+                attachCauseChain(failure, e, "UPDATE_FAILED (unclassified)"); //$NON-NLS-1$
+                return ToolResult.failure(pretty(failure));
             } finally {
                 if (slot != null) {
                     releaseUpdate(updateKey, slot);
@@ -337,29 +359,94 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         });
     }
 
-    /** Normalizes the in-flight-guard key for a project name (null/blank tolerated). Package-private for tests. */
+    /**
+     * Name-based in-flight-guard key (null/blank tolerated) — the fallback used when the project's
+     * infobase cannot be resolved. Package-private for tests.
+     */
     static String updateKey(String projectName) {
         return projectName == null ? "" : projectName.trim(); //$NON-NLS-1$
     }
 
     /**
+     * The in-flight-guard key for a project + its infobase connection string: the CANONICAL infobase
+     * identity when one is available ({@link InfobaseIdentity#canonical}, the plugin's single "same
+     * infobase" rule, tolerant of slash direction / case / a trailing separator), else the project
+     * name. Two different projects on ONE infobase therefore map to ONE slot — which is the point:
+     * they share the single Designer connection. Pure; package-private for unit tests.
+     */
+    static String updateKey(String projectName, String infobaseConnectionString) {
+        String canonical = InfobaseIdentity.canonical(infobaseConnectionString);
+        if (canonical == null || canonical.isBlank()) {
+            return updateKey(projectName);
+        }
+        return "ib:" + canonical; //$NON-NLS-1$
+    }
+
+    /**
+     * Resolves the project's default infobase (best-effort) and derives the guard key from it. A
+     * resolution failure is not fatal — the guard degrades to the old per-project key and the update
+     * path surfaces its own canonical error for a missing project/infobase.
+     */
+    private String resolveUpdateKey(String projectName) {
+        String connection = null;
+        try {
+            connection = InfobaseIdentity.identityOf(runtimeService.resolveDefaultInfobase(projectName));
+        } catch (RuntimeException | LinkageError e) {
+            // LinkageError: no EDT/Eclipse runtime at all (headless unit tests) — the guard still works,
+            // just per project name.
+            LOG.debug("in-flight guard: infobase unresolved for %s, keying by project name (%s)", //$NON-NLS-1$
+                    projectName, e.getMessage());
+        }
+        return updateKey(projectName, connection);
+    }
+
+    /**
      * Reserves the single in-flight-update slot for {@code key}. Returns {@code null} when the slot was
      * reserved (the caller now owns {@code mySlot} and MUST {@link #releaseUpdate release} it), otherwise
-     * the in-flight update's {@code job_id} (or a {@code "starting"}/{@code "sync"} sentinel) — meaning a
-     * concurrent update is already running and {@code mySlot} was NOT registered. Package-private for
-     * unit tests.
+     * the holding slot — meaning a concurrent update is already running on this infobase and
+     * {@code mySlot} was NOT registered. Package-private for unit tests.
      */
-    static String tryAcquireUpdate(String key, AtomicReference<String> mySlot) {
-        AtomicReference<String> held = IN_FLIGHT_UPDATES.putIfAbsent(key, mySlot);
-        return held == null ? null : held.get();
+    static UpdateSlot tryAcquireUpdate(String key, UpdateSlot mySlot) {
+        return IN_FLIGHT_UPDATES.putIfAbsent(key, mySlot);
     }
 
     /**
      * Releases the in-flight-update slot, but only when {@code mySlot} is still the registered holder
      * (identity check) — so a caller can never evict another update's slot. Package-private for tests.
      */
-    static void releaseUpdate(String key, AtomicReference<String> mySlot) {
+    static void releaseUpdate(String key, UpdateSlot mySlot) {
         IN_FLIGHT_UPDATES.remove(key, mySlot);
+    }
+
+    /**
+     * The in-flight-update reservation: the {@code job_id} of the running update (or a
+     * {@code "sync"}/{@code "starting"} sentinel) plus the project that started it. The project name is
+     * carried because the slot is keyed by INFOBASE identity — a rejected caller must be told WHICH
+     * project holds this infobase, otherwise "already running" reads as nonsense for a project that has
+     * no update of its own. Package-private for unit tests.
+     */
+    static final class UpdateSlot {
+
+        private final String project;
+        private final AtomicReference<String> jobId;
+
+        UpdateSlot(String project, String jobId) {
+            this.project = project == null ? "" : project.trim(); //$NON-NLS-1$
+            this.jobId = new AtomicReference<>(jobId);
+        }
+
+        /** Upgrades the {@code "starting"} sentinel to the real registry job id once it is known. */
+        void setJobId(String value) {
+            jobId.set(value);
+        }
+
+        String jobId() {
+            return jobId.get();
+        }
+
+        String project() {
+            return project;
+        }
     }
 
     /** Visible for testing: true when an update is currently registered as in-flight for the project. */
@@ -374,19 +461,30 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
 
     /**
      * Builds the {@code UPDATE_ALREADY_RUNNING} rejection payload: a second concurrent update of the
-     * same project was refused because one is already in flight. Carries the in-flight {@code job_id}
+     * same INFOBASE was refused because one is already in flight. Carries the in-flight {@code job_id}
      * (when known) so the caller polls the existing job with {@code update_infobase_status} instead of
-     * re-firing — the re-fire is what wedged BF-12705.
+     * re-firing — the re-fire is what wedged BF-12705 — and {@code in_flight_project}, because on a
+     * shared infobase the holder can be a DIFFERENT project than the one being refused.
      */
     private static JsonObject alreadyRunningPayload(String opId, String projectName, File workspaceRoot,
-            String inFlightSlot) {
+            UpdateSlot held) {
+        String inFlightSlot = held == null ? null : held.jobId();
+        String holderProject = held == null ? null : held.project();
+        boolean foreignHolder = holderProject != null && !holderProject.isBlank()
+                && !holderProject.equals(updateKey(projectName));
         JsonObject json = errorPayload(opId, projectName, workspaceRoot,
                 EdtToolErrorCode.UPDATE_ALREADY_RUNNING,
-                "An infobase update is already in progress for project '" + projectName //$NON-NLS-1$
-                        + "'. EDT applies updates through a single-connection Designer session, so a " //$NON-NLS-1$
-                        + "second concurrent update on the same infobase would collide and can wedge the " //$NON-NLS-1$
-                        + "platform. Do NOT start another update for this project."); //$NON-NLS-1$
+                (foreignHolder
+                        ? "An infobase update is already in progress for project '" + holderProject //$NON-NLS-1$
+                                + "', which shares THIS infobase with '" + projectName + "'. " //$NON-NLS-1$ //$NON-NLS-2$
+                        : "An infobase update is already in progress for project '" + projectName + "'. ") //$NON-NLS-1$ //$NON-NLS-2$
+                        + "EDT applies updates through a single-connection Designer session per INFOBASE, " //$NON-NLS-1$
+                        + "so a second concurrent update on the same infobase would collide and can wedge " //$NON-NLS-1$
+                        + "the platform. Do NOT start another update against this infobase."); //$NON-NLS-1$
         json.addProperty("error", "update_already_running"); //$NON-NLS-1$ //$NON-NLS-2$
+        if (holderProject != null && !holderProject.isBlank()) {
+            json.addProperty("in_flight_project", holderProject); //$NON-NLS-1$
+        }
         // Only a real async job has a pollable id. A synchronous run (or the transient async-registration
         // window) holds the guard slot with a sentinel that update_infobase_status cannot resolve — telling
         // the caller to poll "sync"/"starting" produced the "Unknown job: sync" dead end (feedback
@@ -401,7 +499,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             json.addProperty("in_flight_mode", "sync"); //$NON-NLS-1$ //$NON-NLS-2$
             json.addProperty("in_flight_pollable", false); //$NON-NLS-1$
             json.addProperty("hint", //$NON-NLS-1$
-                    "A synchronous update is in flight on this project's single Designer connection; it has " //$NON-NLS-1$
+                    "A synchronous update is in flight on this infobase's single Designer connection; it has " //$NON-NLS-1$
                             + "no pollable job_id (\"sync\" is a sentinel, not a job). Wait for the blocking " //$NON-NLS-1$
                             + "call to return. If you suspect it wedged, check get_infobase_sync_state and scan " //$NON-NLS-1$
                             + "for a phantom Designer, then retry once it clears. For a pollable job next time, " //$NON-NLS-1$
@@ -452,6 +550,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 equalityState = runtimeService.readInfobaseEqualityState(projectName);
                 if (EQUALITY_EQUAL.equals(equalityState)) {
                     fillSkippedEqual(result);
+                    annotateSiblings(result, projectName, true);
                     LOG.info("[%s] edt_update_infobase (async) skip_if_current: EQUAL, update skipped", opId); //$NON-NLS-1$
                     return pretty(result);
                 }
@@ -469,12 +568,8 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 annotateEqualityProceeding(result, equalityState);
             }
             annotateWebserverConsistency(result, ibPath, status);
-            if (status.dynamicOnly()) {
-                result.addProperty("dynamic_only", true); //$NON-NLS-1$
-                result.addProperty("dynamic_only_reason", //$NON-NLS-1$
-                        "Could not acquire exclusive lock; existing client/test " //$NON-NLS-1$
-                                + "sessions blocked the update. Schema changes are NOT live."); //$NON-NLS-1$
-            }
+            annotateDynamicOnly(result, status);
+            annotateSiblings(result, projectName, false);
             if (!updated) {
                 JsonObject error = errorPayload(opId, projectName, workspaceRoot,
                         EdtToolErrorCode.UPDATE_FAILED,
@@ -485,7 +580,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         } catch (EdtToolException e) {
             return pretty(errorPayloadFrom(opId, projectName, workspaceRoot, e));
         } catch (Exception e) {
-            if (isBlockedByLockedIB(e)) {
+            // Damaged target DB before the locked-IB check — see the synchronous path for why.
+            if (isTargetDbDamaged(e)) {
+                return pretty(damagedTargetDbPayload(opId, projectName, workspaceRoot, ibPath, e));
+            } else if (isBlockedByLockedIB(e)) {
                 return pretty(lockedIbPayload(opId, projectName, workspaceRoot, ibPath));
             } else if (isBlockedByHttpClients(e)) {
                 JsonObject error = errorPayload(opId, projectName, workspaceRoot,
@@ -493,8 +591,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 error.addProperty("hint", HTTP_CLIENTS_HINT); //$NON-NLS-1$
                 return pretty(error);
             }
-            return pretty(errorPayload(opId, projectName, workspaceRoot,
-                    EdtToolErrorCode.UPDATE_FAILED, e.getMessage()));
+            JsonObject failure = errorPayload(opId, projectName, workspaceRoot,
+                    EdtToolErrorCode.UPDATE_FAILED, e.getMessage());
+            attachCauseChain(failure, e, "UPDATE_FAILED (unclassified, async)"); //$NON-NLS-1$
+            return pretty(failure);
         }
     }
 
@@ -726,8 +826,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
      * Rewrites {@code result} into an EQUAL-skip outcome: {@code status=skipped},
      * {@code skipped=true}, {@code updated=false}, {@code equality_state=EQUAL}, plus a human
      * message. Used by both the synchronous and async paths when {@code skip_if_current} matched.
+     * Package-private so the sibling-annotation test can build the exact skip payload.
      */
-    private static void fillSkippedEqual(JsonObject result) {
+    static void fillSkippedEqual(JsonObject result) {
         result.addProperty("status", "skipped"); //$NON-NLS-1$ //$NON-NLS-2$
         result.addProperty("skipped", true); //$NON-NLS-1$
         result.addProperty("updated", false); //$NON-NLS-1$
@@ -745,6 +846,208 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
     private static void annotateEqualityProceeding(JsonObject result, String equalityState) {
         result.addProperty("skipped", false); //$NON-NLS-1$
         result.addProperty("equality_state", equalityState); //$NON-NLS-1$
+    }
+
+    /**
+     * Flags a dynamic (non-exclusive) apply, with the forward-warning the read side cannot infer on its
+     * own: EDT compares the STORED configuration, which a dynamic update DOES commit, while deferring
+     * the physical restructure — so a later {@code get_infobase_sync_state} can legitimately answer
+     * EQUAL for a schema that is not live (issue
+     * {@code issues/deceptive-equal-after-dynamic-only-update.md}). No-op when the apply was exclusive.
+     */
+    private static void annotateDynamicOnly(JsonObject result, EdtRuntimeService.UpdateInfobaseStatus status) {
+        if (status == null || !status.dynamicOnly()) {
+            return;
+        }
+        // EDT could not acquire an exclusive lock (existing client/test sessions hold the infobase).
+        // The platform fell back to a dynamic-mode update, which does not apply schema changes (new
+        // handlers, new metadata). Surface the flag so callers close TC sessions and rerun.
+        result.addProperty("dynamic_only", true); //$NON-NLS-1$
+        result.addProperty("dynamic_only_reason", //$NON-NLS-1$
+                "Could not acquire exclusive lock; existing client/test " //$NON-NLS-1$
+                        + "sessions blocked the update. Schema changes are NOT live."); //$NON-NLS-1$
+        result.addProperty("dynamic_only_forward_warning", //$NON-NLS-1$
+                "A subsequent get_infobase_sync_state may report EQUAL anyway — it compares the STORED " //$NON-NLS-1$
+                        + "configuration, which this dynamic update DID commit, while the physical " //$NON-NLS-1$
+                        + "restructure was deferred. Do NOT read that EQUAL as 'schema applied': re-apply " //$NON-NLS-1$
+                        + "with an exclusive lock (close client/test sessions, or kill_agent_mode=true) and " //$NON-NLS-1$
+                        + "re-verify before trusting it."); //$NON-NLS-1$
+    }
+
+    /**
+     * Annotates a payload with the shared-infobase fan-out: the OTHER open projects bound to this
+     * infobase that must converge with it but currently report NOT_EQUAL. Additive OUTPUT only — no new
+     * input parameter, so the dispatcher schema and the tool contract are untouched.
+     */
+    private void annotateSiblings(JsonObject result, String projectName, boolean skippedEqual) {
+        List<InfobaseSiblingResolver.Sibling> siblings;
+        try {
+            siblings = siblingResolver.siblingsOf(projectName);
+        } catch (RuntimeException | LinkageError e) {
+            // Advisory only — never fail an otherwise successful update over the fan-out (LinkageError
+            // covers a missing EDT/Eclipse runtime, e.g. headless unit tests).
+            LOG.debug("update_infobase: sibling fan-out failed for %s: %s", projectName, e.getMessage()); //$NON-NLS-1$
+            return;
+        }
+        annotateSiblings(result, siblings, skippedEqual);
+    }
+
+    /**
+     * Pure half of {@link #annotateSiblings(JsonObject, String, boolean)}: emits
+     * {@code sibling_projects_stale} whenever the infobase is shared (possibly an empty array — proof
+     * the check ran) and {@code sibling_warning} when a must-converge sibling has diverged.
+     * Package-private for unit tests.
+     */
+    static void annotateSiblings(JsonObject result, List<InfobaseSiblingResolver.Sibling> siblings,
+            boolean skippedEqual) {
+        if (siblings == null || siblings.isEmpty()) {
+            return;
+        }
+        List<String> stale = InfobaseSiblingResolver.staleProjects(siblings);
+        JsonArray staleArray = new JsonArray();
+        for (String project : stale) {
+            staleArray.add(project);
+        }
+        result.add("sibling_projects_stale", staleArray); //$NON-NLS-1$
+        if (!stale.isEmpty()) {
+            result.addProperty("sibling_warning", siblingWarning(stale, skippedEqual)); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * The shared-infobase warning text. The {@code skippedEqual} variant is the important one: "skipped
+     * because EQUAL" is exactly the payload an operator/agent reads as "the infobase is current", while
+     * a sibling extension may still be unapplied. Package-private for unit tests.
+     */
+    static String siblingWarning(List<String> staleProjects, boolean skippedEqual) {
+        String projects = String.join(", ", staleProjects); //$NON-NLS-1$
+        StringBuilder sb = new StringBuilder();
+        if (skippedEqual) {
+            sb.append("The update was skipped because THIS project already equals the infobase — but the ") //$NON-NLS-1$
+                    .append("infobase is SHARED with project(s) ").append(projects) //$NON-NLS-1$
+                    .append(" that report NOT_EQUAL, so the skip does NOT mean the infobase is current. "); //$NON-NLS-1$
+        } else {
+            sb.append("This infobase is SHARED with project(s) ").append(projects) //$NON-NLS-1$
+                    .append(" that report NOT_EQUAL. "); //$NON-NLS-1$
+        }
+        sb.append("EDT's equality state is per (project, infobase) pair: run update_infobase separately ") //$NON-NLS-1$
+                .append("for each of those projects (project_name=<that project>) before treating the ") //$NON-NLS-1$
+                .append("infobase as up to date."); //$NON-NLS-1$
+        return sb.toString();
+    }
+
+    /** Platform wording for "the target database's configuration structure is damaged" (EN + RU). */
+    private static final String[] TARGET_DB_DAMAGED_TOKENS = {
+        "integrity of configuration structure", //$NON-NLS-1$
+        "целостность структуры конфигурации", //$NON-NLS-1$
+    };
+
+    private static final String TARGET_DB_DAMAGED_HINT =
+            "The TARGET DATABASE is damaged — this is NOT a problem with the configuration in git and NOT " //$NON-NLS-1$
+                    + "a lock/holder problem. The platform refused the update because the infobase's own " //$NON-NLS-1$
+                    + "configuration structure is broken, so no update or restructure can be applied until " //$NON-NLS-1$
+                    + "the database itself is repaired: run chdbfl.exe -s \"<ib-dir>\\1Cv8.1CD\" for a file " //$NON-NLS-1$
+                    + "infobase, or Designer -> Administration -> Testing and repair. NB: tools that read " //$NON-NLS-1$
+                    + "only the EDT model (get_diagnostics, metadata_smoke) report GREEN here by design — " //$NON-NLS-1$
+                    + "they never open the target database, so their success says nothing about it."; //$NON-NLS-1$
+
+    /**
+     * True when the failure chain says the TARGET database structure is damaged. Must be checked BEFORE
+     * {@link #isBlockedByLockedIB}: that predicate matches a bare {@code "xml.zip"} substring anywhere
+     * in the chain, and a damaged database fails its config-export step with the very same temp-file
+     * message — so the more specific cause has to win, or the caller is sent hunting for a lock holder
+     * that does not exist. Package-private for unit tests.
+     */
+    static boolean isTargetDbDamaged(Throwable error) {
+        int guard = 0;
+        for (Throwable current = error; current != null && guard < MAX_CAUSE_DEPTH; current = current.getCause()) {
+            guard++;
+            String message = current.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase(Locale.ROOT);
+                for (String token : TARGET_DB_DAMAGED_TOKENS) {
+                    if (lower.contains(token)) {
+                        return true;
+                    }
+                }
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    /** Depth cap for cause-chain walks (self-referencing chains are also guarded explicitly). */
+    private static final int MAX_CAUSE_DEPTH = 12;
+
+    /**
+     * Builds the {@code TARGET_INFOBASE_DAMAGED} payload: the repair hint, the concrete
+     * {@code chdbfl.exe} command for a file infobase, and the raw cause chain.
+     */
+    private static JsonObject damagedTargetDbPayload(String opId, String projectName, File workspaceRoot,
+            String ibPath, Throwable error) {
+        JsonObject payload = errorPayload(opId, projectName, workspaceRoot,
+                EdtToolErrorCode.TARGET_INFOBASE_DAMAGED, error == null ? null : error.getMessage());
+        payload.addProperty("hint", TARGET_DB_DAMAGED_HINT); //$NON-NLS-1$
+        if (ibPath != null && !ibPath.isBlank()) {
+            payload.addProperty("infobase_path", ibPath); //$NON-NLS-1$
+            payload.addProperty("repair_command", repairCommand(ibPath)); //$NON-NLS-1$
+        }
+        attachCauseChain(payload, error, "TARGET_INFOBASE_DAMAGED"); //$NON-NLS-1$
+        return payload;
+    }
+
+    /** {@code chdbfl.exe -s "<ib-dir>\1Cv8.1CD"} for a file infobase directory. Package-private for tests. */
+    static String repairCommand(String ibPath) {
+        String dir = ibPath.trim();
+        while (dir.endsWith("\\") || dir.endsWith("/")) { //$NON-NLS-1$ //$NON-NLS-2$
+            dir = dir.substring(0, dir.length() - 1);
+        }
+        return "chdbfl.exe -s \"" + dir + "\\1Cv8.1CD\""; //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
+     * Echoes the raw cause chain into the payload ({@code raw_error}) and the bundle log. The exact
+     * platform wording of a damaged-target-DB failure has never been observed live, so BOTH a successful
+     * classification and every unclassified {@code UPDATE_FAILED} carry their raw chain: the first live
+     * occurrence then confirms or refutes {@link #TARGET_DB_DAMAGED_TOKENS} without a separate
+     * diagnostic build.
+     */
+    private static void attachCauseChain(JsonObject payload, Throwable error, String context) {
+        String chain = causeChain(error, MAX_RAW_ERROR_CHARS);
+        if (chain.isEmpty()) {
+            return;
+        }
+        payload.addProperty("raw_error", chain); //$NON-NLS-1$
+        LOG.warn("edt_update_infobase %s: raw cause chain: %s", context, chain); //$NON-NLS-1$
+    }
+
+    /**
+     * Flattens an exception chain into {@code Type: message <- Type: message …}, truncated to
+     * {@code maxChars}. Pure; package-private for unit tests.
+     */
+    static String causeChain(Throwable error, int maxChars) {
+        StringBuilder sb = new StringBuilder();
+        int guard = 0;
+        for (Throwable current = error; current != null && guard < MAX_CAUSE_DEPTH; current = current.getCause()) {
+            guard++;
+            if (sb.length() > 0) {
+                sb.append(" <- "); //$NON-NLS-1$
+            }
+            sb.append(current.getClass().getSimpleName());
+            String message = current.getMessage();
+            if (message != null && !message.isBlank()) {
+                sb.append(": ").append(message.trim()); //$NON-NLS-1$
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+        }
+        if (maxChars > 0 && sb.length() > maxChars) {
+            return sb.substring(0, maxChars) + "…(truncated)"; //$NON-NLS-1$
+        }
+        return sb.toString();
     }
 
     private static JsonObject basePayload(String opId, String status, String projectName, boolean dryRun,

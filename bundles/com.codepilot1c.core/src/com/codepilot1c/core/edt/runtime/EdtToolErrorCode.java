@@ -42,5 +42,12 @@ public enum EdtToolErrorCode {
     PUBLICATION_NOT_FOUND,
     WEB_EXTENSION_NOT_FOUND,
     WEB_SERVER_RESTART_FAILED,
-    PROBE_FAILED
+    PROBE_FAILED,
+    /**
+     * The TARGET database is physically damaged ("integrity of configuration structure is violated") —
+     * distinct from a lock/holder problem and from anything wrong with the configuration in the
+     * project: no update can land until the database itself is repaired (chdbfl.exe / Designer testing
+     * and repair). Appended, never reordered, so existing codes keep their ordinals.
+     */
+    TARGET_INFOBASE_DAMAGED
 }

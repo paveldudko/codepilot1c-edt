@@ -43,7 +43,7 @@ public class EdtDiagnosticsTool extends AbstractTool {
               "properties": {
                 "command": {
                   "type": "string",
-                  "description": "Diagnostics command. Use metadata_smoke for headless verification, trace_export for export issues, analyze_error for a concrete error payload, update_infobase or launch_app for runtime workflow.",
+                  "description": "Diagnostics command. metadata_smoke = self-test of the EDT metadata API (creates and deletes temporary objects in the project); it does NOT verify the target infobase/database — use get_infobase_sync_state / update_infobase for that. trace_export for export issues, analyze_error for a concrete error payload, update_infobase or launch_app for runtime workflow.",
                   "enum": ["metadata_smoke", "trace_export", "analyze_error", "update_infobase", "launch_app"]
                 },
                 "project": {

@@ -30,12 +30,27 @@ import com.codepilot1c.core.logging.VibeLogger;
 
 /**
  * Smoke regression scenarios for metadata creation flows in EDT runtime.
+ *
+ * <p><b>Scope (non-goal).</b> Everything here runs against the EDT PROJECT MODEL: it creates, extends
+ * and deletes temporary objects through the metadata API and probes a read-only BM transaction. The
+ * target infobase/database is never opened, so a SUCCESS report says nothing about whether the
+ * infobase is up to date or even healthy — use {@code get_infobase_sync_state} and
+ * {@code update_infobase} for that. Keeping this explicit matters: a green smoke report was being
+ * read as "the environment is fine" while the target database was in fact unusable.</p>
  */
 @ToolMeta(name = "edt_metadata_smoke", category = "diagnostics", tags = {"workspace", "edt"})
 public class EdtMetadataSmokeTool extends AbstractTool {
 
     private static final VibeLogger.CategoryLogger LOG = VibeLogger.forClass(EdtMetadataSmokeTool.class);
     private static final DateTimeFormatter RUN_SUFFIX_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss"); //$NON-NLS-1$
+
+    /**
+     * Report header line stating what this run does and does NOT cover. A green report was being read as
+     * "the environment is fine" while the target database was unusable — the scope has to be on the
+     * artifact itself, not only in the tool description. Package-private for the wording-regression test.
+     */
+    static final String SCOPE_LINE =
+            "scope: EDT metadata API (project model only) — target infobase NOT verified"; //$NON-NLS-1$
 
     private static final String SCHEMA = """
             {
@@ -66,7 +81,10 @@ public class EdtMetadataSmokeTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "Runs create/add_child/duplicate/readiness smoke scenarios for the EDT metadata API."; //$NON-NLS-1$
+        return "Self-test of the EDT metadata API: runs create/add_child/duplicate/readiness scenarios " //$NON-NLS-1$
+                + "by creating and then deleting temporary objects in the project. Does NOT verify the " //$NON-NLS-1$
+                + "target infobase/database — it is never opened; for infobase readiness use " //$NON-NLS-1$
+                + "get_infobase_sync_state, and update_infobase to apply the configuration."; //$NON-NLS-1$
     }
 
     @Override
@@ -277,6 +295,7 @@ public class EdtMetadataSmokeTool extends AbstractTool {
         out.append("EDT Metadata Smoke Report\n"); //$NON-NLS-1$
         out.append("project: ").append(projectName).append('\n'); //$NON-NLS-1$
         out.append("name_prefix: ").append(namePrefix).append('\n'); //$NON-NLS-1$
+        out.append(SCOPE_LINE).append('\n');
         out.append("result: ").append(failed ? "FAILED" : "SUCCESS").append("\n\n"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         for (StepResult step : steps) {
             out.append(step.success ? "[OK] " : "[FAIL] "); //$NON-NLS-1$ //$NON-NLS-2$
