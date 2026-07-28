@@ -88,6 +88,7 @@ import com._1c.g5.v8.dt.form.model.EventHandler;
 import com._1c.g5.v8.dt.form.model.EventHandlerContainer;
 import com._1c.g5.v8.dt.form.model.ExtInfo;
 import com._1c.g5.v8.dt.form.model.FormVisualEntity;
+import com._1c.g5.v8.dt.form.service.DynamicListAttributeService;
 import com._1c.g5.v8.dt.form.service.FormItemInformationService;
 import com._1c.g5.v8.dt.mcore.Event;
 import com._1c.g5.v8.dt.form.model.Form;
@@ -141,6 +142,7 @@ import com._1c.g5.v8.dt.mcore.StringQualifiers;
 import com._1c.g5.v8.dt.mcore.TypeDescription;
 import com._1c.g5.v8.dt.mcore.TypeItem;
 import com._1c.g5.v8.dt.mcore.util.McoreUtil;
+import com._1c.g5.v8.dt.metadata.dbview.DbViewDef;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicCommand;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicFeature;
 import com._1c.g5.v8.dt.metadata.common.ApplicationUsePurpose;
@@ -864,13 +866,18 @@ public class EdtMetadataService {
             }
             Form formModel = resolveManagedFormModel(basicForm, applyFormFqn);
             applyFormRootPropertiesIfNeeded(basicForm, request);
+            // Notes carry back what the attribute pass decided on the caller's behalf (e.g. the
+            // query text generated for a dynamic list) so the result shows what was written.
+            List<String> attributeNotes = new ArrayList<>();
             FormAttributeRecipeStats stats = hasAttributes
-                    ? applyFormAttributeRecipe(formModel, request.attributes(), mode, transaction, preResolvedTypes, txConfiguration)
+                    ? applyFormAttributeRecipe(formModel, request.attributes(), mode, transaction,
+                            preResolvedTypes, txConfiguration, attributeNotes)
                     : new FormAttributeRecipeStats();
-            List<String> summaries = hasLayoutOps
-                    ? applyFormModelOperations(formModel, request.layoutOperations(), txConfiguration,
-                            transaction, preResolvedTypes)
-                    : List.of();
+            List<String> summaries = new ArrayList<>(attributeNotes);
+            if (hasLayoutOps) {
+                summaries.addAll(applyFormModelOperations(formModel, request.layoutOperations(), txConfiguration,
+                        transaction, preResolvedTypes));
+            }
             // Normalize platform-required defaults after both attribute and
             // layout passes — handles the attributes-only path that does
             // not go through applyFormModelOperations. Idempotent when
@@ -1112,8 +1119,31 @@ public class EdtMetadataService {
                                 MetadataOperationCode.INVALID_METADATA_CHANGE,
                                 "set_form_props operation requires non-empty 'set' or 'properties' map", false); //$NON-NLS-1$
                     }
-                    applyFormPropertySet(formModel, set, configuration);
-                    summaries.add("set_form_props[" + operationIndex + "]"); //$NON-NLS-1$ //$NON-NLS-2$
+                    List<String> notes = new ArrayList<>();
+                    applyFormPropertySet(formModel, set, configuration, notes);
+                    summaries.add("set_form_props[" + operationIndex + "]" + formatOperationNotes(notes)); //$NON-NLS-1$ //$NON-NLS-2$
+                }
+                case "setattributeprops", "setattribute", "updateattribute" -> { //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    // Form ATTRIBUTES (Form.getAttributes()) and form ITEMS (the visual tree that
+                    // set_item addresses) have INDEPENDENT id spaces, so set_item can never reach an
+                    // attribute — which left "patch one existing form attribute" without a visible
+                    // verb: the only route was set_form_props set:{attributes:[…]}. BF-13330.
+                    FormAttribute attribute = resolveRequiredFormAttribute(formModel, operation);
+                    Map<String, Object> attributePatch = stripMapKeysIgnoreCase(operation, "op", "action", "index"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                    Map<String, Object> inlineSet = extractOperationSet(attributePatch);
+                    Map<String, Object> flatSet = stripMapKeysIgnoreCase(attributePatch,
+                            "name", "id", "attribute", "attribute_name", "attribute_id", "attributeId", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+                            "set", "properties"); //$NON-NLS-1$ //$NON-NLS-2$
+                    if (inlineSet.isEmpty() && flatSet.isEmpty()) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_METADATA_CHANGE,
+                                "set_attribute_props operation requires non-empty 'set' or 'properties' map", //$NON-NLS-1$
+                                false);
+                    }
+                    List<String> notes = new ArrayList<>();
+                    applyFormAttributePatch(attribute, attributePatch, transaction, configuration, notes);
+                    summaries.add("set_attribute_props[" + operationIndex + "]: name=" + attribute.getName() //$NON-NLS-1$ //$NON-NLS-2$
+                            + ", id=" + attribute.getId() + formatOperationNotes(notes)); //$NON-NLS-1$
                 }
                 case "addgroup", "creategroup" -> {
                     FormItemContainer parentContainer = resolveTargetContainer(formModel, operation);
@@ -1393,12 +1423,17 @@ public class EdtMetadataService {
                     }
                     Command resolvedCommand = null;
                     if (commandRef != null && !commandRef.isBlank()) {
-                        resolvedCommand = findFormCommandByName(formModel, commandRef);
+                        // A caller that reads back its own .form sees <commandName>Form.Command.X —
+                        // that IS the notation the BM serializer emits — so accept both the qualified
+                        // and the bare form instead of failing on the caller's own round-trip.
+                        String localCommandName = resolveAddButtonCommandName(commandRef);
+                        resolvedCommand = findFormCommandByName(formModel, localCommandName);
                         if (resolvedCommand == null) {
                             throw new MetadataOperationException(
                                     MetadataOperationCode.METADATA_NOT_FOUND,
                                     "Form command not found: \"" + commandRef //$NON-NLS-1$
-                                            + "\". Use add_command first to create it.", false); //$NON-NLS-1$
+                                            + "\". Use add_command first to create it." //$NON-NLS-1$
+                                            + describeAvailableFormCommands(formModel), false);
                         }
                     }
                     Integer index = asOptionalInteger(operation.get("index"), "index"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -2357,12 +2392,97 @@ public class EdtMetadataService {
         if (formModel == null || name == null) {
             return null;
         }
+        String localName = stripFormCommandPrefix(name);
         for (FormCommand cmd : formModel.getFormCommands()) {
-            if (cmd != null && name.equalsIgnoreCase(cmd.getName())) {
+            if (cmd != null && localName.equalsIgnoreCase(cmd.getName())) {
                 return cmd;
             }
         }
         return null;
+    }
+
+    /** Qualified prefixes the BM serializer writes in front of a form-local command name. */
+    private static final List<String> FORM_COMMAND_NAME_PREFIXES = List.of(
+            "Form.Command.", //$NON-NLS-1$
+            "FormCommand.", //$NON-NLS-1$
+            "Command."); //$NON-NLS-1$
+
+    /**
+     * Strip the qualified prefix off a form-local command reference, case-insensitively.
+     * {@code Form.Command.Recalculate} → {@code Recalculate}; a bare name is returned unchanged.
+     *
+     * <p>{@code Form.Command.X} is exactly what {@code <commandName>} carries in a serialized
+     * {@code .form}, so a caller echoing back what it just read is not hallucinating a format.</p>
+     */
+    private String stripFormCommandPrefix(String name) {
+        if (name == null) {
+            return null;
+        }
+        String value = name.trim();
+        for (String prefix : FORM_COMMAND_NAME_PREFIXES) {
+            if (value.length() > prefix.length() && value.regionMatches(true, 0, prefix, 0, prefix.length())) {
+                return value.substring(prefix.length()).trim();
+            }
+        }
+        return value;
+    }
+
+    /**
+     * Validate + normalize the {@code command_name} of an {@code add_button} operation.
+     * Accepts a bare name or the qualified {@code Form.Command.<Name>} notation; rejects the two
+     * shapes that can never resolve to a form-local command with an explanation instead of a
+     * bare "not found".
+     */
+    private String resolveAddButtonCommandName(String commandRef) {
+        String value = commandRef == null ? null : commandRef.trim();
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+        if (value.regionMatches(true, 0, "Form.StandardCommand.", 0, "Form.StandardCommand.".length()) //$NON-NLS-1$ //$NON-NLS-2$
+                || value.regionMatches(true, 0, "StandardCommand.", 0, "StandardCommand.".length())) { //$NON-NLS-1$ //$NON-NLS-2$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "\"" + commandRef + "\" is a standard form command. Standard commands are provided by" //$NON-NLS-1$ //$NON-NLS-2$
+                            + " the platform and cannot be added as a form-local button command:" //$NON-NLS-1$
+                            + " they appear in the form's auto command bar on their own. add_button binds" //$NON-NLS-1$
+                            + " only commands from Form.getFormCommands() (create one with add_command).", //$NON-NLS-1$
+                    false);
+        }
+        String localName = stripFormCommandPrefix(value);
+        if (localName.indexOf('.') >= 0) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_NOT_FOUND,
+                    "\"" + commandRef + "\" is not a form-local command. add_button resolves only" //$NON-NLS-1$ //$NON-NLS-2$
+                            + " commands from Form.getFormCommands() — a bare name or the qualified" //$NON-NLS-1$
+                            + " Form.Command.<Name> notation. Object commands (Catalog.X.Command.Y) and" //$NON-NLS-1$
+                            + " common commands (CommonCommand.Z) are not supported yet; add a form" //$NON-NLS-1$
+                            + " command with add_command and call the object command from its handler.", //$NON-NLS-1$
+                    false);
+        }
+        return localName;
+    }
+
+    /** Trailing hint listing the form-local command names available for add_button. */
+    private String describeAvailableFormCommands(Form formModel) {
+        if (formModel == null || formModel.getFormCommands().isEmpty()) {
+            return " This form declares no form-local commands yet."; //$NON-NLS-1$
+        }
+        List<String> names = new ArrayList<>();
+        for (FormCommand cmd : formModel.getFormCommands()) {
+            if (cmd != null && cmd.getName() != null) {
+                names.add(cmd.getName());
+            }
+        }
+        return " Available form commands: " + String.join(", ", names) //$NON-NLS-1$ //$NON-NLS-2$
+                + " (a bare name or Form.Command.<Name> is accepted)."; //$NON-NLS-1$
+    }
+
+    /** Render collected operation notes as a summary suffix (empty when there are none). */
+    private String formatOperationNotes(List<String> notes) {
+        if (notes == null || notes.isEmpty()) {
+            return ""; //$NON-NLS-1$
+        }
+        return " (" + String.join("; ", notes) + ")"; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
     }
 
     /**
@@ -3525,6 +3645,18 @@ public class EdtMetadataService {
     }
 
     private void applyFormPropertySet(EObject target, Map<String, Object> set, Configuration configuration) {
+        applyFormPropertySet(target, set, configuration, null);
+    }
+
+    /**
+     * @param notes optional sink for operation notes the caller should surface in its summary
+     *     (e.g. the query text auto-generated for a dynamic list). May be {@code null}.
+     */
+    private void applyFormPropertySet(
+            EObject target,
+            Map<String, Object> set,
+            Configuration configuration,
+            List<String> notes) {
         for (Map.Entry<String, Object> entry : set.entrySet()) {
             String key = entry.getKey();
             if (key == null || key.isBlank()) {
@@ -3551,7 +3683,7 @@ public class EdtMetadataService {
                 continue;
             }
             if ("attributes".equals(normalized) && target instanceof Form formModel) { //$NON-NLS-1$
-                applyFormAttributesPatch(formModel, value);
+                applyFormAttributesPatch(formModel, value, configuration, notes);
                 continue;
             }
             if ("uservisible".equals(normalized) && target instanceof Visible visible) { //$NON-NLS-1$
@@ -3971,7 +4103,11 @@ public class EdtMetadataService {
     record RoleVisibility(String role, boolean value) {
     }
 
-    private void applyFormAttributesPatch(Form formModel, Object value) {
+    private void applyFormAttributesPatch(
+            Form formModel,
+            Object value,
+            Configuration configuration,
+            List<String> notes) {
         List<Map<String, Object>> patches = normalizeAttributePatches(value);
         if (patches.isEmpty()) {
             throw new MetadataOperationException(
@@ -3980,7 +4116,10 @@ public class EdtMetadataService {
         }
         for (Map<String, Object> patch : patches) {
             FormAttribute attribute = resolveRequiredFormAttribute(formModel, patch);
-            applyFormAttributePatch(attribute, patch);
+            // No BM transaction on this route (set_form_props reaches attributes through the
+            // generic property set); the DynamicList applier only needs the configuration to
+            // resolve a mainTable FQN, so a null transaction is fine here.
+            applyFormAttributePatch(attribute, patch, null, configuration, notes);
         }
     }
 
@@ -4065,7 +4204,22 @@ public class EdtMetadataService {
                 false);
     }
 
-    private void applyFormAttributePatch(FormAttribute attribute, Map<String, Object> patch) {
+    /**
+     * Single choke point for every form-attribute patch — {@code set_item} on an attribute,
+     * {@code apply_form_recipe attributes:[…]}, {@code set_form_props set:{attributes:[…]}}
+     * and the {@code set_attribute_props} op all land here.
+     *
+     * @param transaction current write transaction, or {@code null} on the
+     *     {@code set_form_props} route (only used for diagnostics)
+     * @param configuration transaction configuration used to resolve a {@code mainTable} FQN
+     * @param notes optional sink for operation notes to surface in the caller's summary
+     */
+    private void applyFormAttributePatch(
+            FormAttribute attribute,
+            Map<String, Object> patch,
+            IBmPlatformTransaction transaction,
+            Configuration configuration,
+            List<String> notes) {
         Map<String, Object> set = extractOperationSet(patch);
         if (set.isEmpty()) {
             set = new LinkedHashMap<>(patch);
@@ -4085,38 +4239,334 @@ public class EdtMetadataService {
             applyUseAlwaysAttributes(attribute, useAlways);
         }
 
+        // Legacy flat `dynamicDataRead` branch, kept for backward compatibility. It used to
+        // call the setter on the extInfo directly (and hard-failed when the attribute had no
+        // DynamicListExtInfo yet); it now only *contributes* to the merged extInfo patch
+        // below, so the value is applied exactly once — by applyDynamicListExtInfo.
+        Map<String, Object> legacyExtInfoSet = new LinkedHashMap<>();
         Object dynamicDataRead = removeMapValueIgnoreCase(set, "dynamicDataRead", "dynamic_data_read"); //$NON-NLS-1$ //$NON-NLS-2$
-        if (dynamicDataRead != null || hasMapKeyIgnoreCase(patch, "dynamicDataRead") || hasMapKeyIgnoreCase(patch, "dynamic_data_read")) { //$NON-NLS-1$ //$NON-NLS-2$
-            if (!(attribute.getExtInfo() instanceof DynamicListExtInfo extInfo)) {
-                throw new MetadataOperationException(
-                        MetadataOperationCode.INVALID_METADATA_CHANGE,
-                        "dynamicDataRead is supported only for attributes with DynamicListExtInfo", false); //$NON-NLS-1$
-            }
+        if (dynamicDataRead == null) {
+            dynamicDataRead = getMapValueIgnoreCase(patch, "dynamicDataRead"); //$NON-NLS-1$
+        }
+        if (dynamicDataRead == null) {
+            dynamicDataRead = getMapValueIgnoreCase(patch, "dynamic_data_read"); //$NON-NLS-1$
+        }
+        if (dynamicDataRead != null
+                || hasMapKeyIgnoreCase(patch, "dynamicDataRead") //$NON-NLS-1$
+                || hasMapKeyIgnoreCase(patch, "dynamic_data_read")) { //$NON-NLS-1$
             Boolean parsed = parseBoolean(dynamicDataRead);
             if (parsed == null) {
                 throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_PROPERTY_VALUE,
                         "dynamicDataRead expects boolean value", false); //$NON-NLS-1$
             }
-            extInfo.setDynamicDataRead(parsed.booleanValue());
+            legacyExtInfoSet.put("dynamicDataRead", parsed); //$NON-NLS-1$
         }
 
+        // BF-13330: hoist the FLAT DynamicListExtInfo keys (customQuery / queryText /
+        // mainTable / autoFillAvailableFields / …) out of the set. They are declared on the
+        // attribute's extInfo, not on FormAttribute, so the generic feature resolver rejected
+        // them as "Unknown form property" even though the property exists one level deeper.
+        // Same shape as the TypeDescription-qualifier hoist right below.
+        Map<String, Object> hoistedExtInfoSet = DynamicListExtInfoRules.hoist(set);
+
+        // The explicit nested form — set:{extInfo:{...}} — always wins over a flat key:
+        // both sides are canonicalized first so an alias/case variant of the same feature
+        // cannot slip past the override.
         Object extInfoPatch = removeMapValueIgnoreCase(set, "extInfo", "ext_info"); //$NON-NLS-1$ //$NON-NLS-2$
-        Map<String, Object> extInfoSet = asMap(extInfoPatch);
-        if (!extInfoSet.isEmpty()) {
-            if (attribute.getExtInfo() == null) {
+        Map<String, Object> explicitExtInfoSet = DynamicListExtInfoRules.canonicalize(asMap(extInfoPatch));
+        Map<String, Object> mergedExtInfoSet = new LinkedHashMap<>(legacyExtInfoSet);
+        mergedExtInfoSet.putAll(hoistedExtInfoSet);
+        mergedExtInfoSet.putAll(explicitExtInfoSet);
+
+        if (!mergedExtInfoSet.isEmpty()) {
+            boolean dynamicList = attribute.getExtInfo() instanceof DynamicListExtInfo
+                    || isDynamicListFormAttribute(attribute);
+            if (dynamicList || !hoistedExtInfoSet.isEmpty() || !legacyExtInfoSet.isEmpty()) {
+                // Either a real dynamic list, or dynamic-list-only keys were used on something
+                // else — applyDynamicListExtInfo answers both (materialize, or fail loud).
+                applyDynamicListExtInfo(attribute, mergedExtInfoSet, transaction, configuration, notes);
+            } else if (attribute.getExtInfo() == null) {
                 throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
-                        "Attribute extInfo is not initialized for patch", false); //$NON-NLS-1$
+                        "Attribute '" + attribute.getName() + "' has no extInfo to patch and its valueType (" //$NON-NLS-1$ //$NON-NLS-2$
+                                + describeFormAttributeValueType(attribute)
+                                + ") does not imply one. extInfo is materialized automatically only for" //$NON-NLS-1$
+                                + " DynamicList attributes; set the attribute type first.", false); //$NON-NLS-1$
+            } else {
+                // A non-DynamicList ExtInfo (ValueTable / ValueTree / DCS): keep the generic
+                // route so its own features stay reachable and typos stay fail-loud.
+                applyFormPropertySet(attribute.getExtInfo(), mergedExtInfoSet, configuration);
             }
-            applyFormPropertySet(attribute.getExtInfo(), extInfoSet);
         }
 
         applyFormAttributeTypeQualifiers(attribute, set);
 
         if (!set.isEmpty()) {
-            applyFormPropertySet(attribute, set);
+            applyFormPropertySet(attribute, set, configuration, notes);
         }
+    }
+
+    /**
+     * Apply a {@code DynamicListExtInfo} patch to a form attribute.
+     *
+     * <p>Reproduces the semantics of the EDT form editor's
+     * {@code ChangeDynamicListExtInfoCustomQueryTask} by hand on purpose: that task is a
+     * {@code BmBasicTask1} and would open its own transaction, while we are already inside
+     * {@code executeWrite} — a nested transaction is a risk we do not need to take.</p>
+     *
+     * <ul>
+     * <li>{@code customQuery=true} — flips the flag and, when no {@code queryText} was passed
+     *     and none is stored yet, generates one from {@code mainTable} via
+     *     {@code DynamicListAttributeService.createQueryText} (the exact call the editor makes).
+     *     The generated text is reported back through {@code notes} so the caller sees what
+     *     was written instead of guessing.</li>
+     * <li>{@code customQuery=false} — clears {@code fields} / {@code calculatedFields} /
+     *     {@code parameters} and drops {@code queryText}, exactly like the editor task.</li>
+     * <li>{@code mainTable} is never reassigned implicitly — flipping {@code customQuery} in
+     *     either direction preserves it.</li>
+     * </ul>
+     */
+    private void applyDynamicListExtInfo(
+            FormAttribute attribute,
+            Map<String, Object> extInfoSet,
+            IBmPlatformTransaction transaction,
+            Configuration configuration,
+            List<String> notes) {
+        if (attribute == null || extInfoSet == null || extInfoSet.isEmpty()) {
+            return;
+        }
+        LOG.debug("applyDynamicListExtInfo: attribute=%s keys=%s tx=%s", //$NON-NLS-1$
+                attribute.getName(),
+                extInfoSet.keySet(),
+                Boolean.valueOf(transaction != null));
+
+        Map<String, Object> set = new LinkedHashMap<>(extInfoSet);
+
+        // Honest refusal before anything is mutated: the DCS containment collections are
+        // recognized but not authorable, and a silent ignore would look like success.
+        for (String feature : DynamicListExtInfoRules.UNSUPPORTED_CONTAINMENT_FEATURES) {
+            if (hasMapKeyIgnoreCase(set, feature)) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        "DynamicList '" + feature + "' is a DCS containment collection and is not" //$NON-NLS-1$ //$NON-NLS-2$
+                                + " authorable yet (fields / calculatedFields / parameters /" //$NON-NLS-1$
+                                + " listSettings). Keep autoFillAvailableFields=true — the platform" //$NON-NLS-1$
+                                + " derives the available fields from queryText. The EDT form editor" //$NON-NLS-1$
+                                + " does not populate these either when customQuery is switched on.", //$NON-NLS-1$
+                        false);
+            }
+        }
+
+        DynamicListExtInfo extInfo = ensureDynamicListExtInfo(attribute);
+
+        Object mainTableValue = removeMapValueIgnoreCase(set, "mainTable"); //$NON-NLS-1$
+        if (mainTableValue != null) {
+            applyDynamicListMainTable(extInfo, mainTableValue, configuration);
+        }
+
+        Object customQueryValue = removeMapValueIgnoreCase(set, "customQuery"); //$NON-NLS-1$
+        Object queryTextValue = removeMapValueIgnoreCase(set, "queryText"); //$NON-NLS-1$
+        Boolean customQuery = null;
+        if (customQueryValue != null) {
+            customQuery = parseBoolean(customQueryValue);
+            if (customQuery == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "customQuery expects boolean value", false); //$NON-NLS-1$
+            }
+        }
+        String queryText = queryTextValue == null ? null : asString(queryTextValue);
+
+        if (Boolean.FALSE.equals(customQuery) && queryTextValue != null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "Contradictory patch: customQuery=false clears queryText (and the derived DCS" //$NON-NLS-1$
+                            + " fields), so passing queryText in the same call cannot be honored." //$NON-NLS-1$
+                            + " Drop one of the two.", false); //$NON-NLS-1$
+        }
+
+        if (Boolean.TRUE.equals(customQuery)) {
+            extInfo.setCustomQuery(true);
+            if (queryText != null && !queryText.isBlank()) {
+                extInfo.setQueryText(queryText);
+            } else if (extInfo.getQueryText() == null || extInfo.getQueryText().isBlank()) {
+                DbViewDef mainTable = extInfo.getMainTable();
+                if (mainTable == null) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.INVALID_METADATA_CHANGE,
+                            "customQuery=true needs a query: pass queryText explicitly or set mainTable" //$NON-NLS-1$
+                                    + " first (the query text is generated from the main table, as the" //$NON-NLS-1$
+                                    + " form editor does).", false); //$NON-NLS-1$
+                }
+                String generated = DynamicListAttributeService.createQueryText(
+                        mainTable, resolveDynamicListScriptVariant(configuration));
+                if (generated == null || generated.isBlank()) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                            "Could not generate a query text for mainTable '" + describeEObjectName(mainTable) //$NON-NLS-1$
+                                    + "'. Pass queryText explicitly.", false); //$NON-NLS-1$
+                }
+                extInfo.setQueryText(generated);
+                addNote(notes, "customQuery=true: generated queryText from mainTable " //$NON-NLS-1$
+                        + describeEObjectName(mainTable) + " -> " + generated); //$NON-NLS-1$
+            }
+        } else if (Boolean.FALSE.equals(customQuery)) {
+            // Mirror of ChangeDynamicListExtInfoCustomQueryTask's false branch.
+            extInfo.setCustomQuery(false);
+            extInfo.getFields().clear();
+            extInfo.getCalculatedFields().clear();
+            extInfo.getParameters().clear();
+            extInfo.setQueryText(null);
+            addNote(notes, "customQuery=false: queryText cleared, derived DCS fields/parameters reset" //$NON-NLS-1$
+                    + " (mainTable kept: " + describeEObjectName(extInfo.getMainTable()) + ")"); //$NON-NLS-1$ //$NON-NLS-2$
+        } else if (queryText != null) {
+            extInfo.setQueryText(queryText);
+            if (!extInfo.isCustomQuery()) {
+                addNote(notes, "queryText written while customQuery=false — the platform ignores it for" //$NON-NLS-1$
+                        + " an auto list; pass customQuery=true to make it effective."); //$NON-NLS-1$
+            }
+        }
+
+        // Remaining scalars (autoFillAvailableFields, autoSaveUserSettings,
+        // getInvisibleFieldPresentations, dynamicDataRead, keyType, keyField) — the generic
+        // resolver already handles enums and EList<String>.
+        if (!set.isEmpty()) {
+            applyFormPropertySet(extInfo, set, configuration);
+        }
+    }
+
+    /**
+     * Materialize the {@code DynamicListExtInfo} companion of a DynamicList form attribute,
+     * mirroring {@link #ensureFormFieldExtInfo} / {@link #ensureFormGroupExtInfo}. Replaces the
+     * old blanket "extInfo is not initialized" refusal: a freshly created DynamicList attribute
+     * legitimately has no extInfo yet.
+     */
+    private DynamicListExtInfo ensureDynamicListExtInfo(FormAttribute attribute) {
+        if (attribute.getExtInfo() instanceof DynamicListExtInfo existing) {
+            return existing;
+        }
+        if (!isDynamicListFormAttribute(attribute)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "customQuery / queryText / mainTable / autoFillAvailableFields are DynamicList-only" //$NON-NLS-1$
+                            + " properties (they live on form:DynamicListExtInfo), but form attribute '" //$NON-NLS-1$
+                            + attribute.getName() + "' has valueType " //$NON-NLS-1$
+                            + describeFormAttributeValueType(attribute)
+                            + ". Patch a DynamicList attribute instead (its valueType is DynamicList).", //$NON-NLS-1$
+                    false);
+        }
+        DynamicListExtInfo created = FormFactory.eINSTANCE.createDynamicListExtInfo();
+        attribute.setExtInfo(created);
+        return created;
+    }
+
+    /** True when the attribute's valueType is the platform {@code DynamicList} type. */
+    private boolean isDynamicListFormAttribute(FormAttribute attribute) {
+        if (attribute == null) {
+            return false;
+        }
+        TypeDescription valueType = attribute.getValueType();
+        if (valueType == null) {
+            return false;
+        }
+        Set<String> dynamicListQueries = Set.of("DynamicList", "ДинамическийСписок"); //$NON-NLS-1$ //$NON-NLS-2$
+        for (TypeItem typeItem : valueType.getTypes()) {
+            if (typeItem != null && matchesTypeRef(typeItem, dynamicListQueries)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Human-readable valueType of a form attribute, for fail-loud messages. */
+    private String describeFormAttributeValueType(FormAttribute attribute) {
+        TypeDescription valueType = attribute == null ? null : attribute.getValueType();
+        if (valueType == null || valueType.getTypes().isEmpty()) {
+            return "<unset>"; //$NON-NLS-1$
+        }
+        List<String> names = new ArrayList<>();
+        for (TypeItem typeItem : valueType.getTypes()) {
+            if (typeItem == null) {
+                continue;
+            }
+            String name = McoreUtil.getTypeName(typeItem);
+            if (name == null || name.isBlank()) {
+                name = typeItem.getName();
+            }
+            if (name != null && !name.isBlank()) {
+                names.add(name);
+            }
+        }
+        return names.isEmpty() ? "<unset>" : String.join(", ", names); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
+     * Bind {@code DynamicListExtInfo.mainTable} from a metadata FQN (e.g.
+     * {@code Catalog.Products}). The EMF feature holds a {@code DbViewDef}, which hangs off the
+     * object's {@code dbViewDefs → mainView} pair; both hops are read reflectively so the code
+     * does not have to import the dozens of typed {@code *DbViewDefs} interfaces (one per
+     * metadata kind) just to reach the same {@code BasicDbViewDefs.getMainView()}.
+     */
+    private void applyDynamicListMainTable(DynamicListExtInfo extInfo, Object value, Configuration configuration) {
+        String fqn = asString(value);
+        if (fqn == null || fqn.isBlank()) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "mainTable expects a metadata FQN (e.g. Catalog.Products)", false); //$NON-NLS-1$
+        }
+        if (configuration == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_NOT_FOUND,
+                    "Cannot resolve mainTable '" + fqn + "': configuration unavailable", false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        MdObject resolved = resolveByFqn(configuration, fqn.trim());
+        if (resolved == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_NOT_FOUND,
+                    "mainTable not found: " + fqn, false); //$NON-NLS-1$
+        }
+        Object dbViewDefs = readFeatureValue(resolved, "dbViewDefs"); //$NON-NLS-1$
+        Object mainView = dbViewDefs instanceof EObject defs
+                ? readFeatureValue(defs, "mainView") //$NON-NLS-1$
+                : null;
+        if (!(mainView instanceof DbViewDef dbViewDef)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "mainTable '" + fqn + "' is not a queryable table (no main database view)." //$NON-NLS-1$ //$NON-NLS-2$
+                            + " Use an object that appears in the query builder, e.g." //$NON-NLS-1$
+                            + " Catalog.<Name> / Document.<Name> / InformationRegister.<Name>.", //$NON-NLS-1$
+                    false);
+        }
+        extInfo.setMainTable(dbViewDef);
+    }
+
+    /**
+     * Script variant for the generated dynamic-list query text. Prefers the configuration's own
+     * variant; falls back to English when it cannot be read (the 1С query language accepts both
+     * keyword sets, so an English fallback stays valid).
+     */
+    private ScriptVariant resolveDynamicListScriptVariant(Configuration configuration) {
+        ScriptVariant variant = configuration != null ? configuration.getScriptVariant() : null;
+        return variant == null ? ScriptVariant.ENGLISH : variant;
+    }
+
+    private void addNote(List<String> notes, String note) {
+        if (notes != null && note != null && !note.isBlank()) {
+            notes.add(note);
+        }
+    }
+
+    /** Best-effort display name of an arbitrary EMF object, for messages and summaries. */
+    private String describeEObjectName(EObject object) {
+        if (object == null) {
+            return "<null>"; //$NON-NLS-1$
+        }
+        if (object instanceof NamedElement named && named.getName() != null) {
+            return named.getName();
+        }
+        Object name = readFeatureValue(object, "name"); //$NON-NLS-1$
+        return name == null ? object.eClass().getName() : String.valueOf(name);
     }
 
     /**
@@ -4360,7 +4810,8 @@ public class EdtMetadataService {
             FormRecipeMode mode,
             IBmPlatformTransaction transaction,
             Map<String, TypeItem> preResolvedTypes,
-            Configuration txConfiguration
+            Configuration txConfiguration,
+            List<String> notes
     ) {
         FormAttributeRecipeStats stats = new FormAttributeRecipeStats();
         if (formModel == null || attributes == null || attributes.isEmpty()) {
@@ -4446,7 +4897,7 @@ public class EdtMetadataService {
                 if (patch.typeValue != null) {
                     applyFormAttributeType(created, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
                 }
-                applyFormAttributePatch(created, patch.patch);
+                applyFormAttributePatch(created, patch.patch, transaction, txConfiguration, notes);
                 if (patch.columnsValue != null) {
                     applyFormAttributeColumns(
                             formModel, created, patch.columnsValue, transaction, preResolvedTypes, txConfiguration);
@@ -4468,7 +4919,7 @@ public class EdtMetadataService {
             if (patch.typeValue != null) {
                 applyFormAttributeType(existing, patch.typeValue, transaction, preResolvedTypes, txConfiguration);
             }
-            applyFormAttributePatch(existing, patch.patch);
+            applyFormAttributePatch(existing, patch.patch, transaction, txConfiguration, notes);
             if (patch.columnsValue != null) {
                 applyFormAttributeColumns(
                         formModel, existing, patch.columnsValue, transaction, preResolvedTypes, txConfiguration);
@@ -4676,6 +5127,19 @@ public class EdtMetadataService {
                     "Type query is empty or invalid: " + typeValue, false); //$NON-NLS-1$
         }
         String normalized = normalizeTypeRootToken(typeQuery);
+        // BF-13330: "DynamicList" is not a type you can request — the platform sets it when the
+        // attribute is created as a dynamic list, and the BM type resolver has no such TypeItem
+        // (it failed with the opaque "Type not found in BM: DynamicList"). Callers reach for it
+        // when what they actually want is to edit the list's query.
+        if ("dynamiclist".equals(normalized) || "динамическийсписок".equals(normalized)) { //$NON-NLS-1$ //$NON-NLS-2$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "DynamicList is not a requestable form attribute type — it is the valueType the" //$NON-NLS-1$
+                            + " platform already assigned to an existing dynamic-list attribute. To edit" //$NON-NLS-1$
+                            + " the list, patch the attribute WITHOUT 'type':" //$NON-NLS-1$
+                            + " set:{customQuery:true, queryText:\"…\"} (or set:{extInfo:{…}})," //$NON-NLS-1$
+                            + " optionally with mainTable / autoFillAvailableFields.", false); //$NON-NLS-1$
+        }
         for (String forbidden : FORBIDDEN_FORM_ATTRIBUTE_TYPE_PREFIXES) {
             if (normalized.startsWith(forbidden)) {
                 throw new MetadataOperationException(
@@ -5062,7 +5526,7 @@ public class EdtMetadataService {
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Operation requires \"op\" field. Valid values: add_field, add_group, add_command, " //$NON-NLS-1$
                             + "add_button, add_form_parameter, set_item, remove_item, move_item, rename_command, " //$NON-NLS-1$
-                            + "remove_command, set_form_props", false); //$NON-NLS-1$
+                            + "remove_command, set_form_props, set_attribute_props", false); //$NON-NLS-1$
         }
 
         // Detect "type":"field" hallucination — model should use op:"add_field"
@@ -5578,6 +6042,29 @@ public class EdtMetadataService {
                 applyEventHandlersBinding(target, ehc,
                         java.util.List.of(java.util.Map.of("event", fieldName, "handler", handlerProc))); //$NON-NLS-1$ //$NON-NLS-2$
                 return;
+            }
+            // BF-13330: customQuery / queryText / mainTable / … exist, but on the ATTRIBUTE's
+            // form:DynamicListExtInfo — never on a form item and never flat on FormAttribute.
+            // The usual dead end is set_item: it addresses form ITEMS, whose ids live in a
+            // different space than form attributes, so the property can never arrive there.
+            // Narrowed to the unambiguous keys: the generic-sounding ones (fields / parameters /
+            // listSettings) would misfire on unrelated targets, so they keep the plain message.
+            if (DynamicListExtInfoRules.isDynamicListOnlyKey(fieldName)
+                    && !DynamicListExtInfoRules.isUnsupportedContainmentFeature(
+                            DynamicListExtInfoRules.canonicalKey(fieldName))) {
+                String targetKind = target instanceof FormAttribute
+                        ? "form attribute '" + ((FormAttribute) target).getName() + "'" //$NON-NLS-1$ //$NON-NLS-2$
+                        : "form item " + target.eClass().getName(); //$NON-NLS-1$
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        "'" + fieldName + "' is a DynamicList property: it lives on the ATTRIBUTE's" //$NON-NLS-1$ //$NON-NLS-2$
+                                + " form:DynamicListExtInfo, not on " + targetKind //$NON-NLS-1$
+                                + ". set_item addresses form ITEMS, which have their own id space —" //$NON-NLS-1$
+                                + " it can never reach a form attribute. Patch the ATTRIBUTE instead:" //$NON-NLS-1$
+                                + " mutate_form_model {op:\"set_attribute_props\", attribute_name:\"<List>\"," //$NON-NLS-1$
+                                + " set:{" + fieldName + ":…}} or apply_form_recipe" //$NON-NLS-1$ //$NON-NLS-2$
+                                + " attributes:[{name:\"<List>\", set:{" + fieldName + ":…}}]" //$NON-NLS-1$ //$NON-NLS-2$
+                                + " (the nested set:{extInfo:{…}} form works too).", false); //$NON-NLS-1$
             }
             String hint = target instanceof EventHandlerContainer
                     ? ". To register a form event handler, use handlers:[{event,handler}] " //$NON-NLS-1$

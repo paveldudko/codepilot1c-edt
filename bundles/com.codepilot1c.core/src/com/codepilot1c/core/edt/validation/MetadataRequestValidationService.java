@@ -955,6 +955,18 @@ public class MetadataRequestValidationService {
                         "Form attribute type must be non-empty", false); //$NON-NLS-1$
             }
             String normalized = normalizeTypeToken(trimmed);
+            // BF-13330: reject type:"DynamicList" at validation time. It is not a requestable
+            // type (the BM resolver has no such TypeItem and failed with "Type not found in BM:
+            // DynamicList") — callers pass it when what they want is to edit the list's query.
+            if ("dynamiclist".equals(normalized) || "динамическийсписок".equals(normalized)) { //$NON-NLS-1$ //$NON-NLS-2$
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "DynamicList is not a requestable form attribute type — it is the valueType the" //$NON-NLS-1$
+                                + " platform already assigned to an existing dynamic-list attribute. To" //$NON-NLS-1$
+                                + " edit the list, patch the attribute WITHOUT 'type':" //$NON-NLS-1$
+                                + " set:{customQuery:true, queryText:\"…\"} (or set:{extInfo:{…}})," //$NON-NLS-1$
+                                + " optionally with mainTable / autoFillAvailableFields.", false); //$NON-NLS-1$
+            }
             for (String forbidden : FORBIDDEN_FORM_ATTRIBUTE_TYPE_PREFIXES) {
                 if (normalized.startsWith(forbidden)) {
                     throw new MetadataOperationException(

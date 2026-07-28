@@ -93,7 +93,7 @@ public class ApplyFormRecipeTool extends AbstractTool {
                       }
                     }
                   },
-                  "description": "Реквизиты формы. Каждый элемент: {name|id, action, type|field_type|fieldType, set, properties}. Для update/remove нужен name или id."
+                  "description": "Реквизиты формы. Каждый элемент: {name|id, action, type|field_type|fieldType, set, properties}. Для update/remove нужен name или id. 'set' also reaches the attribute's extInfo: pass DynamicList properties either flat (customQuery, queryText, mainTable, autoFillAvailableFields, dynamicDataRead, autoSaveUserSettings, keyType, keyField) or nested as set:{extInfo:{...}} — the nested block wins on conflict. Do NOT pass type:\\"DynamicList\\" (it is the platform-assigned valueType of an existing list, not a requestable type). See knowledge/managed-forms.md for the auto→custom-query recipe."
                 },
                 "layout": {
                   "type": "array",
