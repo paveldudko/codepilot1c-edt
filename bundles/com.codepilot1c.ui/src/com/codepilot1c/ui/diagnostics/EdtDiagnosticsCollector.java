@@ -70,6 +70,7 @@ import com.codepilot1c.core.diagnostics.BslLiveValidator.BslLiveIssue;
 import com.codepilot1c.core.diagnostics.DcsSchemaValidator;
 import com.codepilot1c.core.diagnostics.DcsSchemaValidator.DcsSchemaIssue;
 import com.codepilot1c.core.diagnostics.CheckInfoResolver;
+import com.codepilot1c.core.diagnostics.DiagnosticOrigin;
 import com.codepilot1c.core.diagnostics.DiagnosticsLineFilter;
 import com.codepilot1c.core.diagnostics.PathMatchTokens;
 import com.codepilot1c.core.diagnostics.RelativePathCandidates;
@@ -143,6 +144,12 @@ public class EdtDiagnosticsCollector {
 
     /**
      * Query parameters for collecting diagnostics.
+     *
+     * <p>{@code originFilter} selects which marker provenances are collected —
+     * see {@link DiagnosticOrigin#accepts(String, String)}. The default
+     * ({@link DiagnosticOrigin#FILTER_DIAGNOSTICS}) drops review/comment
+     * overlays contributed by other plugins, so a plain call returns EDT
+     * diagnostics only.</p>
      */
     public record DiagnosticsQuery(
             Severity minSeverity,
@@ -153,14 +160,17 @@ public class EdtDiagnosticsCollector {
             int lineFrom,
             int lineTo,
             boolean includeCheckHelp,
-            String helpLocale) {
+            String helpLocale,
+            String originFilter) {
 
         public static DiagnosticsQuery defaults() {
-            return new DiagnosticsQuery(Severity.INFO, 0, true, 0, true, 0, 0, false, "en"); //$NON-NLS-1$
+            return new DiagnosticsQuery(Severity.INFO, 0, true, 0, true, 0, 0, false, "en", //$NON-NLS-1$
+                    DiagnosticOrigin.defaultFilter());
         }
 
         public static DiagnosticsQuery withSeverity(Severity minSeverity) {
-            return new DiagnosticsQuery(minSeverity, 0, true, 0, true, 0, 0, false, "en"); //$NON-NLS-1$
+            return new DiagnosticsQuery(minSeverity, 0, true, 0, true, 0, 0, false, "en", //$NON-NLS-1$
+                    DiagnosticOrigin.defaultFilter());
         }
 
         /**
@@ -171,7 +181,20 @@ public class EdtDiagnosticsCollector {
                 Severity minSeverity, int maxItems, boolean includeSnippets, long waitMs,
                 boolean includeRuntimeMarkers, int lineFrom, int lineTo) {
             this(minSeverity, maxItems, includeSnippets, waitMs, includeRuntimeMarkers,
-                    lineFrom, lineTo, false, "en"); //$NON-NLS-1$
+                    lineFrom, lineTo, false, "en", DiagnosticOrigin.defaultFilter()); //$NON-NLS-1$
+        }
+
+        /**
+         * Backwards-compatible constructor for callers that predate the
+         * {@code originFilter} field — they get the default filter (EDT
+         * diagnostics only, review overlays excluded).
+         */
+        public DiagnosticsQuery(
+                Severity minSeverity, int maxItems, boolean includeSnippets, long waitMs,
+                boolean includeRuntimeMarkers, int lineFrom, int lineTo,
+                boolean includeCheckHelp, String helpLocale) {
+            this(minSeverity, maxItems, includeSnippets, waitMs, includeRuntimeMarkers,
+                    lineFrom, lineTo, includeCheckHelp, helpLocale, DiagnosticOrigin.defaultFilter());
         }
     }
 
@@ -219,6 +242,11 @@ public class EdtDiagnosticsCollector {
          * collapsed into one compact line with an occurrence count and the list
          * of lines, so a module with hundreds of same-rule warnings stays
          * token-cheap. Singletons keep the detailed single-line form.
+         *
+         * <p>Review/comment overlays (origin {@code review-annotation}, only
+         * present when the caller explicitly asked for them) are rendered in
+         * their own trailing section and are NOT part of the severity totals —
+         * they are not EDT diagnostics.</p>
          */
         public String formatForLlm() {
             StringBuilder sb = new StringBuilder();
@@ -234,10 +262,23 @@ public class EdtDiagnosticsCollector {
                 return sb.toString();
             }
 
+            // Split off foreign review overlays: they share the resource with
+            // real diagnostics but are neither counted nor mixed into the
+            // severity sections.
+            List<EdtDiagnostic> reviewEntries = new ArrayList<>();
+            List<EdtDiagnostic> realDiagnostics = new ArrayList<>(diagnostics.size());
+            for (EdtDiagnostic d : diagnostics) {
+                if (d.isReviewAnnotation()) {
+                    reviewEntries.add(d);
+                } else {
+                    realDiagnostics.add(d);
+                }
+            }
+
             // Group preserving first-seen order; key = severity + rule (or message).
             java.util.LinkedHashMap<String, List<EdtDiagnostic>> groups = new java.util.LinkedHashMap<>();
-            for (EdtDiagnostic d : diagnostics) {
-                String key = d.severity().name() + " " + d.groupKey(); //$NON-NLS-1$
+            for (EdtDiagnostic d : realDiagnostics) {
+                String key = d.severity().name() + " " + d.groupKey(); //$NON-NLS-1$
                 groups.computeIfAbsent(key, k -> new ArrayList<>()).add(d);
             }
 
@@ -248,6 +289,9 @@ public class EdtDiagnosticsCollector {
             sb.append(groups.size()).append(" unique rules)\n\n"); //$NON-NLS-1$
 
             boolean includeDebug = isDiagVerbose();
+            if (realDiagnostics.isEmpty()) {
+                sb.append("✅ No diagnostics found.\n\n"); //$NON-NLS-1$
+            }
             // Partition groups into per-severity sections so the **SEVERITY** tag
             // is printed once as a section header, not repeated on every line.
             List<List<EdtDiagnostic>> errorGroups = new ArrayList<>();
@@ -263,6 +307,7 @@ public class EdtDiagnosticsCollector {
             appendSeveritySection(sb, "Errors", errorGroups, includeDebug); //$NON-NLS-1$
             appendSeveritySection(sb, "Warnings", warningGroups, includeDebug); //$NON-NLS-1$
             appendSeveritySection(sb, "Info", infoGroups, includeDebug); //$NON-NLS-1$
+            appendReviewSection(sb, reviewEntries, includeDebug);
 
             if (checkDetails != null && !checkDetails.isEmpty()) {
                 sb.append("\n## Check details\n\n"); //$NON-NLS-1$
@@ -305,6 +350,26 @@ public class EdtDiagnosticsCollector {
             sb.append("\n"); //$NON-NLS-1$
         }
 
+        /**
+         * Appends the review-overlay section: entries contributed by another
+         * plugin's review/comment markers (see {@link DiagnosticOrigin}). They
+         * only reach this point when the caller explicitly widened
+         * {@code origin}; the header states plainly that these are not EDT
+         * diagnostics and are excluded from the totals above. No-op when empty.
+         */
+        private static void appendReviewSection(
+                StringBuilder sb, List<EdtDiagnostic> reviewEntries, boolean includeDebug) {
+            if (reviewEntries == null || reviewEntries.isEmpty()) {
+                return;
+            }
+            sb.append("### Review annotations (").append(reviewEntries.size()) //$NON-NLS-1$
+                    .append(") — not EDT diagnostics, excluded from the totals above\n"); //$NON-NLS-1$
+            for (EdtDiagnostic d : reviewEntries) {
+                sb.append(d.formatForLlm(includeDebug, false)).append("\n"); //$NON-NLS-1$
+            }
+            sb.append("\n"); //$NON-NLS-1$
+        }
+
         /** Caps the representative-message sample shown for a collapsed group. */
         private static final int GROUP_SAMPLE_MAX = 160;
 
@@ -318,11 +383,20 @@ public class EdtDiagnosticsCollector {
          * list. A sample message gives the human-readable nature of the rule
          * (one of the group's messages — exact per-line specifics are at the
          * listed lines).
+         *
+         * <p>A non-{@code compiler}/{@code analyzer} provenance is tagged on the
+         * group line, mirroring the per-diagnostic rendering — so a collapsed
+         * group of foreign markers is not silently indistinguishable from EDT
+         * findings.</p>
          */
         private static String formatGroup(List<EdtDiagnostic> group) {
             EdtDiagnostic head = group.get(0);
             StringBuilder sb = new StringBuilder();
             sb.append("- ").append(head.groupLabel()).append(" ×").append(group.size()); //$NON-NLS-1$ //$NON-NLS-2$
+            if (!DiagnosticOrigin.COMPILER.equals(head.origin())
+                    && !DiagnosticOrigin.ANALYZER.equals(head.origin())) {
+                sb.append(" [origin: ").append(head.origin()).append("]"); //$NON-NLS-1$ //$NON-NLS-2$
+            }
 
             // line -> occurrences on that line (sorted by line number)
             java.util.TreeMap<Integer, Integer> lineCounts = new java.util.TreeMap<>();
@@ -460,14 +534,17 @@ public class EdtDiagnosticsCollector {
                             .comparing((EdtDiagnostic d) -> d.severity().getLevel()).reversed()
                             .thenComparing(EdtDiagnostic::lineNumber));
 
-                    // Filter by line range (no-op when lineFrom=lineTo=0) then limit
+                    // Drop foreign provenances (review overlays by default),
+                    // filter by line range (no-op when lineFrom=lineTo=0), then limit
+                    diagnostics = applyOriginFilter(diagnostics, q);
                     diagnostics = applyLineFilter(diagnostics, q);
                     diagnostics = applyResultLimit(diagnostics, q.maxItems());
 
-                    // Count by severity
-                    int errors = (int) diagnostics.stream().filter(d -> d.severity() == Severity.ERROR).count();
-                    int warnings = (int) diagnostics.stream().filter(d -> d.severity() == Severity.WARNING).count();
-                    int infos = diagnostics.size() - errors - warnings;
+                    // Count by severity (review overlays excluded)
+                    int[] counts = countBySeverity(diagnostics);
+                    int errors = counts[0];
+                    int warnings = counts[1];
+                    int infos = counts[2];
 
                     List<CheckDetail> details = q.includeCheckHelp()
                             ? buildCheckDetails(diagnostics, q.helpLocale())
@@ -526,12 +603,14 @@ public class EdtDiagnosticsCollector {
                         .thenComparing(EdtDiagnostic::filePath, Comparator.nullsLast(String::compareTo))
                         .thenComparing(EdtDiagnostic::lineNumber));
 
+                diagnostics = applyOriginFilter(diagnostics, query);
                 diagnostics = applyLineFilter(diagnostics, query);
                 diagnostics = applyResultLimit(diagnostics, query.maxItems());
 
-                int errors = (int) diagnostics.stream().filter(d -> d.severity() == Severity.ERROR).count();
-                int warnings = (int) diagnostics.stream().filter(d -> d.severity() == Severity.WARNING).count();
-                int infos = diagnostics.size() - errors - warnings;
+                int[] counts = countBySeverity(diagnostics);
+                int errors = counts[0];
+                int warnings = counts[1];
+                int infos = counts[2];
 
                 diagInfo("[get_diagnostics] result: %d items (errors=%d warnings=%d infos=%d) path='%s'", //$NON-NLS-1$
                         diagnostics.size(), errors, warnings, infos, resultPath);
@@ -914,6 +993,52 @@ public class EdtDiagnosticsCollector {
         return filtered;
     }
 
+    /**
+     * Drops diagnostics whose provenance the caller did not ask for. Applied
+     * centrally (every scope) so the origin contract holds no matter which
+     * collection path produced the entry — marker-based paths additionally skip
+     * early, before their dedup bookkeeping, to keep foreign markers out of the
+     * soft scan budget.
+     */
+    private List<EdtDiagnostic> applyOriginFilter(List<EdtDiagnostic> diagnostics, DiagnosticsQuery query) {
+        if (diagnostics == null || diagnostics.isEmpty() || query == null) {
+            return diagnostics;
+        }
+        List<EdtDiagnostic> filtered = new ArrayList<>(diagnostics.size());
+        for (EdtDiagnostic d : diagnostics) {
+            if (DiagnosticOrigin.accepts(query.originFilter(), d.origin())) {
+                filtered.add(d);
+            }
+        }
+        return filtered.size() == diagnostics.size() ? diagnostics : filtered;
+    }
+
+    /**
+     * Counts diagnostics per severity, EXCLUDING review overlays — a review
+     * comment is not an error/warning/info, so it must never inflate the
+     * counters a caller uses to decide "is this file clean".
+     *
+     * @return {@code [errors, warnings, infos]}
+     */
+    private static int[] countBySeverity(List<EdtDiagnostic> diagnostics) {
+        int errors = 0;
+        int warnings = 0;
+        int infos = 0;
+        if (diagnostics != null) {
+            for (EdtDiagnostic d : diagnostics) {
+                if (d.isReviewAnnotation()) {
+                    continue;
+                }
+                switch (d.severity()) {
+                    case ERROR -> errors++;
+                    case WARNING -> warnings++;
+                    default -> infos++;
+                }
+            }
+        }
+        return new int[] {errors, warnings, infos};
+    }
+
     private int getSoftScanLimit(int maxItems, int multiplier) {
         if (maxItems <= 0) {
             return Integer.MAX_VALUE;
@@ -963,12 +1088,14 @@ public class EdtDiagnosticsCollector {
                         .thenComparing(EdtDiagnostic::filePath, Comparator.nullsLast(String::compareTo))
                         .thenComparing(EdtDiagnostic::lineNumber));
 
+                diagnostics = applyOriginFilter(diagnostics, query);
                 diagnostics = applyLineFilter(diagnostics, query);
                 diagnostics = applyResultLimit(diagnostics, query.maxItems());
 
-                int errors = (int) diagnostics.stream().filter(d -> d.severity() == Severity.ERROR).count();
-                int warnings = (int) diagnostics.stream().filter(d -> d.severity() == Severity.WARNING).count();
-                int infos = diagnostics.size() - errors - warnings;
+                int[] counts = countBySeverity(diagnostics);
+                int errors = counts[0];
+                int warnings = counts[1];
+                int infos = counts[2];
 
                 List<CheckDetail> details = query.includeCheckHelp()
                         ? buildCheckDetails(diagnostics, query.helpLocale())
@@ -1021,12 +1148,14 @@ public class EdtDiagnosticsCollector {
                         .thenComparing(EdtDiagnostic::filePath, Comparator.nullsLast(String::compareTo))
                         .thenComparing(EdtDiagnostic::lineNumber));
 
+                diagnostics = applyOriginFilter(diagnostics, query);
                 diagnostics = applyLineFilter(diagnostics, query);
                 diagnostics = applyResultLimit(diagnostics, query.maxItems());
 
-                int errors = (int) diagnostics.stream().filter(d -> d.severity() == Severity.ERROR).count();
-                int warnings = (int) diagnostics.stream().filter(d -> d.severity() == Severity.WARNING).count();
-                int infos = diagnostics.size() - errors - warnings;
+                int[] counts = countBySeverity(diagnostics);
+                int errors = counts[0];
+                int warnings = counts[1];
+                int infos = counts[2];
 
                 List<CheckDetail> details = query.includeCheckHelp()
                         ? buildCheckDetails(diagnostics, query.helpLocale())
@@ -1118,8 +1247,15 @@ public class EdtDiagnosticsCollector {
             Set<String> seen) {
 
         int sizeBefore = diagnostics.size();
+        int originDropped = 0;
         Map<String, Integer> typeHistogram = new HashMap<>();
         try {
+            // Intentionally type-unrestricted (null == all marker types incl.
+            // subtypes): EDT/BSL problems arrive under several contributed
+            // types and an allow-list would silently lose new ones. The
+            // separation of "real diagnostic" vs "foreign marker payload" is
+            // therefore done AFTER the fact, by classifying provenance —
+            // see DiagnosticOrigin.
             IMarker[] markers = file.findMarkers(null, true, IResource.DEPTH_ZERO);
             for (IMarker probe : markers) {
                 String t;
@@ -1132,6 +1268,19 @@ public class EdtDiagnosticsCollector {
             for (IMarker marker : markers) {
                 int severity = marker.getAttribute(IMarker.SEVERITY, -1);
                 Severity sev = Severity.fromMarkerSeverity(severity);
+                String markerType = safeGetMarkerType(marker);
+
+                // Classify provenance BEFORE the severity gate: a marker that
+                // declares no IMarker.SEVERITY silently degrades to INFO, which
+                // is exactly how a sibling plugin's review-comment markers used
+                // to slip into the diagnostics list with nothing to tell them
+                // apart. Skipping here also keeps them out of the dedup set.
+                String origin = DiagnosticOrigin.classify(
+                        markerType, DiagnosticOrigin.SOURCE_MARKER, severity >= 0, isTextMarkerSubtype(marker));
+                if (!DiagnosticOrigin.accepts(query.originFilter(), origin)) {
+                    originDropped++;
+                    continue;
+                }
 
                 // Filter by minimum severity
                 if (sev.getLevel() < query.minSeverity().getLevel()) {
@@ -1142,7 +1291,6 @@ public class EdtDiagnosticsCollector {
                 int line = marker.getAttribute(IMarker.LINE_NUMBER, -1);
                 int charStart = marker.getAttribute(IMarker.CHAR_START, -1);
                 int charEnd = marker.getAttribute(IMarker.CHAR_END, -1);
-                String markerType = safeGetMarkerType(marker);
 
                 // Deduplicate by location + message
                 String key = line + ":" + charStart + ":" + message; //$NON-NLS-1$ //$NON-NLS-2$
@@ -1161,10 +1309,12 @@ public class EdtDiagnosticsCollector {
                         : null;
 
                 diagnostics.add(EdtDiagnostic.fromMarker(
-                        filePath, line, charStart, charEnd, message, severity, markerType, snippet));
+                        filePath, line, charStart, charEnd, message, severity, markerType, snippet, origin));
             }
-            diagInfo("[get_diagnostics] file-markers emitted=%d (of %d raw)", //$NON-NLS-1$
-                    diagnostics.size() - sizeBefore, typeHistogram.values().stream().mapToInt(Integer::intValue).sum());
+            diagInfo("[get_diagnostics] file-markers emitted=%d originDropped=%d (of %d raw, originFilter=%s)", //$NON-NLS-1$
+                    diagnostics.size() - sizeBefore, originDropped,
+                    typeHistogram.values().stream().mapToInt(Integer::intValue).sum(),
+                    query.originFilter());
         } catch (CoreException e) {
             LOG.error("Error finding markers: %s", e.getMessage()); //$NON-NLS-1$
         }
@@ -1177,6 +1327,8 @@ public class EdtDiagnosticsCollector {
             Set<String> seen) {
 
         try {
+            // Type-unrestricted by design — see the note in collectFromMarkers;
+            // foreign payloads are separated by provenance, not by type filter.
             IMarker[] markers = project.findMarkers(null, true, IResource.DEPTH_INFINITE);
             LOG.debug("Found %d workspace markers for project %s", markers.length, project.getName()); //$NON-NLS-1$
 
@@ -1189,6 +1341,14 @@ public class EdtDiagnosticsCollector {
 
                 int severity = marker.getAttribute(IMarker.SEVERITY, -1);
                 Severity sev = Severity.fromMarkerSeverity(severity);
+                String markerType = safeGetMarkerType(marker);
+
+                String origin = DiagnosticOrigin.classify(
+                        markerType, DiagnosticOrigin.SOURCE_MARKER, severity >= 0, isTextMarkerSubtype(marker));
+                if (!DiagnosticOrigin.accepts(query.originFilter(), origin)) {
+                    continue;
+                }
+
                 if (sev.getLevel() < query.minSeverity().getLevel()) {
                     continue;
                 }
@@ -1201,7 +1361,6 @@ public class EdtDiagnosticsCollector {
                 int line = marker.getAttribute(IMarker.LINE_NUMBER, -1);
                 int charStart = marker.getAttribute(IMarker.CHAR_START, -1);
                 int charEnd = marker.getAttribute(IMarker.CHAR_END, -1);
-                String markerType = safeGetMarkerType(marker);
                 String markerPath = marker.getResource() != null
                         ? marker.getResource().getFullPath().toString()
                         : project.getFullPath().toString();
@@ -1212,7 +1371,7 @@ public class EdtDiagnosticsCollector {
                 }
 
                 diagnostics.add(EdtDiagnostic.fromMarker(
-                        markerPath, line, charStart, charEnd, message, severity, markerType, null));
+                        markerPath, line, charStart, charEnd, message, severity, markerType, null, origin));
                 count++;
             }
         } catch (CoreException e) {
@@ -2042,6 +2201,24 @@ public class EdtDiagnosticsCollector {
             return marker.getType();
         } catch (CoreException e) {
             return "unknown"; //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Whether the marker derives from {@code org.eclipse.core.resources.textmarker}
+     * — the base type annotation-style contributions (review comments, tasks)
+     * declare, as opposed to {@code problemmarker} used by real diagnostics.
+     * Part of the provenance classification input; {@code false} when the type
+     * hierarchy cannot be read.
+     */
+    private boolean isTextMarkerSubtype(IMarker marker) {
+        if (marker == null) {
+            return false;
+        }
+        try {
+            return marker.isSubtypeOf(IMarker.TEXT);
+        } catch (CoreException e) {
+            return false;
         }
     }
 

@@ -7,8 +7,16 @@
  */
 package com.codepilot1c.ui.diagnostics;
 
+import com.codepilot1c.core.diagnostics.DiagnosticOrigin;
+
 /**
  * Represents a single EDT diagnostic (error, warning, info).
+ *
+ * <p>{@code origin} carries the provenance label produced by
+ * {@link DiagnosticOrigin} — the field that lets callers tell a real EDT
+ * diagnostic apart from a foreign marker payload sitting on the same resource
+ * (e.g. a commit-review comment marker, which declares no severity and used to
+ * blend in as {@code INFO}).</p>
  */
 public record EdtDiagnostic(
         String filePath,
@@ -26,7 +34,8 @@ public record EdtDiagnostic(
         String issueType,
         String issueSeverity,
         String objectPresentation,
-        String locationText) {
+        String locationText,
+        String origin) {
 
     /**
      * Normalizes the message at construction: trims and collapses internal
@@ -34,11 +43,15 @@ public record EdtDiagnostic(
      * carry trailing newlines/indentation (e.g. a TODO comment line), which
      * would otherwise split identical diagnostics into separate groups and
      * inject stray line breaks into the rendered output.
+     *
+     * <p>Also normalizes {@code origin} so it is never {@code null}/blank —
+     * an unset provenance reads as {@code unknown}, not as "no field".</p>
      */
     public EdtDiagnostic {
         if (message != null) {
             message = message.strip().replaceAll("\\s+", " "); //$NON-NLS-1$ //$NON-NLS-2$
         }
+        origin = DiagnosticOrigin.normalize(origin);
     }
 
     /**
@@ -72,7 +85,11 @@ public record EdtDiagnostic(
     }
 
     /**
-     * Creates a diagnostic from marker data.
+     * Creates a diagnostic from marker data, deriving {@code origin} from the
+     * marker type alone. Kept for callers that predate the provenance field —
+     * prefer {@link #fromMarker(String, int, int, int, String, int, String,
+     * String, String)}, which lets the collector pass the richer classification
+     * (severity-declared / textmarker-subtype traits it alone can see).
      */
     public static EdtDiagnostic fromMarker(
             String filePath,
@@ -83,6 +100,25 @@ public record EdtDiagnostic(
             int markerSeverity,
             String markerType,
             String codeSnippet) {
+        return fromMarker(
+                filePath, lineNumber, charStart, charEnd, message, markerSeverity, markerType, codeSnippet,
+                DiagnosticOrigin.classify(markerType, DiagnosticOrigin.SOURCE_MARKER));
+    }
+
+    /**
+     * Creates a diagnostic from marker data with an explicitly classified
+     * {@code origin}.
+     */
+    public static EdtDiagnostic fromMarker(
+            String filePath,
+            int lineNumber,
+            int charStart,
+            int charEnd,
+            String message,
+            int markerSeverity,
+            String markerType,
+            String codeSnippet,
+            String origin) {
         return new EdtDiagnostic(
                 filePath,
                 lineNumber,
@@ -91,7 +127,7 @@ public record EdtDiagnostic(
                 message,
                 Severity.fromMarkerSeverity(markerSeverity),
                 markerType,
-                "marker", //$NON-NLS-1$
+                DiagnosticOrigin.SOURCE_MARKER,
                 codeSnippet,
                 null,
                 null,
@@ -99,7 +135,8 @@ public record EdtDiagnostic(
                 null,
                 null,
                 null,
-                null);
+                null,
+                origin);
     }
 
     /**
@@ -144,7 +181,7 @@ public record EdtDiagnostic(
                 message,
                 severity,
                 annotationType,
-                "annotation", //$NON-NLS-1$
+                DiagnosticOrigin.SOURCE_ANNOTATION,
                 codeSnippet,
                 checkId,
                 null,
@@ -152,7 +189,8 @@ public record EdtDiagnostic(
                 null,
                 null,
                 null,
-                null);
+                null,
+                DiagnosticOrigin.classify(annotationType, DiagnosticOrigin.SOURCE_ANNOTATION));
     }
 
     /**
@@ -179,7 +217,7 @@ public record EdtDiagnostic(
                 message,
                 severity,
                 markerType,
-                "marker_manager", //$NON-NLS-1$
+                DiagnosticOrigin.SOURCE_MARKER_MANAGER,
                 null,
                 checkId,
                 checkTitle,
@@ -187,7 +225,17 @@ public record EdtDiagnostic(
                 issueType,
                 issueSeverity,
                 objectPresentation,
-                locationText);
+                locationText,
+                DiagnosticOrigin.classify(markerType, DiagnosticOrigin.SOURCE_MARKER_MANAGER));
+    }
+
+    /**
+     * True when this entry is a review/comment overlay contributed by another
+     * plugin rather than an EDT diagnostic. Such entries are excluded from the
+     * severity counters and rendered in their own section.
+     */
+    public boolean isReviewAnnotation() {
+        return DiagnosticOrigin.isReviewAnnotation(origin);
     }
 
     /**
@@ -239,6 +287,13 @@ public record EdtDiagnostic(
         }
         if (objectPresentation != null && !objectPresentation.isBlank()) {
             sb.append("\n  object: ").append(objectPresentation); //$NON-NLS-1$
+        }
+        // Provenance is printed WITHOUT the debug gate for everything that is
+        // not a plain compiler/analyzer diagnostic: those are the entries a
+        // caller can otherwise mistake for an EDT finding (review comments from
+        // a sibling plugin, unclassified third-party markers).
+        if (!DiagnosticOrigin.COMPILER.equals(origin) && !DiagnosticOrigin.ANALYZER.equals(origin)) {
+            sb.append("\n  origin: ").append(origin); //$NON-NLS-1$
         }
         if (includeDebug) {
             // Debug-only marker provenance: source = collection path,

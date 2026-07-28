@@ -10,6 +10,7 @@ package com.codepilot1c.ui.tools;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
+import com.codepilot1c.core.diagnostics.DiagnosticOrigin;
 import com.codepilot1c.core.logging.VibeLogger;
 import com.codepilot1c.core.tools.ITool;
 import com.codepilot1c.core.tools.ToolResult;
@@ -56,6 +57,11 @@ public class GetDiagnosticsTool implements ITool {
                         "type": "string",
                         "enum": ["error", "warning", "info"],
                         "description": "Minimum severity level: error (errors only), warning (errors and warnings), info (all). Default: info"
+                    },
+                    "origin": {
+                        "type": "string",
+                        "enum": ["diagnostics", "all", "compiler", "analyzer", "custom-check", "review-annotation", "unknown"],
+                        "description": "Which marker provenances to include. Default 'diagnostics' = real EDT diagnostics only (compiler/analyzer/custom-check/unknown) and EXCLUDES review annotations contributed by other plugins — e.g. the commit-review plugin's comment markers, which declare no severity and used to leak in as INFO with nothing to tell them apart. Use 'all' to also get them (rendered as a separate 'Review annotations' section, never counted as errors/warnings/info), or a single origin name to narrow to just that provenance. A comma-separated list is accepted too."
                     },
                     "max_items": {
                         "type": "integer",
@@ -109,6 +115,8 @@ public class GetDiagnosticsTool implements ITool {
                 + "with its v8-code-style rule code. Options: line_from/line_to to focus on a method and cut tokens on big " //$NON-NLS-1$
                 + "modules; severity/max_items to filter; include_check_help=true to append the official rule explanation+fix " //$NON-NLS-1$
                 + "(use when you intend to FIX); include_runtime_markers (project-wide checks). " //$NON-NLS-1$
+                + "Only real EDT diagnostics are returned by default: review/comment annotations contributed by other " //$NON-NLS-1$
+                + "EDT plugins are excluded and never counted — pass origin='all' if you want to see them too. " //$NON-NLS-1$
                 + "CAUTION: a sudden drop to 0 on a file you expected to be dirty usually means EDT is still recalculating " //$NON-NLS-1$
                 + "markers (cold start / right after an edit) — not a clean file; re-run or pass wait_ms (≤5000). " //$NON-NLS-1$
                 + "For .dcs (scope=file) it also flags curated elements invalid in the DCS schema (e.g. <editFormat>) that EDT's " //$NON-NLS-1$
@@ -147,6 +155,11 @@ public class GetDiagnosticsTool implements ITool {
         int lineTo = getIntParam(parameters, "line_to", 0); //$NON-NLS-1$
         boolean includeCheckHelp = getBooleanParam(parameters, "include_check_help", false); //$NON-NLS-1$
         String helpLocale = (String) parameters.getOrDefault("help_locale", "en"); //$NON-NLS-1$ //$NON-NLS-2$
+        // Marker provenance filter. Default drops review/comment overlays
+        // contributed by other plugins (they are not EDT diagnostics) — see
+        // DiagnosticOrigin.
+        String originFilter = (String) parameters.getOrDefault(
+                "origin", DiagnosticOrigin.defaultFilter()); //$NON-NLS-1$
 
         // Validate parameters
         if (maxItems < 0) maxItems = 0;
@@ -161,7 +174,7 @@ public class GetDiagnosticsTool implements ITool {
 
         DiagnosticsQuery query = new DiagnosticsQuery(
                 minSeverity, maxItems, true, waitMs, includeRuntimeMarkers, lineFrom, lineTo,
-                includeCheckHelp, helpLocale);
+                includeCheckHelp, helpLocale, originFilter);
         EdtDiagnosticsCollector collector = EdtDiagnosticsCollector.getInstance();
 
         String normalizedScope = normalizeScope(scope, path, projectName);
