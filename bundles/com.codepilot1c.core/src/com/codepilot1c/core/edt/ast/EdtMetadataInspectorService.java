@@ -18,6 +18,9 @@ import com._1c.g5.v8.dt.core.platform.IConfigurationProvider;
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
 import com._1c.g5.v8.dt.metadata.mdclass.MdObject;
 import com.codepilot1c.core.edt.BmObjectHelper;
+import com.codepilot1c.core.edt.metadata.MetadataKind;
+import com.codepilot1c.core.edt.metadata.MetadataOperationException;
+import com.codepilot1c.core.edt.metadata.TopLevelCollections;
 
 /**
  * Metadata inspection service using EDT configuration model and EMF reflection.
@@ -153,29 +156,33 @@ public class EdtMetadataInspectorService {
         return object.eClass().getName();
     }
 
+    /**
+     * Resolves the top-level object addressed by {@code <Type>.<Name>}.
+     *
+     * <p>Used to carry a hardcoded nine-kind switch with {@code default -> List.of()}, so
+     * {@code edt_metadata_details} answered {@code exists:false} for Subsystem, Role,
+     * ExchangePlan, DefinedType and every register beyond information/accumulation — objects
+     * that plainly existed. Both the type-token aliases (plural, Russian) and the
+     * kind→collection mapping are now the shared ones, which also makes nested subsystems
+     * resolvable by their canonical flat FQN.</p>
+     */
     private MdObject findMdObjectByFqn(Configuration config, String fqn) {
         String[] parts = fqn.split("\\."); //$NON-NLS-1$
         if (parts.length < 2) {
             return null;
         }
-        String type = parts[0].toLowerCase();
         String name = parts[1];
 
-        List<? extends MdObject> objects = switch (type) {
-            case "catalog", "catalogs" -> config.getCatalogs(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "document", "documents" -> config.getDocuments(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "commonmodule", "commonmodules" -> config.getCommonModules(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "informationregister", "informationregisters" -> config.getInformationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "accumulationregister", "accumulationregisters" -> config.getAccumulationRegisters(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "report", "reports" -> config.getReports(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "dataprocessor", "dataprocessors" -> config.getDataProcessors(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "enum", "enums" -> config.getEnums(); //$NON-NLS-1$ //$NON-NLS-2$
-            case "constant", "constants" -> config.getConstants(); //$NON-NLS-1$ //$NON-NLS-2$
-            default -> List.of();
-        };
+        MetadataKind kind;
+        try {
+            kind = MetadataKind.fromString(parts[0]);
+        } catch (MetadataOperationException e) {
+            // Not a top-level kind token — report as not found rather than failing the request.
+            return null;
+        }
 
-        for (MdObject obj : objects) {
-            if (name.equalsIgnoreCase(obj.getName())) {
+        for (MdObject obj : TopLevelCollections.forKind(config, kind)) {
+            if (obj != null && name.equalsIgnoreCase(obj.getName())) {
                 return obj;
             }
         }

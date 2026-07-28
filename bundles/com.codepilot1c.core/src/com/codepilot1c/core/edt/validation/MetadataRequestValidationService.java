@@ -126,8 +126,21 @@ public class MetadataRequestValidationService {
             String comment,
             Map<String, Object> properties
     ) {
+        return normalizeCreatePayload(projectName, kindValue, name, synonym, comment, properties, null);
+    }
+
+    public Map<String, Object> normalizeCreatePayload(
+            String projectName,
+            String kindValue,
+            String name,
+            String synonym,
+            String comment,
+            Map<String, Object> properties,
+            Boolean adoptExisting
+    ) {
         MetadataKind kind = MetadataKind.fromString(kindValue);
-        CreateMetadataRequest request = new CreateMetadataRequest(projectName, kind, name, synonym, comment, properties);
+        CreateMetadataRequest request = new CreateMetadataRequest(
+                projectName, kind, name, synonym, comment, properties, adoptExisting);
         request.validate();
 
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -143,6 +156,9 @@ public class MetadataRequestValidationService {
         if (properties != null && !properties.isEmpty()) {
             payload.put("properties", properties); //$NON-NLS-1$
         }
+        // Always present so the flag is visible in the validation report and so the token
+        // payload and the tool payload compare equal (BF-13405).
+        payload.put("adopt_existing", Boolean.valueOf(request.shouldAdoptExisting())); //$NON-NLS-1$
         return payload;
     }
 
@@ -1017,7 +1033,9 @@ public class MetadataRequestValidationService {
                         asString(request.payload().get("name")), //$NON-NLS-1$
                         asOptionalString(request.payload().get("synonym")), //$NON-NLS-1$
                         asOptionalString(request.payload().get("comment")), //$NON-NLS-1$
-                        asMap(request.payload().get("properties"))); //$NON-NLS-1$
+                        asMap(request.payload().get("properties")), //$NON-NLS-1$
+                        asOptionalBoolean(firstValue(
+                                request.payload(), "adopt_existing", "adoptExisting", "adopt"))); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                 checks.add("Операция create_metadata валидирована по обязательным полям и имени."); //$NON-NLS-1$
                 yield payload;
             }

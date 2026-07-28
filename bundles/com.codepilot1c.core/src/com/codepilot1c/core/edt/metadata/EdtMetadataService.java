@@ -51,6 +51,7 @@ import org.eclipse.emf.ecore.util.EcoreUtil;
 
 import com._1c.g5.v8.bm.core.IBmCrossReference;
 import com._1c.g5.v8.bm.core.IBmEngine;
+import com._1c.g5.v8.bm.core.BmFqnAlreadyInUseException;
 import com._1c.g5.v8.bm.core.BmNameAlreadyInUseException;
 import com._1c.g5.v8.bm.core.IBmNamespace;
 import com._1c.g5.v8.bm.core.IBmObject;
@@ -174,6 +175,7 @@ import com._1c.g5.v8.dt.platform.version.Version;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeDescriptionInfoWithTypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeInfo;
 import com._1c.g5.v8.dt.platform.core.typeinfo.TypeProviderService;
+import com._1c.g5.v8.dt.metadata.mdclass.Subsystem;
 import com._1c.g5.v8.dt.metadata.mdclass.ScriptVariant;
 import com._1c.g5.v8.dt.metadata.mdclass.MdClassPackage;
 import com._1c.g5.v8.dt.metadata.mdclass.MdClassFactory;
@@ -289,10 +291,18 @@ public class EdtMetadataService {
     }
 
     public MetadataOperationResult createMetadata(CreateMetadataRequest request) {
+        return createMetadataDetailed(request).result();
+    }
+
+    /**
+     * Same operation as {@link #createMetadata(CreateMetadataRequest)}, but reports whether
+     * the object was created or an already-attached top object was adopted (BF-13405).
+     */
+    public CreateMetadataOutcome createMetadataDetailed(CreateMetadataRequest request) {
         String opId = LogSanitizer.newId("edt-create"); //$NON-NLS-1$
         long startedAt = System.currentTimeMillis();
-        LOG.info("[%s] createMetadata START project=%s kind=%s name=%s", // $NON-NLS-1$
-                opId, request.projectName(), request.kind(), request.name());
+        LOG.info("[%s] createMetadata START project=%s kind=%s name=%s adoptExisting=%s", // $NON-NLS-1$
+                opId, request.projectName(), request.kind(), request.name(), request.shouldAdoptExisting());
         request.validate();
         gateway.ensureMutationRuntimeAvailable();
         IProject project = requireProject(request.projectName());
@@ -314,7 +324,7 @@ public class EdtMetadataService {
         LOG.debug("[%s] Target FQN: %s", opId, fqn); //$NON-NLS-1$
         EolGuard eolGuard = beginEolGuard(project, fqn, opId);
 
-        executeWrite(project, transaction -> {
+        Boolean adoptedFlag = executeWrite(project, transaction -> {
             LOG.debug("[%s] Transaction started for createMetadata", opId); //$NON-NLS-1$
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
             if (txConfiguration == null) {
@@ -329,6 +339,17 @@ public class EdtMetadataService {
                 throw new MetadataOperationException(
                         MetadataOperationCode.METADATA_ALREADY_EXISTS,
                         "Metadata object already exists: " + fqn, false); //$NON-NLS-1$
+            }
+
+            // BF-13405: the configuration composition (index A) and the BM top-object FQN
+            // registry (index B) can disagree — a .mdo on disk is imported and its FQN
+            // registered even when Configuration.mdo never listed it. Probe B before
+            // creating, or attachTopObject dies with BmFqnAlreadyInUseException on an object
+            // that the pre-check above just reported as absent.
+            MdObject orphan = findAttachedTopObject(transaction, project, fqn, opId);
+            if (orphan != null) {
+                adoptAttachedTopObject(txConfiguration, orphan, request, fqn, opId);
+                return Boolean.TRUE;
             }
 
             MdObject object = createTopLevelObject(request.kind());
@@ -351,25 +372,116 @@ public class EdtMetadataService {
             applyReportVariantsStorageDefault(txConfiguration, txObject, request.kind());
             LOG.debug("[%s] Eager linked object into Configuration collections", opId); //$NON-NLS-1$
             LOG.debug("[%s] Transaction steps completed for %s", opId, fqn); //$NON-NLS-1$
-            return null;
+            return Boolean.FALSE;
         });
+        boolean adopted = Boolean.TRUE.equals(adoptedFlag);
         rebindTopLevelIntoConfiguration(project, request.kind(), request.name(), fqn, opId);
         forceExportTopLevelObject(project, fqn, opId);
         verifyTopLevelPersisted(project, fqn, opId);
         verifyConfigurationEntryPersisted(project, request.kind(), fqn, opId);
         eolGuard.restore();
         refreshProjectSafely(project);
-        LOG.info("[%s] createMetadata SUCCESS in %s fqn=%s", opId, // $NON-NLS-1$
+        LOG.info("[%s] createMetadata SUCCESS in %s fqn=%s adopted=%s", opId, // $NON-NLS-1$
                 LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
-                fqn);
+                fqn,
+                adopted);
 
-        return new MetadataOperationResult(
+        String collectionTag = TopLevelCollections.configurationTag(request.kind());
+        MetadataOperationResult result = new MetadataOperationResult(
                 true,
                 request.projectName(),
                 request.kind().name(),
                 request.name(),
                 fqn,
-                "Metadata object created successfully"); //$NON-NLS-1$
+                adopted
+                        ? "Existing BM top object adopted: registered in Configuration." + collectionTag //$NON-NLS-1$
+                                + ". Properties were NOT applied — use update_metadata to change the object." //$NON-NLS-1$
+                        : "Metadata object created successfully"); //$NON-NLS-1$
+        return new CreateMetadataOutcome(result, adopted, collectionTag);
+    }
+
+    /**
+     * Registers an already-attached BM top object into the configuration's typed collection
+     * (BF-13405). Strictly additive: one entry in one collection, no {@code createTopLevelObject},
+     * no {@code attachTopObject}, no uuid rewrite — the object is already loaded and valid, all
+     * that is missing is the {@code Configuration.mdo} composition entry.
+     *
+     * <p>{@code properties} are deliberately NOT applied: adoption registers someone else's
+     * object, and mutating it as a side effect of registration is a different act. The caller
+     * is told to use {@code update_metadata}.</p>
+     */
+    private void adoptAttachedTopObject(
+            Configuration txConfiguration,
+            MdObject orphan,
+            CreateMetadataRequest request,
+            String fqn,
+            String opId
+    ) {
+        String expectedClass = request.kind().getFqnPrefix();
+        String actualClass = orphan.eClass() == null ? null : orphan.eClass().getName();
+        if (!expectedClass.equals(actualClass)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                    "FQN " + fqn + " is already taken by a " + actualClass //$NON-NLS-1$ //$NON-NLS-2$
+                            + " top object, but kind=" + request.kind().name() //$NON-NLS-1$
+                            + " expects " + expectedClass + ". Refusing to register a mismatched object.", //$NON-NLS-1$ //$NON-NLS-2$
+                    false);
+        }
+        if (!request.shouldAdoptExisting()) {
+            LOG.warn("[%s] Orphaned top-object registration detected for %s, adopt_existing not set", opId, fqn); //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                    "FQN " + fqn + " is already registered as a BM top object, but it is missing from" //$NON-NLS-1$ //$NON-NLS-2$
+                            + " Configuration." + TopLevelCollections.configurationTag(request.kind()) //$NON-NLS-1$
+                            + " — the two indexes disagree (the .mdo exists and is loaded; only the" //$NON-NLS-1$
+                            + " Configuration.mdo composition entry is absent), which is why" //$NON-NLS-1$
+                            + " edt_metadata_details reports exists:false while creation reports a taken FQN." //$NON-NLS-1$
+                            + " Nothing was changed. Either re-run create_metadata with adopt_existing=true" //$NON-NLS-1$
+                            + " (also pass adopt_existing:true in the edt_validate_request payload) to register" //$NON-NLS-1$
+                            + " the existing object, or delete its .mdo directory first if you meant to author" //$NON-NLS-1$
+                            + " a fresh object.", //$NON-NLS-1$
+                    false);
+        }
+        if (request.properties() != null && !request.properties().isEmpty()) {
+            // Never mutate a pre-existing object as a side effect of registering it, and never
+            // drop caller input silently either.
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "adopt_existing=true registers the existing " + fqn //$NON-NLS-1$
+                            + " without touching it, so 'properties' cannot be honoured here." //$NON-NLS-1$
+                            + " Re-run without 'properties', then apply them with update_metadata.", //$NON-NLS-1$
+                    false);
+        }
+        LOG.info("[%s] Adopting already-attached top object into Configuration: %s", opId, fqn); //$NON-NLS-1$
+        addTopLevelObject(txConfiguration, request.kind(), orphan);
+    }
+
+    /**
+     * Probes the BM top-object FQN registry (index B) for {@code fqn}. Best-effort: a probe
+     * failure must not abort creation, so it degrades to {@code null} with a debug line.
+     */
+    private MdObject findAttachedTopObject(
+            IBmPlatformTransaction transaction,
+            IProject project,
+            String fqn,
+            String opId
+    ) {
+        try {
+            IBmNamespace namespace = gateway.getBmModelManager().getBmNamespace(project);
+            if (namespace == null) {
+                return null;
+            }
+            Object attached = transaction.getTopObjectByFqn(namespace, fqn);
+            if (attached instanceof MdObject mdObject) {
+                LOG.debug("[%s] BM top-object probe hit for %s: %s", opId, fqn, //$NON-NLS-1$
+                        mdObject.eClass().getName());
+                return mdObject;
+            }
+            return null;
+        } catch (RuntimeException e) {
+            LOG.debug("[%s] BM top-object probe failed for %s: %s", opId, fqn, e.getMessage()); //$NON-NLS-1$
+            return null;
+        }
     }
 
     public MetadataOperationResult createEventSubscription(CreateEventSubscriptionRequest request) {
@@ -8913,7 +9025,10 @@ public class EdtMetadataService {
             // Unknown type prefix — treat as not resolvable rather than aborting the whole operation.
             return null;
         }
-        for (MdObject object : topLevelCollection(configuration, kind)) {
+        if (kind == MetadataKind.SUBSYSTEM) {
+            return findSubsystemAnywhere(configuration, name);
+        }
+        for (MdObject object : TopLevelCollections.forKind(configuration, kind)) {
             if (name.equalsIgnoreCase(object.getName())) {
                 return object;
             }
@@ -8922,66 +9037,31 @@ public class EdtMetadataService {
     }
 
     /**
-     * Maps a metadata kind to its owning top-level collection on the configuration.
+     * Resolves a subsystem by name at ANY nesting depth (B4).
      *
-     * <p>Mirrors the typed-collection switch in {@link #addTopLevelObject} so that FQN
-     * resolution ({@link #resolveByFqn}) recognises every kind the plugin can create —
-     * not just the handful that the previous hardcoded switch listed. Missing kinds
-     * (SettingsStorage, Role, charts, services, …) used to fall through to an empty list,
-     * making {@code update_metadata} reject valid references with {@code METADATA_NOT_FOUND}
-     * even though {@code edt_validate_request} accepted them.</p>
+     * <p>The canonical EDT FQN of a subsystem is flat — {@code Subsystem.PaymentCalendar} —
+     * whatever its nesting, because both subsystem collections are non-containment and EDT's
+     * name provider falls back to a two-segment name when {@code eContainingFeature()} is
+     * null. Scanning only {@code Configuration.getSubsystems()} therefore rejected the
+     * canonically correct FQN of every nested subsystem.</p>
+     *
+     * <p>Two subsystems may share a name under different parents; a flat FQN cannot tell them
+     * apart, so this refuses loudly and names both parents rather than picking one.</p>
      */
-    private List<? extends MdObject> topLevelCollection(Configuration configuration, MetadataKind kind) {
-        return switch (kind) {
-            case CATALOG -> configuration.getCatalogs();
-            case DOCUMENT -> configuration.getDocuments();
-            case INFORMATION_REGISTER -> configuration.getInformationRegisters();
-            case ACCUMULATION_REGISTER -> configuration.getAccumulationRegisters();
-            case ACCOUNTING_REGISTER -> configuration.getAccountingRegisters();
-            case CALCULATION_REGISTER -> configuration.getCalculationRegisters();
-            case COMMON_MODULE -> configuration.getCommonModules();
-            case COMMON_ATTRIBUTE -> configuration.getCommonAttributes();
-            case ENUM -> configuration.getEnums();
-            case REPORT -> configuration.getReports();
-            case DATA_PROCESSOR -> configuration.getDataProcessors();
-            case CONSTANT -> configuration.getConstants();
-            case COMMAND_GROUP -> configuration.getCommandGroups();
-            case INTERFACE -> configuration.getInterfaces();
-            case LANGUAGE -> configuration.getLanguages();
-            case STYLE -> configuration.getStyles();
-            case STYLE_ITEM -> configuration.getStyleItems();
-            case SESSION_PARAMETER -> configuration.getSessionParameters();
-            case SETTINGS_STORAGE -> configuration.getSettingsStorages();
-            case XDTO_PACKAGE -> configuration.getXDTOPackages();
-            case WS_REFERENCE -> configuration.getWsReferences();
-            case ROLE -> configuration.getRoles();
-            case SUBSYSTEM -> configuration.getSubsystems();
-            case EXCHANGE_PLAN -> configuration.getExchangePlans();
-            case CHART_OF_ACCOUNTS -> configuration.getChartsOfAccounts();
-            case CHART_OF_CHARACTERISTIC_TYPES -> configuration.getChartsOfCharacteristicTypes();
-            case CHART_OF_CALCULATION_TYPES -> configuration.getChartsOfCalculationTypes();
-            case BUSINESS_PROCESS -> configuration.getBusinessProcesses();
-            case TASK -> configuration.getTasks();
-            case COMMON_FORM -> configuration.getCommonForms();
-            case COMMON_COMMAND -> configuration.getCommonCommands();
-            case COMMON_TEMPLATE -> configuration.getCommonTemplates();
-            case COMMON_PICTURE -> configuration.getCommonPictures();
-            case SCHEDULED_JOB -> configuration.getScheduledJobs();
-            case FILTER_CRITERION -> configuration.getFilterCriteria();
-            case DEFINED_TYPE -> configuration.getDefinedTypes();
-            case SEQUENCE -> configuration.getSequences();
-            case DOCUMENT_JOURNAL -> configuration.getDocumentJournals();
-            case DOCUMENT_NUMERATOR -> configuration.getDocumentNumerators();
-            case EVENT_SUBSCRIPTION -> configuration.getEventSubscriptions();
-            case FUNCTIONAL_OPTION -> configuration.getFunctionalOptions();
-            case FUNCTIONAL_OPTIONS_PARAMETER -> configuration.getFunctionalOptionsParameters();
-            case WEB_SERVICE -> configuration.getWebServices();
-            case HTTP_SERVICE -> configuration.getHttpServices();
-            case EXTERNAL_DATA_SOURCE -> configuration.getExternalDataSources();
-            case INTEGRATION_SERVICE -> configuration.getIntegrationServices();
-            case BOT -> configuration.getBots();
-            case WEB_SOCKET_CLIENT -> configuration.getWebSocketClients();
-        };
+    private MdObject findSubsystemAnywhere(Configuration configuration, String name) {
+        List<SubsystemTree.Located<Subsystem>> hits = SubsystemTree.locateByName(
+                configuration.getSubsystems(), name, Subsystem::getName, Subsystem::getSubsystems);
+        if (hits.isEmpty()) {
+            return null;
+        }
+        if (hits.size() > 1) {
+            String message = SubsystemTree.describeAmbiguity(
+                    MetadataKind.SUBSYSTEM.getFqnPrefix(), name, hits);
+            LOG.warn("findSubsystemAnywhere ambiguous: %s", message); //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_ALREADY_EXISTS, message, false);
+        }
+        return hits.get(0).node();
     }
 
     private MdObject findNestedChild(MdObject parent, String marker, String childName) {
@@ -9005,6 +9085,33 @@ public class EdtMetadataService {
                 if (matchesMarker(normalizedMarker, feature.getName(), child.eClass().getName())) {
                     return child;
                 }
+            }
+        }
+        return findNestedSubsystemAlias(parent, normalizedMarker, childName);
+    }
+
+    /**
+     * Accepts the nested subsystem FQN form {@code Subsystem.Parent.Subsystem.Child} as a
+     * tolerant alias (B4). The documented, canonical form is the FLAT one
+     * ({@code Subsystem.Child}) — see {@link #findSubsystemAnywhere} — but callers reading
+     * their own {@code .mdo} naturally write the nested chain, and it used to die in the
+     * containment-only loop above because {@code Subsystem.subsystems} is non-containment.
+     *
+     * <p>Deliberately narrow: only the {@code subsystems} feature of a {@code Subsystem} is
+     * followed. A generic "also scan non-containment many references" rule would make
+     * {@code Subsystem.X.Content.Y} resolvable and turn every {@code content} member into an
+     * addressable child, which is not what those references mean.</p>
+     */
+    private MdObject findNestedSubsystemAlias(MdObject parent, String normalizedMarker, String childName) {
+        if (!(parent instanceof Subsystem subsystem)) {
+            return null;
+        }
+        if (!matchesMarker(normalizedMarker, "subsystems", "Subsystem")) { //$NON-NLS-1$ //$NON-NLS-2$
+            return null;
+        }
+        for (Subsystem child : subsystem.getSubsystems()) {
+            if (child != null && childName.equalsIgnoreCase(child.getName())) {
+                return child;
             }
         }
         return null;
@@ -13056,7 +13163,24 @@ public class EdtMetadataService {
                     MetadataOperationCode.EDT_SERVICE_UNAVAILABLE,
                     "Cannot resolve BM namespace for project: " + project.getName(), false); //$NON-NLS-1$
         }
-        transaction.attachTopObject(namespace, bmObject, fqn);
+        try {
+            transaction.attachTopObject(namespace, bmObject, fqn);
+        } catch (BmFqnAlreadyInUseException e) {
+            // BF-13405: the FQN registry already holds this FQN even though the configuration
+            // composition did not list it. Without this arm the sibling exception falls into
+            // the generic RuntimeException catch in executeWrite and surfaces as
+            // EDT_TRANSACTION_FAILED, which made the state look mysterious instead of fixable.
+            LOG.warn("FQN already in use while attaching top object %s: %s", fqn, e.getMessage()); //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                    "FQN " + fqn + " is already registered as a BM top object while the Configuration" //$NON-NLS-1$ //$NON-NLS-2$
+                            + " composition does not list it — the two indexes disagree." //$NON-NLS-1$
+                            + " Re-run create_metadata with adopt_existing=true to register the existing" //$NON-NLS-1$
+                            + " object (pass adopt_existing:true in the edt_validate_request payload too)," //$NON-NLS-1$
+                            + " or delete its .mdo directory first to author a fresh object.", //$NON-NLS-1$
+                    false,
+                    e);
+        }
         Object attached = transaction.getTopObjectByFqn(namespace, fqn);
         if (!(attached instanceof MdObject txObject)) {
             throw new MetadataOperationException(
@@ -13066,57 +13190,15 @@ public class EdtMetadataService {
         return txObject;
     }
 
+    /**
+     * Configuration-composition existence check (index A).
+     *
+     * <p>Delegates to the shared kind→collection mapping, so SUBSYSTEM is checked across the
+     * whole nested forest: a nested subsystem occupies the flat FQN {@code Subsystem.<Name>}
+     * in the BM namespace, so creating a top-level one with that name would collide.</p>
+     */
     private boolean existsTopLevel(Configuration configuration, MetadataKind kind, String name) {
-        return switch (kind) {
-            case CATALOG -> containsMdObjectName(configuration.getCatalogs(), name);
-            case DOCUMENT -> containsMdObjectName(configuration.getDocuments(), name);
-            case INFORMATION_REGISTER -> containsMdObjectName(configuration.getInformationRegisters(), name);
-            case ACCUMULATION_REGISTER -> containsMdObjectName(configuration.getAccumulationRegisters(), name);
-            case ACCOUNTING_REGISTER -> containsMdObjectName(configuration.getAccountingRegisters(), name);
-            case CALCULATION_REGISTER -> containsMdObjectName(configuration.getCalculationRegisters(), name);
-            case COMMON_MODULE -> containsMdObjectName(configuration.getCommonModules(), name);
-            case COMMON_ATTRIBUTE -> containsMdObjectName(configuration.getCommonAttributes(), name);
-            case ENUM -> containsMdObjectName(configuration.getEnums(), name);
-            case REPORT -> containsMdObjectName(configuration.getReports(), name);
-            case DATA_PROCESSOR -> containsMdObjectName(configuration.getDataProcessors(), name);
-            case CONSTANT -> containsMdObjectName(configuration.getConstants(), name);
-            case COMMAND_GROUP -> containsMdObjectName(configuration.getCommandGroups(), name);
-            case INTERFACE -> containsMdObjectName(configuration.getInterfaces(), name);
-            case LANGUAGE -> containsMdObjectName(configuration.getLanguages(), name);
-            case STYLE -> containsMdObjectName(configuration.getStyles(), name);
-            case STYLE_ITEM -> containsMdObjectName(configuration.getStyleItems(), name);
-            case SESSION_PARAMETER -> containsMdObjectName(configuration.getSessionParameters(), name);
-            case SETTINGS_STORAGE -> containsMdObjectName(configuration.getSettingsStorages(), name);
-            case XDTO_PACKAGE -> containsMdObjectName(configuration.getXDTOPackages(), name);
-            case WS_REFERENCE -> containsMdObjectName(configuration.getWsReferences(), name);
-            case ROLE -> containsMdObjectName(configuration.getRoles(), name);
-            case SUBSYSTEM -> containsMdObjectName(configuration.getSubsystems(), name);
-            case EXCHANGE_PLAN -> containsMdObjectName(configuration.getExchangePlans(), name);
-            case CHART_OF_ACCOUNTS -> containsMdObjectName(configuration.getChartsOfAccounts(), name);
-            case CHART_OF_CHARACTERISTIC_TYPES -> containsMdObjectName(configuration.getChartsOfCharacteristicTypes(), name);
-            case CHART_OF_CALCULATION_TYPES -> containsMdObjectName(configuration.getChartsOfCalculationTypes(), name);
-            case BUSINESS_PROCESS -> containsMdObjectName(configuration.getBusinessProcesses(), name);
-            case TASK -> containsMdObjectName(configuration.getTasks(), name);
-            case COMMON_FORM -> containsMdObjectName(configuration.getCommonForms(), name);
-            case COMMON_COMMAND -> containsMdObjectName(configuration.getCommonCommands(), name);
-            case COMMON_TEMPLATE -> containsMdObjectName(configuration.getCommonTemplates(), name);
-            case COMMON_PICTURE -> containsMdObjectName(configuration.getCommonPictures(), name);
-            case SCHEDULED_JOB -> containsMdObjectName(configuration.getScheduledJobs(), name);
-            case FILTER_CRITERION -> containsMdObjectName(configuration.getFilterCriteria(), name);
-            case DEFINED_TYPE -> containsMdObjectName(configuration.getDefinedTypes(), name);
-            case SEQUENCE -> containsMdObjectName(configuration.getSequences(), name);
-            case DOCUMENT_JOURNAL -> containsMdObjectName(configuration.getDocumentJournals(), name);
-            case DOCUMENT_NUMERATOR -> containsMdObjectName(configuration.getDocumentNumerators(), name);
-            case EVENT_SUBSCRIPTION -> containsMdObjectName(configuration.getEventSubscriptions(), name);
-            case FUNCTIONAL_OPTION -> containsMdObjectName(configuration.getFunctionalOptions(), name);
-            case FUNCTIONAL_OPTIONS_PARAMETER -> containsMdObjectName(configuration.getFunctionalOptionsParameters(), name);
-            case WEB_SERVICE -> containsMdObjectName(configuration.getWebServices(), name);
-            case HTTP_SERVICE -> containsMdObjectName(configuration.getHttpServices(), name);
-            case EXTERNAL_DATA_SOURCE -> containsMdObjectName(configuration.getExternalDataSources(), name);
-            case INTEGRATION_SERVICE -> containsMdObjectName(configuration.getIntegrationServices(), name);
-            case BOT -> containsMdObjectName(configuration.getBots(), name);
-            case WEB_SOCKET_CLIENT -> containsMdObjectName(configuration.getWebSocketClients(), name);
-        };
+        return containsMdObjectName(TopLevelCollections.forKind(configuration, kind), name);
     }
 
     private boolean containsMdObjectName(List<? extends MdObject> objects, String name) {
@@ -13704,57 +13786,12 @@ public class EdtMetadataService {
         }
     }
 
+    /**
+     * Delegates to the shared kind-to-collection mapping; the Configuration.mdo element name
+     * and the EMF feature name are the same token.
+     */
     private String configurationTag(MetadataKind kind) {
-        return switch (kind) {
-            case CATALOG -> "catalogs"; //$NON-NLS-1$
-            case DOCUMENT -> "documents"; //$NON-NLS-1$
-            case INFORMATION_REGISTER -> "informationRegisters"; //$NON-NLS-1$
-            case ACCUMULATION_REGISTER -> "accumulationRegisters"; //$NON-NLS-1$
-            case ACCOUNTING_REGISTER -> "accountingRegisters"; //$NON-NLS-1$
-            case CALCULATION_REGISTER -> "calculationRegisters"; //$NON-NLS-1$
-            case COMMON_MODULE -> "commonModules"; //$NON-NLS-1$
-            case COMMON_ATTRIBUTE -> "commonAttributes"; //$NON-NLS-1$
-            case ENUM -> "enums"; //$NON-NLS-1$
-            case REPORT -> "reports"; //$NON-NLS-1$
-            case DATA_PROCESSOR -> "dataProcessors"; //$NON-NLS-1$
-            case CONSTANT -> "constants"; //$NON-NLS-1$
-            case COMMAND_GROUP -> "commandGroups"; //$NON-NLS-1$
-            case INTERFACE -> "interfaces"; //$NON-NLS-1$
-            case LANGUAGE -> "languages"; //$NON-NLS-1$
-            case STYLE -> "styles"; //$NON-NLS-1$
-            case STYLE_ITEM -> "styleItems"; //$NON-NLS-1$
-            case SESSION_PARAMETER -> "sessionParameters"; //$NON-NLS-1$
-            case SETTINGS_STORAGE -> "settingsStorages"; //$NON-NLS-1$
-            case XDTO_PACKAGE -> "xdtoPackages"; //$NON-NLS-1$
-            case WS_REFERENCE -> "wsReferences"; //$NON-NLS-1$
-            case ROLE -> "roles"; //$NON-NLS-1$
-            case SUBSYSTEM -> "subsystems"; //$NON-NLS-1$
-            case EXCHANGE_PLAN -> "exchangePlans"; //$NON-NLS-1$
-            case CHART_OF_ACCOUNTS -> "chartsOfAccounts"; //$NON-NLS-1$
-            case CHART_OF_CHARACTERISTIC_TYPES -> "chartsOfCharacteristicTypes"; //$NON-NLS-1$
-            case CHART_OF_CALCULATION_TYPES -> "chartsOfCalculationTypes"; //$NON-NLS-1$
-            case BUSINESS_PROCESS -> "businessProcesses"; //$NON-NLS-1$
-            case TASK -> "tasks"; //$NON-NLS-1$
-            case COMMON_FORM -> "commonForms"; //$NON-NLS-1$
-            case COMMON_COMMAND -> "commonCommands"; //$NON-NLS-1$
-            case COMMON_TEMPLATE -> "commonTemplates"; //$NON-NLS-1$
-            case COMMON_PICTURE -> "commonPictures"; //$NON-NLS-1$
-            case SCHEDULED_JOB -> "scheduledJobs"; //$NON-NLS-1$
-            case FILTER_CRITERION -> "filterCriteria"; //$NON-NLS-1$
-            case DEFINED_TYPE -> "definedTypes"; //$NON-NLS-1$
-            case SEQUENCE -> "sequences"; //$NON-NLS-1$
-            case DOCUMENT_JOURNAL -> "documentJournals"; //$NON-NLS-1$
-            case DOCUMENT_NUMERATOR -> "documentNumerators"; //$NON-NLS-1$
-            case EVENT_SUBSCRIPTION -> "eventSubscriptions"; //$NON-NLS-1$
-            case FUNCTIONAL_OPTION -> "functionalOptions"; //$NON-NLS-1$
-            case FUNCTIONAL_OPTIONS_PARAMETER -> "functionalOptionsParameters"; //$NON-NLS-1$
-            case WEB_SERVICE -> "webServices"; //$NON-NLS-1$
-            case HTTP_SERVICE -> "httpServices"; //$NON-NLS-1$
-            case EXTERNAL_DATA_SOURCE -> "externalDataSources"; //$NON-NLS-1$
-            case INTEGRATION_SERVICE -> "integrationServices"; //$NON-NLS-1$
-            case BOT -> "bots"; //$NON-NLS-1$
-            case WEB_SOCKET_CLIENT -> "webSocketClients"; //$NON-NLS-1$
-        };
+        return TopLevelCollections.configurationTag(kind);
     }
 
     private String readFileSafely(IFile file) {
@@ -13979,6 +14016,18 @@ public class EdtMetadataService {
             throw new MetadataOperationException(
                     MetadataOperationCode.METADATA_ALREADY_EXISTS,
                     e.getMessage(), false, e);
+        } catch (BmFqnAlreadyInUseException e) {
+            // Sibling of BmNameAlreadyInUseException with NO common base class, so it needs its
+            // own arm; otherwise it lands in the generic RuntimeException catch below and a
+            // diagnosable "two indexes disagree" state is reported as EDT_TRANSACTION_FAILED.
+            LOG.warn("executeWrite(project=%s) FQN already in use: %s", project.getName(), e.getMessage()); //$NON-NLS-1$
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                    "FQN already registered as a BM top object while the Configuration composition" //$NON-NLS-1$
+                            + " does not list it (the two metadata indexes disagree): " + e.getMessage() //$NON-NLS-1$
+                            + ". For create_metadata, re-run with adopt_existing=true to register the" //$NON-NLS-1$
+                            + " existing object; otherwise delete its .mdo directory first.", //$NON-NLS-1$
+                    false, e);
         } catch (MetadataOperationException e) {
             LOG.warn("executeWrite(project=%s) business error: %s (%s)", // $NON-NLS-1$
                     project.getName(), e.getMessage(), e.getCode());

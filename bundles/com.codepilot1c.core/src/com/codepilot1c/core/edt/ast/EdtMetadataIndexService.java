@@ -21,6 +21,8 @@ import com._1c.g5.v8.dt.core.platform.IConfigurationProvider;
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
 import com._1c.g5.v8.dt.metadata.mdclass.MdObject;
 import com.codepilot1c.core.edt.BmObjectHelper;
+import com.codepilot1c.core.edt.metadata.MetadataKind;
+import com.codepilot1c.core.edt.metadata.TopLevelCollections;
 
 /**
  * Scans top-level metadata objects from EDT configuration.
@@ -336,54 +338,20 @@ public class EdtMetadataIndexService {
             String language) {
         List<MetadataIndexResult.Item> items = new ArrayList<>();
         Set<String> seenFqns = new LinkedHashSet<>();
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "catalogs", configuration.getCatalogs()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "documents", configuration.getDocuments()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "documentjournals", configuration.getDocumentJournals()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "documentnumerators", configuration.getDocumentNumerators()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commonmodules", configuration.getCommonModules()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commonattributes", configuration.getCommonAttributes()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "enums", configuration.getEnums()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "reports", configuration.getReports()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "dataprocessors", configuration.getDataProcessors()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "informationregisters", configuration.getInformationRegisters()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "accumulationregisters", configuration.getAccumulationRegisters()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "accountingregisters", configuration.getAccountingRegisters()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "calculationregisters", configuration.getCalculationRegisters()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "chartofaccounts", configuration.getChartsOfAccounts()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "chartofcharacteristictypes", configuration.getChartsOfCharacteristicTypes()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "chartofcalculationtypes", configuration.getChartsOfCalculationTypes()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "businessprocesses", configuration.getBusinessProcesses()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "tasks", configuration.getTasks()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "constants", configuration.getConstants()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "sequences", configuration.getSequences()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "exchangeplans", configuration.getExchangePlans()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "subsystems", configuration.getSubsystems()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "roles", configuration.getRoles()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "interfaces", configuration.getInterfaces()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "sessionparameters", configuration.getSessionParameters()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "settingsstorages", configuration.getSettingsStorages()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "scheduledjobs", configuration.getScheduledJobs()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commoncommands", configuration.getCommonCommands()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commandgroups", configuration.getCommandGroups()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commonforms", configuration.getCommonForms()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commontemplates", configuration.getCommonTemplates()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "commonpictures", configuration.getCommonPictures()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "filtercriteria", configuration.getFilterCriteria()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "definedtypes", configuration.getDefinedTypes()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "eventsubscriptions", configuration.getEventSubscriptions()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "functionaloptions", configuration.getFunctionalOptions()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "functionaloptionsparameters", configuration.getFunctionalOptionsParameters()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "xdtopackages", configuration.getXDTOPackages()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "wsreferences", configuration.getWsReferences()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "webservices", configuration.getWebServices()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "httpservices", configuration.getHttpServices()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "integrationservices", configuration.getIntegrationServices()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "externaldatasources", configuration.getExternalDataSources()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "languages", configuration.getLanguages()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "styles", configuration.getStyles()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "styleitems", configuration.getStyleItems()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "bots", configuration.getBots()); //$NON-NLS-1$
-        appendKnownCollection(items, seenFqns, scope, nameFilter, language, "websocketclients", configuration.getWebSocketClients()); //$NON-NLS-1$
+        // One loop over every kind, using the shared kind-to-collection mapping: the old
+        // 48 hand-written lines were a fourth divergent copy of it, and anything missing from
+        // the list was invisible to scan_metadata_index. SUBSYSTEM arrives flattened, so
+        // nested subsystems (each a top object with its own flat FQN) are finally indexed.
+        for (MetadataKind kind : MetadataKind.values()) {
+            appendKnownCollection(
+                    items,
+                    seenFqns,
+                    scope,
+                    nameFilter,
+                    language,
+                    TopLevelCollections.indexScopeToken(kind),
+                    TopLevelCollections.forKind(configuration, kind));
+        }
         return items;
     }
 

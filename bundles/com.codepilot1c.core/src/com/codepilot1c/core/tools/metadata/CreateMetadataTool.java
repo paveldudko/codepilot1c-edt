@@ -8,12 +8,12 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
+import com.codepilot1c.core.edt.metadata.CreateMetadataOutcome;
 import com.codepilot1c.core.edt.metadata.CreateMetadataRequest;
 import com.codepilot1c.core.edt.metadata.EdtMetadataService;
 import com.codepilot1c.core.edt.metadata.MetadataKind;
 import com.codepilot1c.core.edt.metadata.MetadataOperationCode;
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
-import com.codepilot1c.core.edt.metadata.MetadataOperationResult;
 import com.codepilot1c.core.edt.validation.MetadataRequestValidationService;
 import com.codepilot1c.core.edt.validation.ValidationOperation;
 import com.codepilot1c.core.logging.LogSanitizer;
@@ -105,6 +105,10 @@ public class CreateMetadataTool extends AbstractTool {
                   "type": "object",
                   "description": "Дополнительные свойства нового объекта. Используйте update_metadata, если объект уже существует."
                 },
+                "adopt_existing": {
+                  "type": "boolean",
+                  "description": "Default false. Set true ONLY after the tool refused with 'already registered as a BM top object': the .mdo exists and is loaded but Configuration.mdo does not list it, and adopt registers it into the typed collection. Adoption does not modify the object, so pass no 'properties' with it (use update_metadata afterwards). Must be passed in the edt_validate_request payload too, otherwise the token is issued without it. Alias: adopt."
+                },
                 "validation_token": {
                   "type": "string",
                   "description": "Одноразовый токен из edt_validate_request. Обязателен для mutation path."
@@ -163,10 +167,12 @@ public class CreateMetadataTool extends AbstractTool {
                 String synonym = getOptionalString(parameters, "synonym"); //$NON-NLS-1$
                 String comment = getOptionalString(parameters, "comment"); //$NON-NLS-1$
                 Map<String, Object> properties = parameterMap(parameters.get("properties")); //$NON-NLS-1$
+                Boolean adoptExisting = optionalBoolean(
+                        parameters, "adopt_existing", "adoptExisting", "adopt"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                 String validationToken = getString(parameters, "validation_token"); //$NON-NLS-1$
 
                 Map<String, Object> normalizedPayload = validationService.normalizeCreatePayload(
-                        projectName, kindValue, name, synonym, comment, properties);
+                        projectName, kindValue, name, synonym, comment, properties, adoptExisting);
                 LOG.debug("[%s] Normalized payload: %s", opId, // $NON-NLS-1$
                         LogSanitizer.truncate(LogSanitizer.redactSecrets(String.valueOf(normalizedPayload)), 4000));
                 Map<String, Object> validatedPayload = validationService.consumeToken(
@@ -185,15 +191,33 @@ public class CreateMetadataTool extends AbstractTool {
                 String validatedSynonym = asOptionalString(validatedPayload, "synonym"); //$NON-NLS-1$
                 String validatedComment = asOptionalString(validatedPayload, "comment"); //$NON-NLS-1$
                 Map<String, Object> validatedProperties = parameterMap(validatedPayload.get("properties")); //$NON-NLS-1$
+                // The token payload is authoritative for every field; adopt_existing is a
+                // behaviour switch, so a token issued without it must not be widened here.
+                boolean validatedAdopt = Boolean.TRUE.equals(validatedPayload.get("adopt_existing")); //$NON-NLS-1$
+                if (Boolean.TRUE.equals(adoptExisting) && !validatedAdopt) {
+                    throw new MetadataOperationException(
+                            MetadataOperationCode.INVALID_VALIDATION_TOKEN,
+                            "adopt_existing=true was passed to create_metadata, but the validation token" //$NON-NLS-1$
+                                    + " was issued without it. Re-run edt_validate_request with" //$NON-NLS-1$
+                                    + " payload.adopt_existing=true and use the fresh token.", //$NON-NLS-1$
+                            false);
+                }
                 CreateMetadataRequest request = new CreateMetadataRequest(
-                        projectName, kind, validatedName, validatedSynonym, validatedComment, validatedProperties);
-                LOG.info("[%s] Calling EdtMetadataService.createMetadata(project=%s, kind=%s, name=%s)", // $NON-NLS-1$
-                        opId, projectName, kind, validatedName);
-                MetadataOperationResult result = metadataService.createMetadata(request);
-                LOG.info("[%s] SUCCESS in %s, fqn=%s", opId, // $NON-NLS-1$
+                        projectName,
+                        kind,
+                        validatedName,
+                        validatedSynonym,
+                        validatedComment,
+                        validatedProperties,
+                        Boolean.valueOf(validatedAdopt));
+                LOG.info("[%s] Calling EdtMetadataService.createMetadata(project=%s, kind=%s, name=%s, adopt=%s)", // $NON-NLS-1$
+                        opId, projectName, kind, validatedName, validatedAdopt);
+                CreateMetadataOutcome outcome = metadataService.createMetadataDetailed(request);
+                LOG.info("[%s] SUCCESS in %s, fqn=%s, adopted=%s", opId, // $NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
-                        result.fqn());
-                return ToolResult.success(result.formatForLlm());
+                        outcome.result().fqn(),
+                        outcome.adopted());
+                return ToolResult.success(outcome.formatForLlm());
             } catch (MetadataOperationException e) {
                 LOG.warn("[%s] FAILED in %s: %s (%s)", opId, // $NON-NLS-1$
                         LogSanitizer.formatDuration(System.currentTimeMillis() - startedAt),
@@ -220,6 +244,33 @@ public class CreateMetadataTool extends AbstractTool {
     private String getOptionalString(Map<String, Object> parameters, String key) {
         String value = getString(parameters, key);
         return value == null || value.isBlank() ? null : value;
+    }
+
+    /** Reads the first present key as a boolean; JSON clients send either a literal or a string. */
+    private Boolean optionalBoolean(Map<String, Object> parameters, String... keys) {
+        for (String key : keys) {
+            Object value = parameters.get(key);
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof Boolean bool) {
+                return bool;
+            }
+            String text = String.valueOf(value).trim();
+            if (text.isBlank()) {
+                continue;
+            }
+            if ("true".equalsIgnoreCase(text) || "1".equals(text)) { //$NON-NLS-1$ //$NON-NLS-2$
+                return Boolean.TRUE;
+            }
+            if ("false".equalsIgnoreCase(text) || "0".equals(text)) { //$NON-NLS-1$ //$NON-NLS-2$
+                return Boolean.FALSE;
+            }
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Parameter '" + key + "' must be a boolean, got: " + text, false); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        return null;
     }
 
     private String asRequiredString(Map<String, Object> payload, String key) {

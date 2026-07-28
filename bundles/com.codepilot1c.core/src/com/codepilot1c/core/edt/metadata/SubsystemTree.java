@@ -1,0 +1,156 @@
+package com.codepilot1c.core.edt.metadata;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Set;
+import java.util.function.Function;
+
+/**
+ * Pure depth-first traversal of a subsystem forest (BF-12936 / B4).
+ *
+ * <p>Subsystems are the only top-level kind that nests: {@code Configuration.subsystems}
+ * and {@code Subsystem.subsystems} are both <em>non-containment</em> references, so a
+ * nested subsystem has {@code eContainer() == null} and EDT's
+ * {@code MdUtil.getFullyQualifiedName} therefore mints a FLAT two-segment FQN for it —
+ * {@code Subsystem.PaymentCalendar} — and gives it its own {@code .mdo}. Every nested
+ * subsystem is a top object in its own right.</p>
+ *
+ * <p>Consequence: a lookup that only scans {@code Configuration.getSubsystems()} sees the
+ * first level and reports {@code exists:false} for everything below it, even though the
+ * canonical FQN of a nested subsystem is exactly the flat form the caller passed. This
+ * class supplies the recursion, and — because flat FQNs cannot distinguish two subsystems
+ * that share a name under different parents — it reports <em>all</em> hits so the caller
+ * can fail loud instead of silently picking one.</p>
+ *
+ * <p>Kept free of EMF/BM types on purpose: the traversal is the part worth unit-testing,
+ * and EMF model classes do not resolve in the plain Maven test bundle.</p>
+ */
+public final class SubsystemTree {
+
+    /** Parent label used for a subsystem that sits directly on the configuration. */
+    public static final String CONFIGURATION_ROOT = "Configuration (top level)"; //$NON-NLS-1$
+
+    private SubsystemTree() {
+    }
+
+    /**
+     * A node found by name together with the names of its ancestors, root-first.
+     * An empty {@code parentPath} means the node sits directly on the configuration.
+     */
+    public record Located<T>(T node, List<String> parentPath) {
+
+        public Located {
+            parentPath = parentPath == null ? List.of() : List.copyOf(parentPath);
+        }
+
+        /** Human-readable parent chain, for ambiguity reports. */
+        public String describePath() {
+            return parentPath.isEmpty() ? CONFIGURATION_ROOT : String.join(" > ", parentPath); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Flattens the forest depth-first, parents before children. Duplicate node instances
+     * are visited once (identity-based), so a malformed model with a cyclic
+     * {@code subsystems} link cannot hang the traversal.
+     */
+    public static <T> List<T> flatten(
+            List<? extends T> roots,
+            Function<? super T, ? extends List<? extends T>> childrenOf
+    ) {
+        List<T> flat = new ArrayList<>();
+        collect(roots, childrenOf, newIdentitySet(), flat);
+        return flat;
+    }
+
+    /**
+     * Collects every node whose name matches {@code name} (case-insensitively), at any
+     * depth. Returns an empty list when nothing matches; more than one element means the
+     * flat FQN is ambiguous and the caller must refuse rather than choose.
+     */
+    public static <T> List<Located<T>> locateByName(
+            List<? extends T> roots,
+            String name,
+            Function<? super T, String> nameOf,
+            Function<? super T, ? extends List<? extends T>> childrenOf
+    ) {
+        List<Located<T>> hits = new ArrayList<>();
+        if (name == null || name.isBlank()) {
+            return hits;
+        }
+        walk(roots, name.trim(), nameOf, childrenOf, new ArrayList<>(), newIdentitySet(), hits);
+        return hits;
+    }
+
+    /**
+     * Builds the refusal text for an ambiguous flat FQN, naming every parent so the caller
+     * can see which objects collide instead of guessing.
+     */
+    public static String describeAmbiguity(String fqnPrefix, String name, List<? extends Located<?>> hits) {
+        StringBuilder message = new StringBuilder();
+        message.append("Ambiguous ").append(fqnPrefix).append(" name '").append(name).append("': ") //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                .append(hits.size())
+                .append(" objects share it (parents: "); //$NON-NLS-1$
+        for (int i = 0; i < hits.size(); i++) {
+            if (i > 0) {
+                message.append("; "); //$NON-NLS-1$
+            }
+            message.append(hits.get(i).describePath());
+        }
+        message.append("). ").append(fqnPrefix) //$NON-NLS-1$
+                .append(" FQNs are flat (").append(fqnPrefix).append(".<Name>), so this name cannot address") //$NON-NLS-1$ //$NON-NLS-2$
+                .append(" a single object. Rename one of them, or address the one you mean by its nested") //$NON-NLS-1$
+                .append(" alias ").append(fqnPrefix).append(".<Parent>.").append(fqnPrefix).append(".<Name>."); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        return message.toString();
+    }
+
+    private static <T> void collect(
+            List<? extends T> nodes,
+            Function<? super T, ? extends List<? extends T>> childrenOf,
+            Set<Object> visited,
+            List<T> sink
+    ) {
+        if (nodes == null) {
+            return;
+        }
+        for (T node : nodes) {
+            if (node == null || !visited.add(node)) {
+                continue;
+            }
+            sink.add(node);
+            collect(childrenOf.apply(node), childrenOf, visited, sink);
+        }
+    }
+
+    private static <T> void walk(
+            List<? extends T> nodes,
+            String name,
+            Function<? super T, String> nameOf,
+            Function<? super T, ? extends List<? extends T>> childrenOf,
+            List<String> path,
+            Set<Object> visited,
+            List<Located<T>> hits
+    ) {
+        if (nodes == null) {
+            return;
+        }
+        for (T node : nodes) {
+            if (node == null || !visited.add(node)) {
+                continue;
+            }
+            String nodeName = nameOf.apply(node);
+            if (nodeName != null && nodeName.equalsIgnoreCase(name)) {
+                hits.add(new Located<>(node, path));
+            }
+            path.add(nodeName == null ? "" : nodeName); //$NON-NLS-1$
+            walk(childrenOf.apply(node), name, nameOf, childrenOf, path, visited, hits);
+            path.remove(path.size() - 1);
+        }
+    }
+
+    private static Set<Object> newIdentitySet() {
+        return Collections.newSetFromMap(new IdentityHashMap<>());
+    }
+}
