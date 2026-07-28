@@ -276,6 +276,42 @@ public class EdtMetadataService {
         }
     }
 
+    /**
+     * One element of a composite {@link TypeDescription} after resolution.
+     *
+     * @param txTypeItem     the type as reachable from the current write transaction — what is
+     *                       actually added to the TypeDescription
+     * @param qualifierSource the type instance the qualifier kind is read from; the
+     *                       transaction-bound copy may be a proxy whose name is unreadable, so
+     *                       each resolver hands back whichever instance names the type reliably
+     */
+    private record ResolvedTypeItem(TypeItem txTypeItem, TypeItem qualifierSource) {
+    }
+
+    /**
+     * Resolves one requested {@link TypeSpec} to a type usable inside the current write
+     * transaction. Each of the three {@code type} entry points (BasicFeature, form attribute,
+     * TypeDescription-valued reference) has its own resolution ladder and its own actionable
+     * message, so the ladder is the pluggable part and
+     * {@link EdtMetadataService#buildTypeDescription} is shared.
+     *
+     * <p>Must either return a non-null result or throw: a {@code null} return is treated as a
+     * bug and rejected, because "unresolved element quietly skipped" is exactly the silent drop
+     * this whole path exists to prevent.</p>
+     */
+    @FunctionalInterface
+    private interface TypeItemResolver {
+        ResolvedTypeItem resolve(TypeSpec typeSpec);
+    }
+
+    /**
+     * A freshly built {@link TypeDescription} plus the resolved type name of every element, in
+     * request order. The names are handed back because callers need them after the description
+     * is attached — {@code fixNullNumberFillValue} keys off "is any element a Number".
+     */
+    private record BuiltTypeDescription(TypeDescription description, List<String> typeNames) {
+    }
+
     public EdtMetadataService() {
         this(new EdtMetadataGateway());
     }
@@ -5116,8 +5152,31 @@ public class EdtMetadataService {
         if (attribute == null || typeValue == null) {
             return;
         }
+        // validateFormAttributeType has always walked the whole requested list; the apply side
+        // used to keep only its first element (validate-all / apply-one). Both sides now agree.
         validateFormAttributeType(typeValue);
-        TypeSpec typeSpec = normalizeTypeSpec(typeValue);
+        BuiltTypeDescription built = buildTypeDescription(
+                normalizeTypeSpecList(typeValue),
+                extractTypeDescriptionFromEObject(attribute),
+                true,
+                typeSpec -> resolveFormAttributeTypeItem(
+                        attribute, typeSpec, transaction, preResolvedTypes, txConfiguration));
+        setTypeDescriptionOnEObject(attribute, built.description());
+    }
+
+    /**
+     * Resolves one requested type of a form attribute / parameter / table column. Beyond the
+     * BasicFeature ladder this also scans the configuration for a simple type and finally asks
+     * TypeProviderService, which is the only route to a platform built-in the configuration does
+     * not reference yet.
+     */
+    private ResolvedTypeItem resolveFormAttributeTypeItem(
+            EObject attribute,
+            TypeSpec typeSpec,
+            IBmPlatformTransaction transaction,
+            Map<String, TypeItem> preResolvedTypes,
+            Configuration txConfiguration
+    ) {
         String typeQuery = typeSpec.typeQuery();
         TypeItem candidate = lookupPreResolvedTypeItem(preResolvedTypes, typeQuery);
         TypeItem txTypeItem = null;
@@ -5181,48 +5240,7 @@ public class EdtMetadataService {
                     MetadataOperationCode.INVALID_PROPERTY_VALUE,
                     "Type value cannot be resolved for form attribute: " + typeQuery, false); //$NON-NLS-1$
         }
-
-        TypeDescription typeDesc = McoreFactory.eINSTANCE.createTypeDescription();
-        typeDesc.getTypes().add(txTypeItem);
-
-        TypeItem resolvedForName = candidate != null ? candidate : txTypeItem;
-        String typeName = resolveTypeNameForQualifiers(resolvedForName, typeSpec);
-        TypeDescription existingType = extractTypeDescriptionFromEObject(attribute);
-        if (isNumberType(typeName)) {
-            NumberQualifiers nq = McoreFactory.eINSTANCE.createNumberQualifiers();
-            Integer precision = typeSpec.numberPrecision();
-            Integer scale = typeSpec.numberScale();
-            Boolean nonNegative = typeSpec.numberNonNegative();
-            NumberQualifiers existing = existingType == null ? null : existingType.getNumberQualifiers();
-            nq.setPrecision(firstPositive(precision, existing == null ? null : existing.getPrecision(), 15));
-            nq.setScale(firstNonNegative(scale, existing == null ? null : existing.getScale(), 2));
-            nq.setNonNegative(nonNegative != null
-                    ? nonNegative.booleanValue()
-                    : (existing != null && existing.isNonNegative()));
-            typeDesc.setNumberQualifiers(nq);
-        } else if (isStringType(typeName)) {
-            StringQualifiers sq = McoreFactory.eINSTANCE.createStringQualifiers();
-            Integer length = typeSpec.stringLength();
-            Boolean fixed = typeSpec.stringFixed();
-            StringQualifiers existing = existingType == null ? null : existingType.getStringQualifiers();
-            sq.setLength(resolveStringLength(length, existing, 150));
-            sq.setFixed(fixed != null
-                    ? fixed.booleanValue()
-                    : (existing != null && existing.isFixed()));
-            typeDesc.setStringQualifiers(sq);
-        } else if (isDateType(typeName)) {
-            DateQualifiers dq = McoreFactory.eINSTANCE.createDateQualifiers();
-            DateFractions fractions = typeSpec.dateFractions();
-            DateQualifiers existing = existingType == null ? null : existingType.getDateQualifiers();
-            dq.setDateFractions(fractions != null
-                    ? fractions
-                    : (existing != null && existing.getDateFractions() != null
-                            ? existing.getDateFractions()
-                            : DateFractions.DATE_TIME));
-            typeDesc.setDateQualifiers(dq);
-        }
-
-        setTypeDescriptionOnEObject(attribute, typeDesc);
+        return new ResolvedTypeItem(txTypeItem, candidate != null ? candidate : txTypeItem);
     }
 
     private void validateFormAttributeType(Object typeValue) {
@@ -5500,11 +5518,7 @@ public class EdtMetadataService {
             if (typeValue == null) {
                 continue;
             }
-            TypeSpec spec = normalizeTypeSpec(typeValue);
-            String typeQuery = spec == null ? null : spec.typeQuery();
-            if (typeQuery != null && !typeQuery.isBlank()) {
-                typeStrings.add(typeQuery);
-            }
+            addTypeSpecQueries(typeStrings, typeValue);
             collectColumnTypeStrings(descriptor, typeStrings);
         }
         return typeStrings;
@@ -5537,7 +5551,17 @@ public class EdtMetadataService {
             if (columnType == null) {
                 continue;
             }
-            TypeSpec spec = normalizeTypeSpec(columnType);
+            addTypeSpecQueries(typeStrings, columnType);
+        }
+    }
+
+    /**
+     * Adds the normalized query of every type requested by {@code typeValue} to
+     * {@code typeStrings}. Collect-all: a composite {@code valueType} contributes each of its
+     * elements, so pre-resolve warms the cache for all of them and reports an unknown one.
+     */
+    private void addTypeSpecQueries(Set<String> typeStrings, Object typeValue) {
+        for (TypeSpec spec : normalizeTypeSpecList(typeValue)) {
             String typeQuery = spec == null ? null : spec.typeQuery();
             if (typeQuery != null && !typeQuery.isBlank()) {
                 typeStrings.add(typeQuery);
@@ -9352,10 +9376,7 @@ public class EdtMetadataService {
         Set<String> typeStrings = new LinkedHashSet<>();
         Map<String, Object> properties = request.properties();
         if (properties != null && !properties.isEmpty()) {
-            String directType = normalizeTypeLookupQuery(getMapValueIgnoreCase(properties, "type")); //$NON-NLS-1$
-            if (directType != null && !directType.isBlank()) {
-                typeStrings.add(directType);
-            }
+            typeStrings.addAll(normalizeTypeLookupQueries(getMapValueIgnoreCase(properties, "type"))); //$NON-NLS-1$
             Object rawChildren = getMapValueIgnoreCase(properties, "children"); //$NON-NLS-1$
             if (rawChildren == null && request.childKind() == MetadataChildKind.ATTRIBUTE) {
                 rawChildren = getMapValueIgnoreCase(properties, "attributes"); //$NON-NLS-1$
@@ -9363,10 +9384,8 @@ public class EdtMetadataService {
             if (rawChildren instanceof List<?> entries) {
                 for (Object entry : entries) {
                     if (entry instanceof Map<?, ?> entryMap) {
-                        String entryType = normalizeTypeLookupQuery(getMapValueIgnoreCase((Map<String, Object>) entryMap, "type")); //$NON-NLS-1$
-                        if (entryType != null && !entryType.isBlank()) {
-                            typeStrings.add(entryType);
-                        }
+                        typeStrings.addAll(normalizeTypeLookupQueries(
+                                getMapValueIgnoreCase((Map<String, Object>) entryMap, "type"))); //$NON-NLS-1$
                     }
                 }
             }
@@ -9394,37 +9413,34 @@ public class EdtMetadataService {
             return;
         }
         Object requestedTypeValue = properties == null ? null : getMapValueIgnoreCase(properties, "type"); //$NON-NLS-1$
-        TypeSpec requestedSpec = null;
+        List<TypeSpec> requestedSpecs = List.of();
         if (requestedTypeValue != null && properties != null && !properties.isEmpty()) {
-            // Pass entire properties map so normalizeTypeSpec can pick up length/precision/scale siblings
-            requestedSpec = normalizeTypeSpec(properties);
+            // Pass entire properties map so the normalizer can pick up length/precision/scale
+            // siblings; a composite "type" then yields one spec per element, each inheriting them.
+            requestedSpecs = normalizeTypeSpecList(properties);
         } else if (requestedTypeValue != null) {
-            requestedSpec = normalizeTypeSpec(requestedTypeValue);
+            requestedSpecs = normalizeTypeSpecList(requestedTypeValue);
         }
-        String requestedType = requestedSpec == null ? null : requestedSpec.typeQuery();
+        String requestedType = requestedSpecs.isEmpty() ? null : requestedSpecs.get(0).typeQuery();
         String typeToApply = requestedType != null ? requestedType
                 : (isKindWithRequiredType(kind) ? DEFAULT_BASIC_FEATURE_TYPE : null);
         if (typeToApply == null || typeToApply.isBlank()) {
             return;
         }
-        TypeItem typeItem = resolveTypeItemForFeature(
-                feature,
-                configuration,
-                typeToApply,
-                preResolvedTypes);
-        if (typeItem == null) {
-            throw new MetadataOperationException(
-                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                    "Type not found in BM/type provider for add_metadata_child: " + typeToApply, false); //$NON-NLS-1$
-        }
         if (requestedType == null) {
             LOG.info("Auto-assign default type=%s for child kind=%s parent=%s child=%s", //$NON-NLS-1$
                     typeToApply, kind, parentFqn, childName);
         }
-        TypeSpec effectiveSpec = requestedSpec != null
-                ? requestedSpec
-                : TypeSpec.of(typeToApply);
-        setAttributeType(feature, typeItem, effectiveSpec, transaction);
+        List<TypeSpec> effectiveSpecs = requestedSpecs.isEmpty()
+                ? List.of(TypeSpec.of(typeToApply))
+                : requestedSpecs;
+        setAttributeType(
+                feature,
+                configuration,
+                effectiveSpecs,
+                preResolvedTypes,
+                transaction,
+                "Type not found in BM/type provider for add_metadata_child: "); //$NON-NLS-1$
         applyBasicFeatureCreateProperties(feature, properties);
     }
 
@@ -10229,15 +10245,13 @@ public class EdtMetadataService {
         // which cannot be set via the generic applyReferenceValue path.
         // Instead, use dedicated TypeItem resolution from BM.
         if ("type".equalsIgnoreCase(fieldName) && target instanceof BasicFeature feature) { //$NON-NLS-1$
-            TypeSpec typeSpec = normalizeTypeSpec(value);
-            String typeString = typeSpec.typeQuery();
-            TypeItem typeItem = resolveTypeItemForFeature(feature, configuration, typeString, preResolvedTypes);
-            if (typeItem == null) {
-                throw new MetadataOperationException(
-                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                        "Type not found in BM/type provider for field 'type': " + typeString, false); //$NON-NLS-1$
-            }
-            setAttributeType(feature, typeItem, typeSpec, transaction);
+            setAttributeType(
+                    feature,
+                    configuration,
+                    normalizeTypeSpecList(value),
+                    preResolvedTypes,
+                    transaction,
+                    "Type not found in BM/type provider for field 'type': "); //$NON-NLS-1$
             return;
         }
         String resolvedFieldName = normalizeMetadataFieldAlias(fieldName);
@@ -10326,15 +10340,197 @@ public class EdtMetadataService {
     }
 
     /**
-     * Sets the type (TypeDescription) on a BasicFeature using a pre-resolved TypeItem.
-     * <p>The TypeItem must have been resolved in a read transaction before entering
-     * the write transaction, then converted via {@code transaction.toTransactionObject()}.</p>
+     * Builds a {@link TypeDescription} from N requested types — the single place every
+     * {@code type} write funnels through.
+     *
+     * <p>A 1C type description holds a <em>list</em> of types plus at most one qualifier block
+     * per qualifier kind. Each {@link TypeSpec} therefore contributes its own type, while the
+     * first element of a given kind (String / Number / Date) contributes that kind's qualifiers;
+     * a later element of the same kind cannot fight over one block. With a single requested type
+     * exactly one branch can fire, so the shape produced for the overwhelmingly common
+     * one-type request is unchanged.</p>
+     *
+     * <p><strong>Fail-loud.</strong> Every element must resolve. The resolver is expected to
+     * throw with its own actionable message; a {@code null} return is caught here and refused
+     * too, so no requested type can ever be dropped while the write reports success.</p>
+     *
+     * @param existingType       the type description being replaced, read for qualifier
+     *                           inheritance (an unspecified length keeps the current one)
+     * @param qualifierDefaults  {@code true} for the attribute/form paths, which have always
+     *                           materialised a qualifier block with a platform default when
+     *                           neither the request nor the previous state specified one;
+     *                           {@code false} for TypeDescription-valued references, where a
+     *                           qualifier block appears only if it was asked for or already
+     *                           there — that keeps the addition of qualifier support to those
+     *                           references strictly additive
+     */
+    private BuiltTypeDescription buildTypeDescription(
+            List<TypeSpec> typeSpecs,
+            TypeDescription existingType,
+            boolean qualifierDefaults,
+            TypeItemResolver resolver
+    ) {
+        TypeDescription typeDesc = McoreFactory.eINSTANCE.createTypeDescription();
+        List<String> typeNames = new ArrayList<>(typeSpecs.size());
+        boolean numberApplied = false;
+        boolean stringApplied = false;
+        boolean dateApplied = false;
+        for (TypeSpec typeSpec : typeSpecs) {
+            ResolvedTypeItem resolved = resolver.resolve(typeSpec);
+            if (resolved == null || resolved.txTypeItem() == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                        "Type value cannot be resolved: " //$NON-NLS-1$
+                                + (typeSpec == null ? null : typeSpec.typeQuery()),
+                        false);
+            }
+            typeDesc.getTypes().add(resolved.txTypeItem());
+
+            String typeName = resolveTypeNameForQualifiers(resolved.qualifierSource(), typeSpec);
+            typeNames.add(typeName);
+            if (isNumberType(typeName)) {
+                if (!numberApplied && (qualifierDefaults || hasNumberQualifierInput(typeSpec, existingType))) {
+                    typeDesc.setNumberQualifiers(buildNumberQualifiers(typeSpec, existingType));
+                    numberApplied = true;
+                }
+            } else if (isStringType(typeName)) {
+                if (!stringApplied && (qualifierDefaults || hasStringQualifierInput(typeSpec, existingType))) {
+                    typeDesc.setStringQualifiers(buildStringQualifiers(typeSpec, existingType));
+                    stringApplied = true;
+                }
+            } else if (isDateType(typeName)) {
+                if (!dateApplied && (qualifierDefaults || hasDateQualifierInput(typeSpec, existingType))) {
+                    typeDesc.setDateQualifiers(buildDateQualifiers(typeSpec, existingType));
+                    dateApplied = true;
+                }
+            }
+        }
+        return new BuiltTypeDescription(typeDesc, typeNames);
+    }
+
+    /** Number qualifiers from the request, falling back to the replaced state, then to 15.2. */
+    private NumberQualifiers buildNumberQualifiers(TypeSpec typeSpec, TypeDescription existingType) {
+        NumberQualifiers nq = McoreFactory.eINSTANCE.createNumberQualifiers();
+        Integer precision = typeSpec == null ? null : typeSpec.numberPrecision();
+        Integer scale = typeSpec == null ? null : typeSpec.numberScale();
+        Boolean nonNegative = typeSpec == null ? null : typeSpec.numberNonNegative();
+        NumberQualifiers existing = existingType == null ? null : existingType.getNumberQualifiers();
+        nq.setPrecision(firstPositive(precision, existing == null ? null : existing.getPrecision(), 15));
+        nq.setScale(firstNonNegative(scale, existing == null ? null : existing.getScale(), 2));
+        nq.setNonNegative(nonNegative != null
+                ? nonNegative.booleanValue()
+                : (existing != null && existing.isNonNegative()));
+        return nq;
+    }
+
+    /** String qualifiers from the request, falling back to the replaced state, then to 150. */
+    private StringQualifiers buildStringQualifiers(TypeSpec typeSpec, TypeDescription existingType) {
+        StringQualifiers sq = McoreFactory.eINSTANCE.createStringQualifiers();
+        Integer length = typeSpec == null ? null : typeSpec.stringLength();
+        Boolean fixed = typeSpec == null ? null : typeSpec.stringFixed();
+        StringQualifiers existing = existingType == null ? null : existingType.getStringQualifiers();
+        sq.setLength(resolveStringLength(length, existing, 150));
+        sq.setFixed(fixed != null
+                ? fixed.booleanValue()
+                : (existing != null && existing.isFixed()));
+        return sq;
+    }
+
+    /** Date qualifiers from the request, falling back to the replaced state, then to DateTime. */
+    private DateQualifiers buildDateQualifiers(TypeSpec typeSpec, TypeDescription existingType) {
+        DateQualifiers dq = McoreFactory.eINSTANCE.createDateQualifiers();
+        DateFractions fractions = typeSpec == null ? null : typeSpec.dateFractions();
+        DateQualifiers existing = existingType == null ? null : existingType.getDateQualifiers();
+        dq.setDateFractions(fractions != null
+                ? fractions
+                : (existing != null && existing.getDateFractions() != null
+                        ? existing.getDateFractions()
+                        : DateFractions.DATE_TIME));
+        return dq;
+    }
+
+    private boolean hasNumberQualifierInput(TypeSpec typeSpec, TypeDescription existingType) {
+        if (typeSpec != null && (typeSpec.numberPrecision() != null
+                || typeSpec.numberScale() != null
+                || typeSpec.numberNonNegative() != null)) {
+            return true;
+        }
+        return existingType != null && existingType.getNumberQualifiers() != null;
+    }
+
+    private boolean hasStringQualifierInput(TypeSpec typeSpec, TypeDescription existingType) {
+        if (typeSpec != null && (typeSpec.stringLength() != null || typeSpec.stringFixed() != null)) {
+            return true;
+        }
+        return existingType != null && existingType.getStringQualifiers() != null;
+    }
+
+    private boolean hasDateQualifierInput(TypeSpec typeSpec, TypeDescription existingType) {
+        if (typeSpec != null && typeSpec.dateFractions() != null) {
+            return true;
+        }
+        return existingType != null && existingType.getDateQualifiers() != null;
+    }
+
+    /**
+     * Sets the type (TypeDescription) on a BasicFeature — a Dimension of any register, a
+     * Resource, an Attribute — from the requested type list.
+     *
+     * <p>Every element is resolved against the feature's pre-mutation state (the description is
+     * attached only once the whole list resolved), so a composite request is applied atomically:
+     * either all types land or nothing is touched.</p>
+     *
+     * @param notFoundMessagePrefix caller-specific prefix for the "type does not exist" refusal;
+     *                              the offending type query is appended to it
      */
     private void setAttributeType(
             BasicFeature feature,
+            Configuration configuration,
+            List<TypeSpec> typeSpecs,
+            Map<String, TypeItem> preResolvedTypes,
+            IBmPlatformTransaction transaction,
+            String notFoundMessagePrefix
+    ) {
+        BuiltTypeDescription built = buildTypeDescription(
+                typeSpecs,
+                feature == null ? null : feature.getType(),
+                true,
+                typeSpec -> {
+                    TypeItem candidate = resolveTypeItemForFeature(
+                            feature, configuration, typeSpec.typeQuery(), preResolvedTypes);
+                    if (candidate == null) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                                notFoundMessagePrefix + typeSpec.typeQuery(), false);
+                    }
+                    TypeItem txTypeItem = resolveAttributeTypeItemInTransaction(
+                            transaction, feature, candidate, typeSpec);
+                    if (txTypeItem == null) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                                "Type value cannot be resolved in transaction namespace: " //$NON-NLS-1$
+                                        + typeSpec.typeQuery(),
+                                false);
+                    }
+                    return new ResolvedTypeItem(txTypeItem, candidate);
+                });
+
+        feature.setType(built.description());
+        for (String typeName : built.typeNames()) {
+            fixNullNumberFillValue(feature, typeName);
+        }
+    }
+
+    /**
+     * Maps a type resolved in a read transaction onto the write transaction: direct mapping
+     * first, then the feature's own namespace, the candidate's namespace and finally the
+     * external-URI route for a type owned by another project.
+     */
+    private TypeItem resolveAttributeTypeItemInTransaction(
+            IBmPlatformTransaction transaction,
+            BasicFeature feature,
             TypeItem preResolvedTypeItem,
-            TypeSpec typeSpec,
-            IBmPlatformTransaction transaction
+            TypeSpec typeSpec
     ) {
         TypeItem txTypeItem = null;
         if (preResolvedTypeItem != null) {
@@ -10356,54 +10552,7 @@ public class EdtMetadataService {
         if (txTypeItem == null) {
             txTypeItem = resolveExternalTypeItemCandidate(transaction, preResolvedTypeItem, typeSpec);
         }
-        if (txTypeItem == null) {
-            throw new MetadataOperationException(
-                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                    "Type value cannot be resolved in transaction namespace: " //$NON-NLS-1$
-                            + (typeSpec == null ? null : typeSpec.typeQuery()),
-                    false);
-        }
-        TypeDescription typeDesc = McoreFactory.eINSTANCE.createTypeDescription();
-        typeDesc.getTypes().add(txTypeItem);
-
-        String typeName = resolveTypeNameForQualifiers(preResolvedTypeItem, typeSpec);
-        TypeDescription existingType = feature.getType();
-        if (isNumberType(typeName)) {
-            NumberQualifiers nq = McoreFactory.eINSTANCE.createNumberQualifiers();
-            Integer precision = typeSpec == null ? null : typeSpec.numberPrecision();
-            Integer scale = typeSpec == null ? null : typeSpec.numberScale();
-            Boolean nonNegative = typeSpec == null ? null : typeSpec.numberNonNegative();
-            NumberQualifiers existing = existingType == null ? null : existingType.getNumberQualifiers();
-            nq.setPrecision(firstPositive(precision, existing == null ? null : existing.getPrecision(), 15));
-            nq.setScale(firstNonNegative(scale, existing == null ? null : existing.getScale(), 2));
-            nq.setNonNegative(nonNegative != null
-                    ? nonNegative.booleanValue()
-                    : (existing != null && existing.isNonNegative()));
-            typeDesc.setNumberQualifiers(nq);
-        } else if (isStringType(typeName)) {
-            StringQualifiers sq = McoreFactory.eINSTANCE.createStringQualifiers();
-            Integer length = typeSpec == null ? null : typeSpec.stringLength();
-            Boolean fixed = typeSpec == null ? null : typeSpec.stringFixed();
-            StringQualifiers existing = existingType == null ? null : existingType.getStringQualifiers();
-            sq.setLength(resolveStringLength(length, existing, 150));
-            sq.setFixed(fixed != null
-                    ? fixed.booleanValue()
-                    : (existing != null && existing.isFixed()));
-            typeDesc.setStringQualifiers(sq);
-        } else if (isDateType(typeName)) {
-            DateQualifiers dq = McoreFactory.eINSTANCE.createDateQualifiers();
-            DateFractions fractions = typeSpec == null ? null : typeSpec.dateFractions();
-            DateQualifiers existing = existingType == null ? null : existingType.getDateQualifiers();
-            dq.setDateFractions(fractions != null
-                    ? fractions
-                    : (existing != null && existing.getDateFractions() != null
-                            ? existing.getDateFractions()
-                            : DateFractions.DATE_TIME));
-            typeDesc.setDateQualifiers(dq);
-        }
-
-        feature.setType(typeDesc);
-        fixNullNumberFillValue(feature, typeName);
+        return txTypeItem;
     }
 
     /**
@@ -11262,6 +11411,9 @@ public class EdtMetadataService {
 
     /**
      * Collects all "type" string values from changes (top-level set and children_ops).
+     *
+     * <p>Every reader here is collect-all: a composite {@code type} contributes one entry per
+     * requested type, so the pre-resolve pass warms the cache for all of them.</p>
      */
     @SuppressWarnings("unchecked")
     private Set<String> collectTypeStrings(Map<String, Object> changes) {
@@ -11270,26 +11422,19 @@ public class EdtMetadataService {
         Map<String, Object> setMap = extractSetMap(changes);
         if (setMap != null) {
             if (hasMapKeyIgnoreCase(setMap, "type")) { //$NON-NLS-1$
-                String typeStr = normalizeTypeLookupQuery(getMapValueIgnoreCase(setMap, "type")); //$NON-NLS-1$
-                if (typeStr != null && !typeStr.isBlank()) {
-                    typeStrings.add(typeStr);
-                }
+                typeStrings.addAll(normalizeTypeLookupQueries(getMapValueIgnoreCase(setMap, "type"))); //$NON-NLS-1$
             }
             // Also scan set values that are Maps containing "type"
             // (auto-redirect case: {"set":{"AttrName":{"type":"CatalogRef.Foo"}}})
             for (Object val : setMap.values()) {
                 if (val instanceof Map<?, ?> nestedMap) {
-                    String ts = normalizeTypeLookupQuery(getMapValueIgnoreCase((Map<String, Object>) nestedMap, "type")); //$NON-NLS-1$
-                    if (ts != null && !ts.isBlank()) {
-                        typeStrings.add(ts);
-                    }
+                    typeStrings.addAll(normalizeTypeLookupQueries(
+                            getMapValueIgnoreCase((Map<String, Object>) nestedMap, "type"))); //$NON-NLS-1$
                 } else if (val instanceof List<?> list) {
                     for (Object item : list) {
                         if (item instanceof Map<?, ?> nestedItemMap) {
-                            String ts = normalizeTypeLookupQuery(getMapValueIgnoreCase((Map<String, Object>) nestedItemMap, "type")); //$NON-NLS-1$
-                            if (ts != null && !ts.isBlank()) {
-                                typeStrings.add(ts);
-                            }
+                            typeStrings.addAll(normalizeTypeLookupQueries(
+                                    getMapValueIgnoreCase((Map<String, Object>) nestedItemMap, "type"))); //$NON-NLS-1$
                         }
                     }
                 }
@@ -11300,24 +11445,17 @@ public class EdtMetadataService {
         for (Map<String, Object> op : childOps) {
             Object setObj = getMapValueIgnoreCase(op, "set"); //$NON-NLS-1$
             if (setObj instanceof Map<?, ?> childSet) {
-                String ts = normalizeTypeLookupQuery(getMapValueIgnoreCase((Map<String, Object>) childSet, "type")); //$NON-NLS-1$
-                if (ts != null && !ts.isBlank()) {
-                    typeStrings.add(ts);
-                }
+                typeStrings.addAll(normalizeTypeLookupQueries(
+                        getMapValueIgnoreCase((Map<String, Object>) childSet, "type"))); //$NON-NLS-1$
             }
             // shorthand support in children_ops:
             // 1) {op:"update", child_fqn:"...", type:"String.50"}
             // 2) {op:"update", child_fqn:"...", properties:{type:{...}}}
-            String opType = normalizeTypeLookupQuery(getMapValueIgnoreCase(op, "type")); //$NON-NLS-1$
-            if (opType != null && !opType.isBlank()) {
-                typeStrings.add(opType);
-            }
+            typeStrings.addAll(normalizeTypeLookupQueries(getMapValueIgnoreCase(op, "type"))); //$NON-NLS-1$
             Object propertiesObj = getMapValueIgnoreCase(op, "properties"); //$NON-NLS-1$
             if (propertiesObj instanceof Map<?, ?> propertiesMap) {
-                String propsType = normalizeTypeLookupQuery(getMapValueIgnoreCase((Map<String, Object>) propertiesMap, "type")); //$NON-NLS-1$
-                if (propsType != null && !propsType.isBlank()) {
-                    typeStrings.add(propsType);
-                }
+                typeStrings.addAll(normalizeTypeLookupQueries(
+                        getMapValueIgnoreCase((Map<String, Object>) propertiesMap, "type"))); //$NON-NLS-1$
             }
             Object changesObj = op.get("changes"); //$NON-NLS-1$
             if (changesObj instanceof Map<?, ?> nestedChanges) {
@@ -11325,6 +11463,30 @@ public class EdtMetadataService {
             }
         }
         return typeStrings;
+    }
+
+    /**
+     * Collect-all counterpart of {@link #normalizeTypeLookupQuery}: yields the lookup query of
+     * <em>every</em> requested type instead of just the first one.
+     *
+     * <p>Used by the pre-resolve stage, which warms a read-transaction cache of the types a
+     * mutation is about to reference. First-only collection there meant the second and later
+     * types of a composite request were never even looked for — the collapse happened before the
+     * write path could apply them, and an unknown second type went unreported.</p>
+     */
+    private List<String> normalizeTypeLookupQueries(Object value) {
+        List<Object> carriers = TypeValueSplitter.split(value);
+        if (carriers.isEmpty()) {
+            return List.of();
+        }
+        List<String> queries = new ArrayList<>(carriers.size());
+        for (Object carrier : carriers) {
+            String query = normalizeTypeLookupQuery(carrier);
+            if (query != null && !query.isBlank()) {
+                queries.add(query);
+            }
+        }
+        return queries;
     }
 
     @SuppressWarnings("unchecked")
@@ -11423,7 +11585,46 @@ public class EdtMetadataService {
         return fallback.isBlank() ? null : fallback;
     }
 
-    private TypeSpec normalizeTypeSpec(Object value) {
+    /**
+     * Normalizes a requested {@code type} value into one {@link TypeSpec} per requested type,
+     * each carrying its own qualifiers.
+     *
+     * <p>This is the entry point for raw caller input. Everything the tools accept —
+     * {@code "CatalogRef.Goods"}, {@code "String(100)"}, {@code ["CatalogRef.A","CatalogRef.B"]},
+     * {@code {type:"String", length:100}}, {@code {types:[…], stringQualifiers:{…}}} — is split
+     * by {@link TypeValueSplitter} and normalized element by element. A composite request used
+     * to be collapsed to its first element here and written as a single type without any
+     * complaint.</p>
+     *
+     * <p>Fails loud on an empty request with the message the single-value normalizer produced,
+     * so a blank {@code type} still reads the same to the caller. Never returns an empty list.</p>
+     */
+    private List<TypeSpec> normalizeTypeSpecList(Object value) {
+        if (value == null) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Type value cannot be null", false); //$NON-NLS-1$
+        }
+        List<Object> carriers = TypeValueSplitter.split(value);
+        if (carriers.isEmpty()) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Type query is empty or invalid: " + value, false); //$NON-NLS-1$
+        }
+        List<TypeSpec> specs = new ArrayList<>(carriers.size());
+        for (Object carrier : carriers) {
+            specs.add(normalizeSingleTypeSpec(carrier));
+        }
+        return specs;
+    }
+
+    /**
+     * Normalizes <strong>one</strong> carrier — a single element as produced by
+     * {@link TypeValueSplitter#split}. Do not call this with raw caller input: a composite
+     * {@code type} would silently keep only its first element, which is the defect
+     * {@link #normalizeTypeSpecList} exists to prevent.
+     */
+    private TypeSpec normalizeSingleTypeSpec(Object value) {
         if (value == null) {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_PROPERTY_VALUE,
@@ -11986,10 +12187,18 @@ public class EdtMetadataService {
     }
 
     /**
-     * Builds a fresh {@link TypeDescription} for a TypeDescription-valued containment reference
-     * (notably a command's {@code commandParameterType}) from one or more requested type strings,
-     * resolving each in the write-transaction namespace of {@code target}. An empty/blank value
-     * assigns an empty TypeDescription (the "any / not specified" state), never silently dropping.
+     * Builds a fresh {@link TypeDescription} for a TypeDescription-valued containment reference —
+     * a {@code DefinedType}, or a command's {@code commandParameterType} — from one or more
+     * requested types, resolving each in the write-transaction namespace of {@code target}. An
+     * empty/blank value assigns an empty TypeDescription (the "any / not specified" state), never
+     * silently dropping.
+     *
+     * <p>Qualifiers are honoured here too: a {@code DefinedType} of {@code String(100)} used to
+     * reach the right type but lose its length, because this path built the description without
+     * ever looking at the spec's qualifiers. It shares
+     * {@link #buildTypeDescription} with the attribute paths now — in the additive mode, so a
+     * request that names no qualifier and replaces a description that had none still writes
+     * none.</p>
      */
     private void applyTypeDescriptionReference(
             MdObject target,
@@ -11997,38 +12206,51 @@ public class EdtMetadataService {
             Object value,
             IBmPlatformTransaction transaction
     ) {
-        List<String> typeQueries = extractTypeQueryList(value);
-        TypeDescription typeDescription = McoreFactory.eINSTANCE.createTypeDescription();
-        for (String typeQuery : typeQueries) {
-            if (typeQuery == null || typeQuery.isBlank()) {
-                continue;
-            }
-            TypeSpec typeSpec = normalizeTypeSpec(typeQuery);
-            TypeItem typeItem = resolveTypeItemInCurrentNamespace(transaction, target, typeSpec, null);
-            if (typeItem == null) {
-                throw new MetadataOperationException(
-                        MetadataOperationCode.INVALID_PROPERTY_VALUE,
-                        "Type not found for " + reference.getName() + ": " + typeQuery, false); //$NON-NLS-1$ //$NON-NLS-2$
-            }
-            typeDescription.getTypes().add(typeItem);
-        }
-        target.eSet(reference, typeDescription);
+        BuiltTypeDescription built = buildTypeDescription(
+                extractTypeSpecList(value),
+                currentTypeDescription(target, reference),
+                false,
+                typeSpec -> {
+                    TypeItem typeItem = resolveTypeItemInCurrentNamespace(transaction, target, typeSpec, null);
+                    if (typeItem == null) {
+                        throw new MetadataOperationException(
+                                MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                                "Type not found for " + reference.getName() + ": " //$NON-NLS-1$ //$NON-NLS-2$
+                                        + typeSpec.typeQuery(),
+                                false);
+                    }
+                    return new ResolvedTypeItem(typeItem, typeItem);
+                });
+        target.eSet(reference, built.description());
     }
 
-    @SuppressWarnings("unchecked")
-    private List<String> extractTypeQueryList(Object value) {
-        if (value == null) {
+    /** The TypeDescription currently held by {@code reference}, or {@code null} if unset. */
+    private TypeDescription currentTypeDescription(MdObject target, EReference reference) {
+        if (target == null || reference == null) {
+            return null;
+        }
+        Object current = target.eGet(reference);
+        return current instanceof TypeDescription typeDescription ? typeDescription : null;
+    }
+
+    /**
+     * Splits a TypeDescription-valued reference value into one {@link TypeSpec} per requested
+     * type. Unlike {@link #normalizeTypeSpecList} this tolerates an empty result: a blank value
+     * on such a reference legitimately means "any / not specified" and clears it.
+     */
+    private List<TypeSpec> extractTypeSpecList(Object value) {
+        List<Object> carriers = TypeValueSplitter.split(value);
+        if (carriers.isEmpty()) {
             return List.of();
         }
-        List<Object> source = value instanceof List<?> list ? new ArrayList<>((List<Object>) list) : List.of(value);
-        List<String> queries = new ArrayList<>(source.size());
-        for (Object item : source) {
-            String query = extractReferenceFqn(item);
-            if (query != null && !query.isBlank()) {
-                queries.add(query.trim());
+        List<TypeSpec> specs = new ArrayList<>(carriers.size());
+        for (Object carrier : carriers) {
+            if (normalizeTypeLookupQuery(carrier) == null) {
+                continue;
             }
+            specs.add(normalizeSingleTypeSpec(carrier));
         }
-        return queries;
+        return specs;
     }
 
     private boolean isCommandGroupReference(EReference reference) {
