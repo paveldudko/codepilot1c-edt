@@ -134,15 +134,15 @@ public class WebPublicationTool extends AbstractTool {
                 },
                 "probe_url": {
                   "type": "string",
-                  "description": "publish/restart/probe: URL для HTTP GET проверки после операции (ожидается 200)."
+                  "description": "publish/restart/probe: URL for the HTTP GET check run right after the operation (200 expected). For an auth-protected endpoint pass probe_user/probe_password in the SAME call — otherwise the check goes unauthenticated and reports 401."
                 },
                 "probe_user": {
                   "type": "string",
-                  "description": "probe: логин HTTP Basic — нужен для сервисов с обязательной аутентификацией (иначе 401, probe непригоден как success-gate). Требует probe_password."
+                  "description": "publish/restart/probe: HTTP Basic login for the check — applies to the inline check of publish/restart as well, not only to action=probe. Without it that inline check goes UNAUTHENTICATED and any 1C HTTP/web service with mandatory auth answers 401, which reads as a broken publication. Requires probe_password."
                 },
                 "probe_password": {
                   "type": "string",
-                  "description": "probe: пароль к probe_user (в результате не возвращается)."
+                  "description": "publish/restart/probe: password for probe_user, for the inline check of publish/restart as well. Never echoed back."
                 },
                 "timeout_s": {
                   "type": "integer",
@@ -171,7 +171,9 @@ public class WebPublicationTool extends AbstractTool {
                 + "Register the server (register_server) before the first publish. " //$NON-NLS-1$
                 + "publish is idempotent (re-pointing an alias to another infobase = re-publish) and can " //$NON-NLS-1$
                 + "carry custom HTTP services (http_services: name/root_url/enable) + OData/analytics/pool " //$NON-NLS-1$
-                + "into the generated vrd; restart=true is required for conf changes to take effect."; //$NON-NLS-1$
+                + "into the generated vrd; restart=true is required for conf changes to take effect. " //$NON-NLS-1$
+                + "publish/restart self-verify in the same call when probe_url is given — add " //$NON-NLS-1$
+                + "probe_user/probe_password there for an auth-protected endpoint."; //$NON-NLS-1$
     }
 
     @Override
@@ -225,15 +227,37 @@ public class WebPublicationTool extends AbstractTool {
                 result.addProperty("status", result.has("status") ? result.get("status").getAsString() : "ok"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
                 return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
             } catch (EdtToolException e) {
-                JsonObject error = new JsonObject();
-                error.addProperty("op_id", opId); //$NON-NLS-1$
-                error.addProperty("action", action == null ? "" : action); //$NON-NLS-1$ //$NON-NLS-2$
-                error.addProperty("status", "error"); //$NON-NLS-1$ //$NON-NLS-2$
-                error.addProperty("error_code", e.getCode().name()); //$NON-NLS-1$
-                error.addProperty("message", e.getMessage() == null ? "" : e.getMessage()); //$NON-NLS-1$ //$NON-NLS-2$
-                return ToolResult.failure(pretty(error));
+                return ToolResult.failure(pretty(errorJson(opId, action, e.getCode(), e.getMessage())));
+            } catch (RuntimeException e) {
+                // Belt for anything the EDT layer throws outside our own error family — e.g. an
+                // SWTException "Invalid thread access" raised by an unguarded web-server/publication
+                // editor listener. doExecute runs on an MCP worker thread, so such a failure escapes
+                // AbstractTool's synchronous try/catch and would reach the client as a raw,
+                // non-JSON "Exception: <message>" string. The tool contract is structured JSON always.
+                LOG.error(String.format("[%s] web_publication action=%s failed unexpectedly", opId, action), e); //$NON-NLS-1$
+                return ToolResult.failure(pretty(errorJson(opId, action,
+                        EdtToolErrorCode.WEB_SERVER_ACCESS_FAILED,
+                        "web_publication " + (action == null ? "" : action) //$NON-NLS-1$ //$NON-NLS-2$
+                                + " failed inside EDT: " + describe(e)))); //$NON-NLS-1$
             }
         });
+    }
+
+    private static JsonObject errorJson(String opId, String action, EdtToolErrorCode code, String message) {
+        JsonObject error = new JsonObject();
+        error.addProperty("op_id", opId); //$NON-NLS-1$
+        error.addProperty("action", action == null ? "" : action); //$NON-NLS-1$ //$NON-NLS-2$
+        error.addProperty("status", "error"); //$NON-NLS-1$ //$NON-NLS-2$
+        error.addProperty("error_code", code.name()); //$NON-NLS-1$
+        error.addProperty("message", message == null ? "" : message); //$NON-NLS-1$ //$NON-NLS-2$
+        return error;
+    }
+
+    /** One-liner for an EDT-side runtime failure: the type always, plus the message when it has one. */
+    private static String describe(RuntimeException e) {
+        String message = e.getMessage();
+        return e.getClass().getSimpleName()
+                + (message == null || message.isBlank() ? "" : ": " + message); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     private void doListServers(JsonObject result) {
@@ -249,7 +273,32 @@ public class WebPublicationTool extends AbstractTool {
         Path install = Paths.get(requireString(parameters, "install_location")); //$NON-NLS-1$
         Path config = Paths.get(requireString(parameters, "config_location")); //$NON-NLS-1$
         String apacheVersion = asString(get(parameters, "apache_version")); //$NON-NLS-1$
-        WebServer server = publicationService.registerServer(name, install, config, apacheVersion, null);
+        WebServer server;
+        try {
+            server = publicationService.registerServer(name, install, config, apacheVersion, null);
+        } catch (EdtToolException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            // IWebServerManager.add SAVES the registry before it fires its change event, and an open
+            // web-server/publication editor answers that event on the caller thread with unguarded
+            // widget access (SWTException "Invalid thread access"). By then the registration is already
+            // durable, so a plain failure would be a lie the caller cannot act on: re-read the registry
+            // and report the real outcome, with the UI failure as an advisory.
+            WebServer registered = publicationService.findServer(name).orElse(null);
+            if (registered == null) {
+                throw new EdtToolException(EdtToolErrorCode.WEB_SERVER_ACCESS_FAILED,
+                        "register_server '" + name + "' failed inside EDT: " + describe(e), e); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+            LOG.warn(String.format("Web server '%s' was registered, but an EDT UI listener failed afterwards: %s", //$NON-NLS-1$
+                    name, describe(e)), e);
+            result.add("server", serverJson(registered)); //$NON-NLS-1$
+            result.addProperty("registered_with_ui_warning", true); //$NON-NLS-1$
+            result.addProperty("ui_warning", "Registration persisted; an EDT UI listener failed afterwards (" //$NON-NLS-1$ //$NON-NLS-2$
+                    + describe(e) + "). Confirm with action=list_servers; closing the web-server/publication " //$NON-NLS-1$
+                    + "editor in EDT before registering avoids it."); //$NON-NLS-1$
+            result.addProperty("status", "ok_with_warning"); //$NON-NLS-1$ //$NON-NLS-2$
+            return;
+        }
         result.add("server", serverJson(server)); //$NON-NLS-1$
     }
 

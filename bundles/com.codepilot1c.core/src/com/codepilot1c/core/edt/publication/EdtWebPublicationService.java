@@ -12,6 +12,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
+
+import org.eclipse.swt.widgets.Display;
+import org.eclipse.ui.PlatformUI;
 
 import com._1c.g5.v8.dt.platform.services.core.publication.IPublicationManager;
 import com._1c.g5.v8.dt.platform.services.core.publication.IWebServerPublishDelegate;
@@ -135,6 +140,23 @@ public class EdtWebPublicationService {
     }
 
     /**
+     * Registry lookup by exact name; empty when the name is not registered. Lets a caller tell a
+     * genuinely failed mutation from one that already persisted and only afterwards tripped an EDT
+     * UI listener (see {@link #onUiThread}).
+     */
+    public Optional<WebServer> findServer(String name) {
+        if (name == null || name.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.ofNullable(gateway.getWebServerManager().get(name));
+        } catch (RuntimeException e) {
+            LOG.warn("Could not re-read web server '%s' from the EDT registry: %s", name, e.getMessage()); //$NON-NLS-1$
+            return Optional.empty();
+        }
+    }
+
+    /**
      * Registers a web server in the EDT registry, idempotently: when a server with the same name
      * already exists with the same install/config locations it is returned as-is; a conflicting
      * existing registration is an error (use a different name or fix the registry in EDT).
@@ -173,7 +195,11 @@ public class EdtWebPublicationService {
         server.setInstallLocation(installLocation);
         server.setConfigLocation(configLocation);
         server.setArch("x86".equalsIgnoreCase(arch) ? Arch.X86 : Arch.X86_64); //$NON-NLS-1$
-        manager.add(server);
+        // add() persists and then fires its change event synchronously on THIS thread -> UI hop.
+        onUiThread(() -> {
+            manager.add(server);
+            return Boolean.TRUE;
+        });
         LOG.info("Registered web server '%s' (%s, install=%s, config=%s)", name, server.getTypeId(), //$NON-NLS-1$
                 installLocation, configLocation);
         return server;
@@ -431,16 +457,26 @@ public class EdtWebPublicationService {
     public boolean removePublication(String serverName, String name) {
         WebServer server = requireServer(serverName);
         IPublicationManager manager = gateway.getPublicationManager();
+        Publication publication;
         try {
-            Publication publication = findPublication(server, name);
-            if (publication == null) {
-                throw new EdtToolException(EdtToolErrorCode.PUBLICATION_NOT_FOUND,
-                        "Publication '" + name + "' not found on web server '" + serverName + "'"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            }
-            return manager.remove(server, publication);
+            publication = findPublication(server, name);
         } catch (WebServerAccessException e) {
             throw accessFailed("remove publication '" + name + "'", serverName, e); //$NON-NLS-1$ //$NON-NLS-2$
         }
+        if (publication == null) {
+            throw new EdtToolException(EdtToolErrorCode.PUBLICATION_NOT_FOUND,
+                    "Publication '" + name + "' not found on web server '" + serverName + "'"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        }
+        Publication target = publication;
+        // PublicationManager.remove fires firePublicationRemovedEvent synchronously on THIS thread and
+        // AbstractPublicationEditor.publicationRemoved answers it with an unguarded close(false) -> UI hop.
+        return onUiThread(() -> {
+            try {
+                return Boolean.valueOf(manager.remove(server, target));
+            } catch (WebServerAccessException e) {
+                throw accessFailed("remove publication '" + name + "'", serverName, e); //$NON-NLS-1$ //$NON-NLS-2$
+            }
+        }).booleanValue();
     }
 
     // -- restart / probe --------------------------------------------------------------------
@@ -577,6 +613,63 @@ public class EdtWebPublicationService {
     }
 
     // -- internals --------------------------------------------------------------------------
+
+    /**
+     * Runs an EDT registry mutation on the SWT UI thread when there is one.
+     *
+     * <p>Why (decompile audit of services.core 21.0): {@code IWebServerManager.add} and
+     * {@code IPublicationManager.remove} both persist first ({@code save(webServers)} / vrd rewrite)
+     * and only then fire their change event <em>synchronously on the calling thread</em>. Several
+     * {@code com._1c.g5.v8.dt.platform.services.ui} listeners touch widgets straight from that
+     * callback — {@code WebServerEditor.webServersReloaded} re-{@code bind}s, and
+     * {@code AbstractPublicationEditor}/{@code InfobasePublicationEditor} call {@code close(false)} —
+     * so a mutation issued from an MCP worker thread ends in a raw
+     * {@code SWTException: Invalid thread access} <em>after</em> the change is already saved. The
+     * trigger is an OPEN web-server/publication editor, not an open view ({@code WebServersView} is
+     * {@code asyncExec}-guarded).</p>
+     *
+     * <p>Headless (no workbench / disposed display) and already-on-the-UI-thread both run the body
+     * inline. Deliberately not {@code UiThreadExecutor}: that one reports failures as
+     * {@code EdtAstException}, the wrong error family for this service. {@code protected} so tests
+     * can replace the hop.</p>
+     */
+    protected <T> T onUiThread(Supplier<T> body) {
+        Display display = uiThreadDisplay();
+        if (display == null || display.getThread() == Thread.currentThread()) {
+            return body.get();
+        }
+        AtomicReference<T> result = new AtomicReference<>();
+        AtomicReference<RuntimeException> failure = new AtomicReference<>();
+        display.syncExec(() -> {
+            try {
+                result.set(body.get());
+            } catch (RuntimeException e) {
+                failure.set(e);
+            }
+        });
+        if (failure.get() != null) {
+            throw failure.get();
+        }
+        return result.get();
+    }
+
+    /**
+     * The workbench display to hop onto, or {@code null} when running headless. Never calls
+     * {@code Display.getDefault()} — that would CREATE a display on the calling worker thread
+     * instead of finding the UI one.
+     */
+    private static Display uiThreadDisplay() {
+        try {
+            if (!PlatformUI.isWorkbenchRunning()) {
+                return null;
+            }
+            Display display = PlatformUI.getWorkbench().getDisplay();
+            return display == null || display.isDisposed() ? null : display;
+        } catch (RuntimeException | LinkageError e) {
+            LOG.debug("No UI display for the EDT registry mutation, running inline: %s", e.toString()); //$NON-NLS-1$
+            return null;
+        }
+    }
 
     /**
      * Resolves the wsap web-extension module (e.g. {@code wsap24.dll}) from the platform
