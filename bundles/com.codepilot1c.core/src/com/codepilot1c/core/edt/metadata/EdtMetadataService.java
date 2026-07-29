@@ -23,6 +23,7 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 import com.codepilot1c.core.edt.metadata.eol.EolNormalizer;
@@ -159,6 +160,8 @@ import com._1c.g5.v8.dt.metadata.mdclass.Document;
 import com._1c.g5.v8.dt.metadata.mdclass.FormType;
 import com._1c.g5.v8.dt.metadata.mdclass.TemplateType;
 import com._1c.g5.v8.dt.metadata.mdclass.AdjustableBoolean;
+import com._1c.g5.v8.dt.metadata.mdclass.AutoRegistrationChanges;
+import com._1c.g5.v8.dt.metadata.mdclass.ExchangePlanContentItem;
 import com._1c.g5.v8.dt.metadata.mdclass.ForRoleType;
 import com._1c.g5.v8.dt.metadata.mdclass.Role;
 import com._1c.g5.v8.dt.metadata.mdclass.AbstractRoleDescription;
@@ -359,6 +362,14 @@ public class EdtMetadataService {
         String fqn = request.kind().getFqnPrefix() + "." + request.name(); //$NON-NLS-1$
         LOG.debug("[%s] Target FQN: %s", opId, fqn); //$NON-NLS-1$
         EolGuard eolGuard = beginEolGuard(project, fqn, opId);
+        // A created subsystem given parentSubsystem also rewrites the parent's .mdo — see
+        // applySubsystemNesting.
+        Set<String> coEditedFqns = new LinkedHashSet<>();
+        Consumer<String> coEditedSink = coEditedFqn -> {
+            if (coEditedFqn != null && !coEditedFqn.equalsIgnoreCase(fqn) && coEditedFqns.add(coEditedFqn)) {
+                eolGuard.addCoEditedFqn(coEditedFqn);
+            }
+        };
 
         Boolean adoptedFlag = executeWrite(project, transaction -> {
             LOG.debug("[%s] Transaction started for createMetadata", opId); //$NON-NLS-1$
@@ -403,7 +414,8 @@ public class EdtMetadataService {
                     request.properties(),
                     transaction,
                     opId,
-                    fqn);
+                    fqn,
+                    coEditedSink);
             // Reports need a variants storage or the DCS designer won't open them.
             applyReportVariantsStorageDefault(txConfiguration, txObject, request.kind());
             LOG.debug("[%s] Eager linked object into Configuration collections", opId); //$NON-NLS-1$
@@ -412,7 +424,7 @@ public class EdtMetadataService {
         });
         boolean adopted = Boolean.TRUE.equals(adoptedFlag);
         rebindTopLevelIntoConfiguration(project, request.kind(), request.name(), fqn, opId);
-        forceExportTopLevelObject(project, fqn, opId);
+        forceExportTopLevelObjects(project, fqn, coEditedFqns, opId);
         verifyTopLevelPersisted(project, fqn, opId);
         verifyConfigurationEntryPersisted(project, request.kind(), fqn, opId);
         eolGuard.restore();
@@ -6312,6 +6324,15 @@ public class EdtMetadataService {
         }
         final Map<String, TypeItem> capturedTypes = preResolvedTypes;
         EolGuard eolGuard = beginEolGuard(project, request.targetFqn(), opId);
+        // Two-sided links (subsystem nesting) mutate a second top object; collect those FQNs so
+        // both the export batch and the EOL guard cover the far side too.
+        Set<String> coEditedFqns = new LinkedHashSet<>();
+        Consumer<String> coEditedSink = coEditedFqn -> {
+            if (coEditedFqn != null && !coEditedFqn.equalsIgnoreCase(request.targetFqn())
+                    && coEditedFqns.add(coEditedFqn)) {
+                eolGuard.addCoEditedFqn(coEditedFqn);
+            }
+        };
 
         String targetFqn = executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
@@ -6327,13 +6348,13 @@ public class EdtMetadataService {
                         "Metadata object not found: " + request.targetFqn(), false); //$NON-NLS-1$
             }
             applyObjectChanges(txConfiguration, target, request.changes(), request.targetFqn(),
-                    transaction, capturedTypes);
+                    transaction, capturedTypes, coEditedSink);
             ensureUuidsRecursively(target, opId, request.targetFqn());
             return request.targetFqn();
         });
 
         String topLevelFqn = extractTopLevelFqn(targetFqn);
-        forceExportTopLevelObject(project, topLevelFqn, opId);
+        forceExportTopLevelObjects(project, topLevelFqn, coEditedFqns, opId);
         verifyObjectPersisted(project, targetFqn, opId);
         eolGuard.restore();
         refreshProjectSafely(project);
@@ -8904,8 +8925,8 @@ public class EdtMetadataService {
             if (i + 1 >= parts.length) {
                 throw new MetadataOperationException(
                         MetadataOperationCode.METADATA_PARENT_NOT_FOUND,
-                        "Nested FQN segments must be marker/name pairs: " + fqn,
-                        false); //$NON-NLS-1$
+                        SubsystemTree.nestedFqnRejectionMessage(fqn, isSubsystemFqnHead(parts[0])),
+                        false);
             }
             current = findNestedChild(current, parts[i], parts[i + 1]);
             if (current == null) {
@@ -8973,6 +8994,19 @@ public class EdtMetadataService {
         return null;
     }
 
+    /**
+     * Whether an FQN's leading type token addresses a subsystem — the one kind whose canonical FQN
+     * stays flat at any depth, so the generic marker/name-pair advice would mislead. Unknown tokens
+     * answer {@code false} and keep the general message.
+     */
+    private boolean isSubsystemFqnHead(String typeToken) {
+        try {
+            return MetadataKind.fromString(typeToken) == MetadataKind.SUBSYSTEM;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
     private MdObject resolveByFqn(Configuration configuration, String fqn) {
         LOG.debug("resolveByFqn: %s", fqn); //$NON-NLS-1$
         String[] parts = fqn != null ? fqn.split("\\.") : new String[0]; //$NON-NLS-1$
@@ -8992,7 +9026,7 @@ public class EdtMetadataService {
             if (i + 1 >= parts.length) {
                 throw new MetadataOperationException(
                         MetadataOperationCode.METADATA_PARENT_NOT_FOUND,
-                        "Nested FQN segments must be marker/name pairs: " + fqn, false); //$NON-NLS-1$
+                        SubsystemTree.nestedFqnRejectionMessage(fqn, isSubsystemFqnHead(parts[0])), false);
             }
             String marker = parts[i];
             String name = parts[i + 1];
@@ -9468,7 +9502,9 @@ public class EdtMetadataService {
             if (key == null || key.isBlank() || isReservedCommandProperty(key)) {
                 continue;
             }
-            setFeatureValue(configuration, child, key, entry.getValue(), transaction, preResolvedTypes);
+            // A Command is never a Subsystem, so no two-sided link can be written here — hence no
+            // co-edited-FQN sink.
+            setFeatureValue(configuration, child, key, entry.getValue(), transaction, preResolvedTypes, null);
             applied.add(key);
         }
         if (!applied.isEmpty()) {
@@ -9674,7 +9710,8 @@ public class EdtMetadataService {
             Map<String, Object> changes,
             String targetFqn,
             IBmPlatformTransaction transaction,
-            Map<String, TypeItem> preResolvedTypes
+            Map<String, TypeItem> preResolvedTypes,
+            Consumer<String> coEditedTopObjectSink
     ) {
         Map<String, Object> setChanges = normalizeSetChangesForTarget(target, asMap(changes.get("set"))); //$NON-NLS-1$
         List<?> unsetChanges = changes.get("unset") instanceof List<?> list ? list : List.of(); //$NON-NLS-1$
@@ -9739,7 +9776,8 @@ public class EdtMetadataService {
             if (consumedSetKeys.contains(key)) {
                 continue;
             }
-            setFeatureValue(configuration, target, key, entry.getValue(), transaction, preResolvedTypes);
+            setFeatureValue(configuration, target, key, entry.getValue(), transaction, preResolvedTypes,
+                    coEditedTopObjectSink);
         }
 
         for (Object rawKey : unsetChanges) {
@@ -9759,7 +9797,7 @@ public class EdtMetadataService {
                 }
                 continue;
             }
-            unsetFeatureValue(target, key);
+            unsetFeatureValue(configuration, target, key, coEditedTopObjectSink);
         }
 
         // Merge any synthetic child ops from auto-redirected set keys
@@ -9770,7 +9808,8 @@ public class EdtMetadataService {
             allChildOps = new ArrayList<>(childOps);
             allChildOps.addAll(syntheticChildOps);
         }
-        applyChildOperations(configuration, targetFqn, allChildOps, transaction, preResolvedTypes);
+        applyChildOperations(configuration, targetFqn, allChildOps, transaction, preResolvedTypes,
+                coEditedTopObjectSink);
     }
 
     private Map<String, Object> normalizeSetChangesForTarget(MdObject target, Map<String, Object> rawSetChanges) {
@@ -9986,7 +10025,8 @@ public class EdtMetadataService {
             String parentTargetFqn,
             List<Map<String, Object>> childOps,
             IBmPlatformTransaction transaction,
-            Map<String, TypeItem> preResolvedTypes
+            Map<String, TypeItem> preResolvedTypes,
+            Consumer<String> coEditedTopObjectSink
     ) {
         for (Map<String, Object> op : childOps) {
             String opType = asString(op.get("op")); //$NON-NLS-1$
@@ -10072,7 +10112,7 @@ public class EdtMetadataService {
                         }
                     }
                     applyObjectChanges(configuration, child, nestedChanges, childFqn,
-                            transaction, preResolvedTypes);
+                            transaction, preResolvedTypes, coEditedTopObjectSink);
                 }
                 default -> throw new MetadataOperationException(
                         MetadataOperationCode.INVALID_METADATA_CHANGE,
@@ -10227,13 +10267,62 @@ public class EdtMetadataService {
         return COMMON_MODULE_PREFIX + trimmed;
     }
 
+    /**
+     * Fields whose value is platform <em>identity</em> rather than configuration content, and are
+     * therefore never written by this plugin. Keyed by {@link #normalizeToken(String)} form.
+     *
+     * <p>{@code thisNode} is the identity of an exchange plan's own node ({@code ЭтотУзел}),
+     * assigned by EDT when the plan is first loaded. Rewriting it against a live infobase
+     * re-identifies the local node for every peer in the exchange, so it is refused outright — the
+     * old refusal was the generic "Unsupported value type", which said the wrong thing about why.
+     * </p>
+     *
+     * <p><strong>Order matters.</strong> This guard sits at the top of {@link #setFeatureValue},
+     * ahead of the value conversion. {@link #convertAttributeValue} now ends with a generic
+     * {@code EcoreUtil.createFromString} fallback that resolves {@code Uuid} literals perfectly
+     * well, so a deny-list consulted after conversion would silently make {@code thisNode}
+     * writable again.</p>
+     */
+    private static final Map<String, String> NOT_PLUGIN_MANAGED_FIELDS = Map.of(
+            "thisnode", //$NON-NLS-1$
+            "thisNode is the identity of the exchange plan's own node (ЭтотУзел): it is assigned by" //$NON-NLS-1$
+                    + " EDT on first load and is not plugin-managed. Overwriting it re-identifies the" //$NON-NLS-1$
+                    + " local node for every peer in the exchange, so it cannot be set or unset here."); //$NON-NLS-1$
+
+    /**
+     * Refuses a write to a field that carries platform identity, naming the real reason. Silent
+     * for every other field.
+     */
+    private void rejectNotPluginManagedField(String fieldName) {
+        if (fieldName == null || fieldName.isBlank()) {
+            return;
+        }
+        String reason = NOT_PLUGIN_MANAGED_FIELDS.get(normalizeToken(fieldName));
+        if (reason == null) {
+            return;
+        }
+        LOG.warn("Refused write to not-plugin-managed field: %s", fieldName); //$NON-NLS-1$
+        throw new MetadataOperationException(
+                MetadataOperationCode.INVALID_METADATA_CHANGE, reason, false);
+    }
+
+    /**
+     * @param coEditedTopObjectSink notified with the FQN of every top object this write mutated
+     *                              <em>besides</em> {@code target}. Two-sided links (subsystem
+     *                              nesting) change a second {@code .mdo}, which must be
+     *                              force-exported and EOL-guarded too or the other side never
+     *                              reaches disk. May be {@code null} where the caller cannot
+     *                              extend its export batch.
+     */
     private void setFeatureValue(Configuration configuration, MdObject target, String fieldName, Object value,
-            IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes) {
+            IBmPlatformTransaction transaction, Map<String, TypeItem> preResolvedTypes,
+            Consumer<String> coEditedTopObjectSink) {
         if ("uuid".equalsIgnoreCase(fieldName)) { //$NON-NLS-1$
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Changing uuid is not supported", false); //$NON-NLS-1$
         }
+        rejectNotPluginManagedField(fieldName);
         if ("methodName".equalsIgnoreCase(fieldName) //$NON-NLS-1$
                 && target != null
                 && "ScheduledJob".equals(target.eClass().getName()) //$NON-NLS-1$
@@ -10267,6 +10356,12 @@ public class EdtMetadataService {
                     "Field is read-only: " + fieldName, false); //$NON-NLS-1$
         }
         if (eFeature instanceof EReference reference) {
+            // Subsystem nesting is stored on BOTH sides and EMF maintains neither for us — see
+            // applySubsystemNesting.
+            if (target instanceof Subsystem subsystem && isSubsystemNestingFeature(reference)) {
+                applySubsystemNesting(configuration, subsystem, reference, value, coEditedTopObjectSink);
+                return;
+            }
             applyReferenceValue(configuration, target, reference, value, transaction);
             return;
         }
@@ -10287,6 +10382,210 @@ public class EdtMetadataService {
 
         Object converted = convertAttributeValue(attribute, value);
         target.eSet(eFeature, converted);
+    }
+
+    /** {@code true} for the two features that together store subsystem nesting. */
+    private boolean isSubsystemNestingFeature(EReference reference) {
+        String token = reference == null ? null : normalizeToken(reference.getName());
+        return "parentsubsystem".equals(token) || "subsystems".equals(token); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
+     * Writes subsystem nesting on BOTH sides, because EDT stores it twice and EMF maintains
+     * neither copy for us.
+     *
+     * <p>Ground truth from an EDT-authored configuration (F1, live 2026-07-28): the parent's
+     * {@code .mdo} lists {@code <subsystems>WaveChild</subsystems>} by BARE NAME, and the child's
+     * {@code .mdo} carries {@code <parentSubsystem>Subsystem.WaveParent</parentSubsystem>} as a
+     * FLAT FQN. {@code Subsystem.subsystems} and {@code Subsystem.parentSubsystem} are two
+     * independent non-containment references with no {@code EOpposite}, so writing one leaves the
+     * link HALF-LINKED — and the metadata tree and the command interface both read the parent
+     * side, so a child linked only through {@code parentSubsystem} is invisible to them (and to
+     * our own {@code Subsystem.Parent.Subsystem.Child} nested alias, which walks
+     * {@code getSubsystems()}).</p>
+     *
+     * <p>Idempotent by construction: membership is tested before adding and the parent pointer is
+     * only rewritten when it actually differs, so re-running the same request neither duplicates
+     * an entry nor churns the {@code .mdo}. A move re-parents properly — the child is dropped from
+     * the previous parent's list rather than left in two lists at once.</p>
+     */
+    private void applySubsystemNesting(
+            Configuration configuration,
+            Subsystem target,
+            EReference reference,
+            Object value,
+            Consumer<String> coEditedTopObjectSink
+    ) {
+        if ("parentsubsystem".equals(normalizeToken(reference.getName()))) { //$NON-NLS-1$
+            Subsystem newParent = resolveSubsystemValue(configuration, reference, value);
+            reparentSubsystem(target, newParent, coEditedTopObjectSink);
+            return;
+        }
+        applySubsystemChildren(configuration, target, reference, value, coEditedTopObjectSink);
+    }
+
+    /**
+     * Resolves a single subsystem reference value. A blank/absent value means "detach", which is
+     * why this cannot simply call {@link #resolveSingleReferenceValue} (that one refuses a blank).
+     */
+    private Subsystem resolveSubsystemValue(Configuration configuration, EReference reference, Object value) {
+        if (value == null) {
+            return null;
+        }
+        String fqn = extractReferenceFqn(value);
+        if (fqn != null && fqn.isBlank()) {
+            return null;
+        }
+        Object resolved = resolveSingleReferenceValue(configuration, reference, value);
+        if (resolved == null) {
+            return null;
+        }
+        if (!(resolved instanceof Subsystem subsystem)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_METADATA_CHANGE,
+                    "Referenced object is not a Subsystem for field " + reference.getName() + ": " + value, //$NON-NLS-1$ //$NON-NLS-2$
+                    false);
+        }
+        return subsystem;
+    }
+
+    /** Moves {@code child} under {@code newParent} (or to the configuration root when null). */
+    private void reparentSubsystem(Subsystem child, Subsystem newParent, Consumer<String> coEditedTopObjectSink) {
+        Subsystem oldParent = child.getParentSubsystem();
+        if (oldParent != null && !sameSubsystem(oldParent, newParent)) {
+            if (removeSubsystemChild(oldParent, child)) {
+                reportCoEditedSubsystem(oldParent, coEditedTopObjectSink);
+            }
+        }
+        if (!sameSubsystem(oldParent, newParent)) {
+            child.setParentSubsystem(newParent);
+        }
+        if (newParent == null) {
+            return;
+        }
+        // Also runs when the pointer was already correct: that is exactly the half-linked state
+        // this fix exists to repair.
+        if (addSubsystemChild(newParent, child)) {
+            reportCoEditedSubsystem(newParent, coEditedTopObjectSink);
+        }
+    }
+
+    /** Replaces {@code parent.subsystems} and re-points every affected child's parent slot. */
+    private void applySubsystemChildren(
+            Configuration configuration,
+            Subsystem parent,
+            EReference reference,
+            Object value,
+            Consumer<String> coEditedTopObjectSink
+    ) {
+        List<Subsystem> requested = new ArrayList<>();
+        for (Object item : resolveReferenceValues(configuration, reference, value)) {
+            if (item instanceof Subsystem subsystem && !containsSubsystem(requested, subsystem)) {
+                requested.add(subsystem);
+            }
+        }
+
+        List<Subsystem> current = new ArrayList<>(parent.getSubsystems());
+        for (Subsystem dropped : current) {
+            if (dropped == null || containsSubsystem(requested, dropped)) {
+                continue;
+            }
+            if (sameSubsystem(dropped.getParentSubsystem(), parent)) {
+                dropped.setParentSubsystem(null);
+                reportCoEditedSubsystem(dropped, coEditedTopObjectSink);
+            }
+        }
+
+        for (Subsystem child : requested) {
+            Subsystem previous = child.getParentSubsystem();
+            if (previous != null && !sameSubsystem(previous, parent)) {
+                if (removeSubsystemChild(previous, child)) {
+                    reportCoEditedSubsystem(previous, coEditedTopObjectSink);
+                }
+            }
+            if (!sameSubsystem(previous, parent)) {
+                child.setParentSubsystem(parent);
+                reportCoEditedSubsystem(child, coEditedTopObjectSink);
+            }
+        }
+
+        if (!sameSubsystemList(current, requested)) {
+            parent.getSubsystems().clear();
+            parent.getSubsystems().addAll(requested);
+        }
+    }
+
+    /**
+     * Adds {@code child} to {@code parent.subsystems} unless already there. Returns whether the
+     * list changed, so a repeated request does not report a co-edit it did not make.
+     */
+    private boolean addSubsystemChild(Subsystem parent, Subsystem child) {
+        if (containsSubsystem(parent.getSubsystems(), child)) {
+            return false;
+        }
+        parent.getSubsystems().add(child);
+        return true;
+    }
+
+    /** Removes {@code child} from {@code parent.subsystems}; returns whether the list changed. */
+    private boolean removeSubsystemChild(Subsystem parent, Subsystem child) {
+        List<Subsystem> siblings = parent.getSubsystems();
+        for (int i = 0; i < siblings.size(); i++) {
+            if (sameSubsystem(siblings.get(i), child)) {
+                siblings.remove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Subsystem identity by name. A subsystem's canonical FQN is flat at any depth
+     * ({@code Subsystem.<Name>}), so the name IS the identity; instance equality is unreliable
+     * because a value can arrive as a BM transaction object while the list holds another handle
+     * on the same object.
+     */
+    private boolean sameSubsystem(Subsystem left, Subsystem right) {
+        if (left == right) {
+            return true;
+        }
+        if (left == null || right == null) {
+            return false;
+        }
+        String leftName = left.getName();
+        String rightName = right.getName();
+        return leftName != null && rightName != null && leftName.equalsIgnoreCase(rightName);
+    }
+
+    private boolean containsSubsystem(List<? extends Subsystem> subsystems, Subsystem candidate) {
+        for (Subsystem subsystem : subsystems) {
+            if (sameSubsystem(subsystem, candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean sameSubsystemList(List<? extends Subsystem> left, List<? extends Subsystem> right) {
+        if (left.size() != right.size()) {
+            return false;
+        }
+        for (int i = 0; i < left.size(); i++) {
+            if (!sameSubsystem(left.get(i), right.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Reports the flat FQN of a co-edited subsystem to the export/EOL sink. */
+    private void reportCoEditedSubsystem(Subsystem subsystem, Consumer<String> coEditedTopObjectSink) {
+        if (coEditedTopObjectSink == null || subsystem == null || subsystem.getName() == null) {
+            return;
+        }
+        String fqn = MetadataKind.SUBSYSTEM.getFqnPrefix() + "." + subsystem.getName(); //$NON-NLS-1$
+        LOG.debug("applySubsystemNesting: co-edited top object %s", fqn); //$NON-NLS-1$
+        coEditedTopObjectSink.accept(fqn);
     }
 
     /**
@@ -12009,7 +12308,8 @@ public class EdtMetadataService {
             Map<String, Object> properties,
             IBmPlatformTransaction transaction,
             String opId,
-            String targetFqn
+            String targetFqn,
+            Consumer<String> coEditedTopObjectSink
     ) {
         if (target == null || properties == null || properties.isEmpty()) {
             return;
@@ -12027,7 +12327,8 @@ public class EdtMetadataService {
                         "Property '" + rawKey + "' is managed by dedicated create_metadata arguments", false); //$NON-NLS-1$ //$NON-NLS-2$
             }
             String resolvedField = resolveTopLevelPropertyField(target, kind, rawKey);
-            setFeatureValue(configuration, target, resolvedField, entry.getValue(), transaction, preResolvedTypes);
+            setFeatureValue(configuration, target, resolvedField, entry.getValue(), transaction, preResolvedTypes,
+                    coEditedTopObjectSink);
             applied.add(rawKey + "->" + resolvedField); //$NON-NLS-1$
         }
         if (!applied.isEmpty()) {
@@ -12102,12 +12403,18 @@ public class EdtMetadataService {
         return names;
     }
 
-    private void unsetFeatureValue(MdObject target, String fieldName) {
+    private void unsetFeatureValue(
+            Configuration configuration,
+            MdObject target,
+            String fieldName,
+            Consumer<String> coEditedTopObjectSink
+    ) {
         if ("uuid".equalsIgnoreCase(fieldName)) { //$NON-NLS-1$
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Cannot unset required field: uuid", false); //$NON-NLS-1$
         }
+        rejectNotPluginManagedField(fieldName);
         String resolvedFieldName = normalizeMetadataFieldAlias(fieldName);
         EStructuralFeature feature = resolveFeatureIgnoreCase(target, resolvedFieldName);
         if (feature == null) {
@@ -12119,6 +12426,14 @@ public class EdtMetadataService {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Field cannot be unset: " + fieldName, false); //$NON-NLS-1$
+        }
+        // An unset of either nesting slot must clear BOTH sides, or it leaves exactly the
+        // half-linked state applySubsystemNesting exists to prevent.
+        if (feature instanceof EReference reference
+                && target instanceof Subsystem subsystem
+                && isSubsystemNestingFeature(reference)) {
+            applySubsystemNesting(configuration, subsystem, reference, null, coEditedTopObjectSink);
+            return;
         }
         if (feature instanceof EReference && feature.isMany()) {
             Object raw = target.eGet(feature);
@@ -12147,6 +12462,12 @@ public class EdtMetadataService {
             // build a fresh TypeDescription from the requested type(s) instead of rejecting it.
             if (isTypeDescriptionReference(reference)) {
                 applyTypeDescriptionReference(target, reference, value, transaction);
+                return;
+            }
+            // ExchangePlan.content: containment, but its entries are not child objects — see
+            // applyExchangePlanContent.
+            if (isExchangePlanContentReference(reference)) {
+                applyExchangePlanContent(configuration, target, reference, value);
                 return;
             }
             throw new MetadataOperationException(
@@ -12184,6 +12505,146 @@ public class EdtMetadataService {
     private boolean isTypeDescriptionReference(EReference reference) {
         EClass referenceType = reference == null ? null : reference.getEReferenceType();
         return referenceType != null && McorePackage.Literals.TYPE_DESCRIPTION.isSuperTypeOf(referenceType);
+    }
+
+    /**
+     * {@code true} for a containment reference whose entries are {@link ExchangePlanContentItem}s
+     * — in practice {@code ExchangePlan.content}.
+     *
+     * <p>Why this needs its own branch: {@code ExchangePlanContentItem} is a flat EClass that is
+     * neither an {@code MdObject} nor named, so <em>no</em> generic child shape can address it.
+     * {@code findNestedChild} skips values that are not {@code MdObject}s and matches on
+     * {@code getName()}; {@code buildChildOpsFromContainmentSet} requires a {@code name} on every
+     * entry and silently produces no ops without one; and the containment arm of
+     * {@code applyReferenceValue} then rejected the write outright. Net effect before this branch:
+     * the registration list of an exchange plan was unwritable through any tool.</p>
+     */
+    private boolean isExchangePlanContentReference(EReference reference) {
+        EClass referenceType = reference == null ? null : reference.getEReferenceType();
+        return referenceType != null
+                && MdClassPackage.Literals.EXCHANGE_PLAN_CONTENT_ITEM.isSuperTypeOf(referenceType);
+    }
+
+    /**
+     * Replaces {@code ExchangePlan.content} with a freshly built {@link ExchangePlanContentItem}
+     * per requested entry.
+     *
+     * <p>Two shapes are accepted, because the short one covers the overwhelmingly common request:
+     * <ul>
+     *   <li>{@code content:["Catalog.Foo", "Document.Bar"]} — bare FQNs, {@code autoRecord}
+     *       defaults to {@code Allow};</li>
+     *   <li>{@code content:[{mdObject:"Catalog.Foo", autoRecord:"Deny"}]} — {@code object} and
+     *       {@code fqn} are accepted as aliases of {@code mdObject}.</li>
+     * </ul>
+     *
+     * <p>The {@code mdObject} slot is resolved through {@link #resolveSingleReferenceValue}, which
+     * brings FQN resolution, the reference-type compatibility check and the loud
+     * {@code METADATA_NOT_FOUND} refusal along for free — an unresolvable entry can never be
+     * dropped while the write still reports success. The item is a containment child, so it is
+     * created fresh on every write rather than reused: {@code content} carries no identity of its
+     * own beyond the object it points at.</p>
+     */
+    @SuppressWarnings("unchecked")
+    private void applyExchangePlanContent(
+            Configuration configuration,
+            MdObject target,
+            EReference reference,
+            Object value
+    ) {
+        List<?> entries;
+        if (value == null) {
+            entries = List.of();
+        } else if (value instanceof List<?> list) {
+            entries = list;
+        } else {
+            entries = List.of(value);
+        }
+
+        List<ExchangePlanContentItem> built = new ArrayList<>(entries.size());
+        for (Object entry : entries) {
+            if (entry == null) {
+                continue;
+            }
+            built.add(buildExchangePlanContentItem(configuration, entry));
+        }
+
+        Object raw = target.eGet(reference);
+        if (raw instanceof Collection<?> current) {
+            Collection<Object> typed = (Collection<Object>) current;
+            typed.clear();
+            typed.addAll(built);
+        } else {
+            target.eSet(reference, built);
+        }
+        LOG.debug("applyExchangePlanContent: %s.%s set to %d item(s)", //$NON-NLS-1$
+                target.getName(), reference.getName(), Integer.valueOf(built.size()));
+    }
+
+    /**
+     * Builds one {@link ExchangePlanContentItem}. The registration mode defaults to
+     * {@code Allow} — the platform default for a newly added content line — so the short
+     * FQN-only shape stays usable; it is declared as such in the tool schema so the caller
+     * does not have to guess what an omitted {@code autoRecord} means.
+     *
+     * <p>The resolution runs against {@code ExchangePlanContentItem.mdObject}, NOT against the
+     * owning {@code content} reference: the compatibility check inside
+     * {@link #resolveSingleReferenceValue} tests the reference's own type, and {@code content} is
+     * typed as {@code ExchangePlanContentItem} — checking a resolved {@code Catalog} against it
+     * would refuse every legitimate entry.</p>
+     */
+    private ExchangePlanContentItem buildExchangePlanContentItem(Configuration configuration, Object entry) {
+        Object mdObjectValue = entry;
+        Object autoRecordValue = null;
+        if (entry instanceof Map<?, ?> map) {
+            mdObjectValue = firstNonNull(
+                    map.get("mdObject"), //$NON-NLS-1$
+                    map.get("md_object"), //$NON-NLS-1$
+                    map.get("object"), //$NON-NLS-1$
+                    map.get("fqn")); //$NON-NLS-1$
+            if (mdObjectValue == null) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.INVALID_METADATA_CHANGE,
+                        "ExchangePlan content entry must carry mdObject/object/fqn: " + entry, false); //$NON-NLS-1$
+            }
+            autoRecordValue = firstNonNull(
+                    map.get("autoRecord"), //$NON-NLS-1$
+                    map.get("auto_record")); //$NON-NLS-1$
+        }
+
+        ExchangePlanContentItem item = MdClassFactory.eINSTANCE.createExchangePlanContentItem();
+        Object resolved = resolveSingleReferenceValue(
+                configuration, MdClassPackage.Literals.EXCHANGE_PLAN_CONTENT_ITEM__MD_OBJECT, mdObjectValue);
+        if (!(resolved instanceof MdObject mdObject)) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_NOT_FOUND,
+                    "ExchangePlan content entry does not resolve to a metadata object: " + mdObjectValue, //$NON-NLS-1$
+                    false);
+        }
+        item.setMdObject(mdObject);
+        item.setAutoRecord(resolveAutoRegistrationChanges(autoRecordValue));
+        return item;
+    }
+
+    /**
+     * Maps an {@code autoRecord} value onto {@link AutoRegistrationChanges}. An absent value means
+     * the schema default {@code Allow}; an unrecognised one fails loud with the valid literals
+     * rather than silently registering everything.
+     */
+    private AutoRegistrationChanges resolveAutoRegistrationChanges(Object value) {
+        if (value == null || String.valueOf(value).isBlank()) {
+            return AutoRegistrationChanges.ALLOW;
+        }
+        if (value instanceof AutoRegistrationChanges already) {
+            return already;
+        }
+        String raw = String.valueOf(value).trim();
+        return switch (normalizeToken(raw)) {
+            case "allow", "true", "разрешить" -> AutoRegistrationChanges.ALLOW; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            case "deny", "false", "запретить" -> AutoRegistrationChanges.DENY; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            default -> throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Unknown autoRecord value '" + raw + "'. Valid values: Allow, Deny.", false); //$NON-NLS-1$ //$NON-NLS-2$
+        };
     }
 
     /**
@@ -12646,6 +13107,24 @@ public class EdtMetadataService {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_CHANGE,
                     "Invalid value for field " + attribute.getName() + ": " + raw, false, e); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+
+        // Generic EDataType fallback (B3). The ladder above knows the JDK scalars and enums and
+        // then gave up, so EVERY exotic model data type was unwritable — not just Uuid
+        // (ExchangePlan.thisNode is a java.util.UUID) but QName, Shortcut, Version and friends.
+        // Each of them is an EDataType whose own EFactory can parse its literal (McoreFactoryImpl
+        // declares createUuidFromString, and a generated factory declares one per custom type), so
+        // delegating there NARROWS the "unsupported" surface instead of widening what may be
+        // written: fields that must never be written are refused by the deny-list in
+        // setFeatureValue, before conversion is ever reached.
+        try {
+            Object viaDataType = EcoreUtil.createFromString(dataType, raw);
+            if (viaDataType != null) {
+                return viaDataType;
+            }
+        } catch (RuntimeException e) {
+            LOG.debug("convertAttributeValue: EDataType fallback failed for field=%s dataType=%s: %s", //$NON-NLS-1$
+                    attribute.getName(), dataType.getName(), e.getMessage());
         }
 
         throw new MetadataOperationException(
@@ -13690,7 +14169,7 @@ public class EdtMetadataService {
     }
 
     private void forceExportTopLevelObject(IProject project, String fqn, String opId) {
-        forceExportTopLevelObject(project, fqn, null, opId);
+        forceExportTopLevelObjects(project, fqn, List.of(), opId);
     }
 
     /**
@@ -13700,6 +14179,21 @@ public class EdtMetadataService {
      * top-object alone, so it would otherwise never reach disk.
      */
     private void forceExportTopLevelObject(IProject project, String fqn, String extraFqn, String opId) {
+        forceExportTopLevelObjects(project, fqn, extraFqn == null ? List.of() : List.of(extraFqn), opId);
+    }
+
+    /**
+     * Force-exports {@code fqn}, every FQN in {@code extraFqns} and {@code Configuration} in ONE
+     * batch. The extra slots carry top objects that exporting {@code fqn} alone would never flush:
+     * an external-property fragment (a role's {@code Rights.rights}) or the far side of a two-sided
+     * link (subsystem nesting writes both the child's and the parent's {@code .mdo}).
+     */
+    private void forceExportTopLevelObjects(
+            IProject project,
+            String fqn,
+            Collection<String> extraFqns,
+            String opId
+    ) {
         IBmModelManager modelManager = gateway.getBmModelManager();
         IDtProjectManager projectManager = gateway.getDtProjectManager();
         IDtProject dtProject = projectManager.getDtProject(project);
@@ -13709,7 +14203,7 @@ public class EdtMetadataService {
                     "Cannot resolve DT project for force export: " + project.getName(), false); //$NON-NLS-1$
         }
 
-        List<String> targets = buildExportTargets(fqn, extraFqn);
+        List<String> targets = buildExportTargets(fqn, extraFqns);
         boolean exported = false;
         try {
             exported = modelManager.forceExport(dtProject, targets);
@@ -13744,16 +14238,20 @@ public class EdtMetadataService {
     }
 
     private List<String> buildExportTargets(String fqn) {
-        return buildExportTargets(fqn, null);
+        return buildExportTargets(fqn, List.of());
     }
 
-    private List<String> buildExportTargets(String fqn, String extraFqn) {
+    private List<String> buildExportTargets(String fqn, Collection<String> extraFqns) {
         LinkedHashSet<String> targets = new LinkedHashSet<>();
         if (fqn != null && !fqn.isBlank()) {
             targets.add(fqn);
         }
-        if (extraFqn != null && !extraFqn.isBlank()) {
-            targets.add(extraFqn);
+        if (extraFqns != null) {
+            for (String extraFqn : extraFqns) {
+                if (extraFqn != null && !extraFqn.isBlank()) {
+                    targets.add(extraFqn);
+                }
+            }
         }
         targets.add("Configuration"); //$NON-NLS-1$
         return List.copyOf(targets);
@@ -13866,12 +14364,42 @@ public class EdtMetadataService {
         private final String fqn;
         private final String opId;
         private final Map<Path, EolStyle> snapshot;
+        private final Set<String> guardedFqns = new LinkedHashSet<>();
 
         EolGuard(IProject project, String fqn, String opId, Map<Path, EolStyle> snapshot) {
             this.project = project;
             this.fqn = fqn;
             this.opId = opId;
             this.snapshot = snapshot;
+            if (fqn != null && !fqn.isBlank()) {
+                guardedFqns.add(fqn);
+            }
+        }
+
+        /**
+         * Extends the guard to a top object discovered mid-operation — the far side of a two-sided
+         * link (subsystem nesting) is only known once the model has been walked. Snapshots that
+         * object's files immediately, which is still ahead of the export pipeline: the mutation
+         * runs inside the BM transaction and nothing reaches disk until {@code forceExport}.
+         */
+        void addCoEditedFqn(String coEditedFqn) {
+            if (coEditedFqn == null || coEditedFqn.isBlank() || !guardedFqns.add(coEditedFqn)) {
+                return;
+            }
+            if (project == null || isExternalProject(project)) {
+                return;
+            }
+            for (Path file : collectEolCandidateFiles(project, coEditedFqn)) {
+                if (snapshot.containsKey(file)) {
+                    continue;
+                }
+                try {
+                    String content = Files.readString(file, StandardCharsets.UTF_8);
+                    EolNormalizer.detect(content).ifPresent(style -> snapshot.put(file, style));
+                } catch (IOException | RuntimeException e) {
+                    // unreadable or binary — nothing to preserve
+                }
+            }
         }
 
         void restore() {
@@ -13881,14 +14409,16 @@ public class EdtMetadataService {
             EolDefaults defaults = loadEolDefaults(project);
             int fixed = 0;
             try {
-                for (Path file : collectEolCandidateFiles(project, fqn)) {
-                    EolStyle target = snapshot.get(file);
-                    if (target == null) {
-                        // A file created by this operation — follow the project convention.
-                        target = defaults.resolve(file.getFileName().toString());
-                    }
-                    if (normalizeFileEol(file, target)) {
-                        fixed++;
+                for (String guardedFqn : guardedFqns) {
+                    for (Path file : collectEolCandidateFiles(project, guardedFqn)) {
+                        EolStyle target = snapshot.get(file);
+                        if (target == null) {
+                            // A file created by this operation — follow the project convention.
+                            target = defaults.resolve(file.getFileName().toString());
+                        }
+                        if (normalizeFileEol(file, target)) {
+                            fixed++;
+                        }
                     }
                 }
             } catch (RuntimeException e) {

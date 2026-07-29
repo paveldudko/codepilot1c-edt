@@ -36,11 +36,11 @@ public class UpdateMetadataTool extends AbstractTool {
                 },
                 "target_fqn": {
                   "type": "string",
-                  "description": "FQN already existing metadata object to change. Do not use for new object creation. Subsystem FQNs are FLAT at any nesting depth — always Subsystem.<Name>, even for a nested subsystem, because each subsystem is its own top object; no nested dotted form resolves, so never build one from the parent."
+                  "description": "FQN already existing metadata object to change. Do not use for new object creation. Subsystem FQNs are FLAT at any nesting depth — always Subsystem.<Name>, even for a nested subsystem, because each subsystem is its own top object; the flat form is the only one guaranteed to resolve, so do not build a dotted form from the parent."
                 },
                 "changes": {
                   "type": "object",
-                  "description": "Property changes for an existing object: {set:{...}, unset:[...], children_ops:[...]}. children_ops only supports rename/delete/set on EXISTING children (op: rename|delete|set). To CREATE a new child use add_metadata_child; to mutate form layout use mutate_form_model."
+                  "description": "Property changes for an existing object: {set:{...}, unset:[...], children_ops:[...]}. children_ops only supports rename/delete/set on EXISTING children (op: rename|delete|set). To CREATE a new child use add_metadata_child; to mutate form layout use mutate_form_model. For ExchangePlan.content pass set:{content:['Catalog.Foo']} or set:{content:[{mdObject:'Catalog.Foo', autoRecord:'Allow|Deny'}]} — autoRecord defaults to Allow."
                 },
                 "validation_token": {
                   "type": "string",

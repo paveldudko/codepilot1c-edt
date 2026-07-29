@@ -106,6 +106,31 @@ public final class SubsystemTree {
         return message.toString();
     }
 
+    /**
+     * Builds the refusal text for an FQN whose nested part does not parse as marker/name pairs
+     * (F2).
+     *
+     * <p>The general rule — every nested segment is a {@code <Marker>.<Name>} pair — is right for
+     * every kind that owns containment children, and a caller who passed
+     * {@code Catalog.Foo.Attribute} is told exactly what is missing. For a SUBSYSTEM head it sent
+     * the caller down a dead end: {@code Subsystem.Parent.Child} was rejected as an unpaired
+     * segment, which reads as "add the marker", and the paired form the caller then builds is not
+     * the canonical address either. A subsystem's canonical FQN is FLAT at any depth, because both
+     * subsystem collections are non-containment and every nested subsystem is its own top object,
+     * so the fix is to drop the parent segments — not to add a marker.</p>
+     *
+     * @param headIsSubsystem whether the FQN's leading type token addresses a subsystem
+     */
+    public static String nestedFqnRejectionMessage(String fqn, boolean headIsSubsystem) {
+        if (!headIsSubsystem) {
+            return "Nested FQN segments must be marker/name pairs: " + fqn; //$NON-NLS-1$
+        }
+        return "Subsystem FQNs are FLAT at any nesting depth — always Subsystem.<Name>, even for a" //$NON-NLS-1$
+                + " nested subsystem, because each subsystem is its own top object. No dotted form" //$NON-NLS-1$
+                + " built from the parent is the canonical address, so drop the parent segments" //$NON-NLS-1$
+                + " and pass Subsystem.<Name> for the subsystem you mean: " + fqn; //$NON-NLS-1$
+    }
+
     private static <T> void collect(
             List<? extends T> nodes,
             Function<? super T, ? extends List<? extends T>> childrenOf,
