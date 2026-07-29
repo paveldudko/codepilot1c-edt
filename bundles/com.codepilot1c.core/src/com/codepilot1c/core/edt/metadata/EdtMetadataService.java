@@ -7266,14 +7266,15 @@ public class EdtMetadataService {
         }
         sheet.setColumns(columns);
 
-        // Create formats for different section styles
-        // Format 0: default (no special formatting)
-        Format defaultFormat = f.createFormat();
-        sheet.getFormats().add(defaultFormat);
-        // Format 1: bold (for headers, totals)
-        Format boldFormat = f.createFormat();
-        // Bold is indicated by font index — we just set a distinct format
-        sheet.getFormats().add(boldFormat);
+        // The format table cells point at — see TemplateCellRendering for why a parameter cell needs
+        // a format of its own (bold is indicated by font index; those entries stay distinct but plain)
+        for (int i = 0; i < TemplateCellRendering.FORMAT_COUNT; i++) {
+            Format format = f.createFormat();
+            if (TemplateCellRendering.isParameterFormat(i)) {
+                format.setFillType(com._1c.g5.v8.dt.moxel.content.FillType.PARAMETER);
+            }
+            sheet.getFormats().add(format);
+        }
 
         // Determine if a section is a detail/repeating section
         java.util.Set<String> detailSections = Set.of(
@@ -7297,20 +7298,23 @@ public class EdtMetadataService {
                 Row row = f.createRow();
                 row.setColumns(columns);
                 if (isBoldStyle) {
-                    row.setFormatIndex(1); // bold format
+                    row.setFormatIndex(TemplateCellRendering.FORMAT_BOLD_TEXT);
                 }
 
                 for (int c = 0; c < rowCells.size(); c++) {
                     String cellValue = rowCells.get(c);
                     Cell cell = f.createCell();
+                    boolean isParameterCell = false;
 
-                    if (cellValue != null && cellValue.startsWith("[") && cellValue.endsWith("]")) { //$NON-NLS-1$ //$NON-NLS-2$
+                    String binding = TemplateCellRendering.extractBinding(cellValue);
+                    if (binding != null) {
                         // Data binding
-                        String binding = cellValue.substring(1, cellValue.length() - 1).trim();
                         if (isDetailSection) {
+                            // The serializer writes <detailParameter> regardless of the format
                             cell.setDetailParameter(binding);
                         } else {
                             cell.setParameter(binding);
+                            isParameterCell = true;
                         }
                     } else if (cellValue != null && !cellValue.isEmpty()) {
                         // Static text — use moxel content LocalString (EMap<String,String>)
@@ -7320,9 +7324,7 @@ public class EdtMetadataService {
                         cell.setText(ls);
                     }
 
-                    if (isBoldStyle) {
-                        cell.setFormatIndex(1);
-                    }
+                    cell.setFormatIndex(TemplateCellRendering.formatIndex(isBoldStyle, isParameterCell));
 
                     row.getCells().put(Integer.valueOf(c), cell);
                 }

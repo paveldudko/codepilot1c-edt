@@ -9,6 +9,23 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Round-5 (2026-07-29) — the parameter round-trip, answered by a zero-build probe
+
+* **A rendered parameter cell survives the round-trip.** `render_template` wrote
+  `[["Товар","Цена"],["[Название]","[Сумма]"]]` and `inspect_template` read the second row back as two
+  **empty** cells, while parameters in real EDT-authored templates read fine. Direction was undetermined at
+  the round-4 handoff; one probe settled it without a build — the rendered `Template.mxlx` held
+  `<c><f>0</f></c>`, so nothing had been written and `inspect_template` was innocent. The reason is in
+  `V8MoxelSerializer.writeCell` (2025.2.3, decompiled): the branch is chosen by **format**, not by content —
+  `<parameter>` is written only when `formats[cell.getFormatIndex()]` carries `fillType=Parameter`, else the
+  cell's text is written, and a parameter cell has none. Every format `render_template` produced was plain, so
+  each parameter cell serialized to nothing while the tool reported success. The format table now carries a
+  parameter flavour of every style and a parameter cell points at it; `detailParameter` needs none of this
+  (the serializer writes it unconditionally). An empty binding (`[]`, `[ ]`) is treated as text rather than a
+  parameter, because the serializer skips an empty parameter name and would leave exactly the same silent
+  hole. New `TemplateCellRendering`, free of EDT types so the pairing the serializer depends on is held by a
+  test rather than by reading the source. 12 tests.
+
 ### Round-4 (2026-07-29) — F1 root-caused off its own diagnostic, template artifacts renamed
 
 The diagnostic build shipped in `c24ccd7` answered on the first live call, so the F1 fix rests on an
