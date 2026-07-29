@@ -164,7 +164,7 @@ public class EdtMetadataInspectorService {
      * ExchangePlan, DefinedType and every register beyond information/accumulation — objects
      * that plainly existed. Both the type-token aliases (plural, Russian) and the
      * kind→collection mapping are now the shared ones, which also makes nested subsystems
-     * resolvable by their canonical flat FQN.</p>
+     * resolvable by the flat alias this tool accepts.</p>
      */
     private MdObject findMdObjectByFqn(Configuration config, String fqn) {
         String[] parts = fqn.split("\\."); //$NON-NLS-1$
@@ -195,15 +195,18 @@ public class EdtMetadataInspectorService {
 
     /**
      * Explains a miss instead of flatly denying it. A dotted FQN longer than {@code <Type>.<Name>} is the
-     * common caller mistake — most of all for subsystems, whose canonical FQN is flat at any nesting depth
-     * — so name the supported form rather than leaving "Object not found" to be read as "does not exist".
+     * common caller mistake — most of all for subsystems, where the flat {@code Subsystem.<Name>} is the
+     * only form THIS tool resolves (the paired chain {@code Subsystem.<Parent>.Subsystem.<Name>} is the
+     * storage FQN and the mutating tools accept it, but nothing walks it here) — so name the supported form
+     * rather than leaving "Object not found" to be read as "does not exist".
      */
     static String notFoundMessage(String fqn) {
         if (fqn != null && fqn.split("\\.").length > 2) { //$NON-NLS-1$
             return "Object not found: only a top-level <Type>.<Name> FQN is inspected here, and this FQN " //$NON-NLS-1$
-                    + "carries extra segments. A subsystem is always addressed flat (Subsystem.<Name>) " //$NON-NLS-1$
-                    + "even when nested, because each subsystem is its own top object. Child objects " //$NON-NLS-1$
-                    + "(attributes, forms, templates) are not addressable through this tool."; //$NON-NLS-1$
+                    + "carries extra segments. Pass a nested subsystem as the flat Subsystem.<Name> — the " //$NON-NLS-1$
+                    + "only form this tool resolves, since each subsystem is its own top object (the paired " //$NON-NLS-1$
+                    + "chain Subsystem.<Parent>.Subsystem.<Name> stays valid for the mutating tools). Child " //$NON-NLS-1$
+                    + "objects (attributes, forms, templates) are not addressable through this tool."; //$NON-NLS-1$
         }
         return "Object not found"; //$NON-NLS-1$
     }

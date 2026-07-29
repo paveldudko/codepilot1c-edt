@@ -18,11 +18,13 @@ import org.junit.Test;
  * themselves are real unit tests in {@link SubsystemTreeTest} and
  * {@link TopLevelCollectionsMappingTest}.</p>
  *
- * <p>What was broken: a subsystem's canonical FQN is flat at every depth
- * ({@code Subsystem.PaymentCalendar}) because both subsystem collections are non-containment,
- * yet resolution scanned only {@code Configuration.getSubsystems()}. The flat form therefore
- * failed for nested subsystems, the nested form failed too (the nested-child walker iterates
- * containment references only), and {@code scan_metadata_index} never listed them at all.</p>
+ * <p>What was broken: a subsystem answers to a flat name at every depth
+ * ({@code Subsystem.PaymentCalendar}) because both subsystem collections are non-containment and the
+ * lookup walks the forest — yet resolution scanned only {@code Configuration.getSubsystems()}. The
+ * flat form therefore failed for nested subsystems, the nested chain failed too (the nested-child
+ * walker iterates containment references only), and {@code scan_metadata_index} never listed them at
+ * all. Note the flat form is an ALIAS: the FQN a nested subsystem is REGISTERED under is the chain
+ * {@code Subsystem.<Parent>.Subsystem.<Name>} — see {@link SubsystemTreeTest}.</p>
  */
 public class SubsystemFqnResolutionContractTest {
 

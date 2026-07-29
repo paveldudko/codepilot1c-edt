@@ -24,9 +24,10 @@ import com._1c.g5.v8.dt.metadata.mdclass.Subsystem;
  * {@link MetadataKind#SUBSYSTEM} is a computed snapshot, not the configuration's own list.</p>
  *
  * <p><strong>Subsystems are flattened.</strong> {@code Configuration.subsystems} holds only
- * the first level, yet a nested subsystem is its own top object with a flat two-segment FQN
- * ({@code Subsystem.PaymentCalendar}, see {@link SubsystemTree}). Returning the whole forest
- * is what makes the canonical flat form resolve at any depth.</p>
+ * the first level, yet a nested subsystem is its own top object — registered under the chain
+ * {@code Subsystem.<Parent>.Subsystem.<Name>}, see {@link SubsystemTree}. Returning the whole
+ * forest is what makes the flat two-segment alias ({@code Subsystem.PaymentCalendar}) resolve at
+ * any depth.</p>
  */
 public final class TopLevelCollections {
 

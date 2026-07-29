@@ -30,7 +30,7 @@ public class EdtMetadataDetailsTool extends AbstractTool {
                 "objectFqns": {
                   "type": "array",
                   "items": {"type": "string"},
-                  "description": "Metadata object FQNs to inspect semantically through EDT, not raw file paths. A subsystem is addressed by its FLAT canonical FQN — Subsystem.<Name> even when nested, because each subsystem is its own top object; only the leading <Type>.<Name> pair is resolved here, so do not pass a nested dotted form."
+                  "description": "Metadata object FQNs to inspect semantically through EDT, not raw file paths. Only the leading <Type>.<Name> pair is resolved here, so pass a nested subsystem as the flat Subsystem.<Name> — its paired storage chain Subsystem.<Parent>.Subsystem.<Name> works in the mutating tools but not in this one."
                 },
                 "full": {"type": "boolean", "description": "Request extended semantic details for the selected metadata objects."},
                 "language": {"type": "string", "description": "Preferred language code for rendered details."}
