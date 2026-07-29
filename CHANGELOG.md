@@ -9,6 +9,94 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Subsystem nesting is written on both sides (2026-07-29) — F1
+
+Live check on an EDT-authored configuration (132 `.mdo`: 98 with `<parentSubsystem>`, 22 with
+`<subsystems>`) settled how EDT actually stores nesting: **twice**. The parent lists
+`<subsystems>WaveChild</subsystems>` by **bare name**; the child carries
+`<parentSubsystem>Subsystem.WaveParent</parentSubsystem>` as a **flat FQN**. They are two independent
+non-containment references with no `EOpposite`, so EMF maintains neither copy — and `update_metadata`
+`set.parentSubsystem` wrote only the child side. The result was a **half-linked** tree: the parent could
+not see its child, while the metadata tree, the command interface and our own
+`Subsystem.Parent.Subsystem.Child` nested alias all read the parent side.
+
+Both slots now write both sides. Setting `parentSubsystem` adds the child to the new parent's
+`subsystems` and drops it from the previous parent's; setting `subsystems` points every listed child at
+the parent and clears the pointer of every child dropped from the list; unsetting either slot clears
+both. Idempotent by construction — membership is tested before adding, the pointer is only rewritten when
+it differs, and an unchanged list is not cleared and rebuilt — so a re-run neither duplicates an entry nor
+churns the `.mdo`. Re-running against an already half-linked model **repairs** it, because membership is
+ensured even when the pointer already matched. Identity is the flat name, not the Java instance: a value
+resolved inside the write transaction is a different handle from the one already in the list.
+
+The far side lives in a **different** `.mdo`, so it needs its own export target and its own EOL snapshot
+or nothing reaches disk. A write now reports every co-edited top object to a sink that both extends the
+export batch (`forceExportTopLevelObjects`, one `forceExport` call for the whole set) and extends the EOL
+guard (`EolGuard.addCoEditedFqn`, snapshotting the far side the moment it becomes known — still ahead of
+the export pipeline, since the mutation happens inside the BM transaction). `create_metadata` with a
+`parentSubsystem` property is wired the same way.
+
+Left as-is and worth knowing: writing `Configuration.subsystems` (target = the configuration, not a
+subsystem) still goes down the generic reference path and does not clear `parentSubsystem` on the
+subsystems it lists, so promoting a nested subsystem to the root that way can still leave a half-link.
+Pre-existing behaviour, not part of this fix.
+
+### Dotted subsystem FQNs are refused with the right advice (2026-07-29) — F2
+
+The flat form is the only subsystem address guaranteed to resolve, yet the refusal pointed at a dotted
+one. `Subsystem.<Parent>.<Child>` failed
+with `METADATA_PARENT_NOT_FOUND: Nested FQN segments must be marker/name pairs`, which reads as "you
+forgot the marker" and sends the caller to `Subsystem.<Parent>.Subsystem.<Child>` — which fails again,
+now as `METADATA_NOT_FOUND`. When the leading type token is a subsystem, the message now names the
+**flat** form as the only canonical address (`Subsystem.<Name>` at any depth, because both subsystem
+collections are non-containment and every nested subsystem is its own top object) and says to drop the
+parent segments rather than add a marker. The general marker/name-pair rule is unchanged for every kind
+that owns containment children. The text lives in one pure helper
+(`SubsystemTree.nestedFqnRejectionMessage`) shared by the configuration walker and the external-object
+walker, and agrees with the wording already in `update_metadata`, `add_metadata_child` and
+`edt_metadata_details`.
+
+Note on the second failure: the nested alias is not itself broken — it walks `getSubsystems()`, which was
+empty precisely because of F1. On an EDT-authored model it resolves; on a model our own writes had built
+it could not.
+
+### `ExchangePlan.content` is writable (2026-07-29) — B2
+
+The registration list of an exchange plan could not be written by any tool. `content` is a containment
+reference whose entries are `ExchangePlanContentItem`s — a flat EClass that is neither an `MdObject` nor
+named — so every generic child shape missed it: `findNestedChild` skips non-`MdObject` values and matches
+on `getName()`, `buildChildOpsFromContainmentSet` requires a `name` per entry and yields no ops without
+one, and the containment arm of the reference writer then refused the write outright.
+
+`set.content` now builds one item per requested entry, in either shape:
+`content:["Catalog.Foo","Document.Bar"]` (bare FQNs) or
+`content:[{mdObject:"Catalog.Foo", autoRecord:"Deny"}]` (`object` and `fqn` are accepted aliases,
+`auto_record` too). `autoRecord` defaults to **`Allow`** — the platform default for a new content line —
+and an unrecognised value fails loud with the valid literals instead of silently registering everything.
+The object slot resolves through the shared reference resolver, which brings FQN resolution, the
+compatibility check and the loud `METADATA_NOT_FOUND` along for free, so an unresolvable entry can never
+be dropped while the write reports success; resolution runs against
+`ExchangePlanContentItem.mdObject`, not against the owning `content` reference, whose own type would
+reject every legitimate `Catalog`.
+
+### Exotic `EDataType`s are writable; `thisNode` is refused honestly (2026-07-29) — B3
+
+`convertAttributeValue` knew String / Integer / Long / Double / Float / Boolean / enum and then threw
+"Unsupported value type", so **every** exotic model data type was unwritable — `Uuid`, and with it
+`QName`, `Shortcut`, `Version`. Each of those is an `EDataType` whose own `EFactory` parses its literal
+(`McoreFactoryImpl` declares `createUuidFromString`), so conversion now ends with a generic
+`EcoreUtil.createFromString` fallback. This **narrows** the unsupported surface; a data type that cannot
+parse its literal is still refused with the same message.
+
+`ExchangePlan.thisNode` is the one field that must stay unwritable, and it is now refused for the right
+reason: it is the identity of the plan's own node (`ЭтотУзел`), assigned by EDT on first load, and
+overwriting it against a live infobase re-identifies the local node for every peer. It joins `uuid` in an
+explicit deny-list at the top of the write path, with a message that says exactly that instead of the old,
+misleading "Unsupported value type". **Order is the point:** the deny-list is consulted before conversion,
+because the new fallback resolves a `Uuid` literal perfectly well and a guard placed after it would have
+quietly made `thisNode` writable. `unset` is denied too — dropping the identity is the same damage as
+overwriting it.
+
 ### Composite `type.types` is written whole (2026-07-28) — BF-12936 case 1
 
 Asking for a composite type wrote only the first one, with no error anywhere. Three call sites shared one
