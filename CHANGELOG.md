@@ -9,6 +9,60 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Round-7 (2026-07-29) — the fourth side of subsystem nesting: the storage itself
+
+* **Re-parenting a subsystem now moves its storage, so the object stays addressable.** `ce4bf06` added the
+  third side of the nesting — `Configuration.subsystems` lists the roots only — but dropped the root entry
+  without moving the child's top object, which made the previous behaviour *worse* than the duplicate it
+  removed. Live on the sandbox: `update_metadata set.parentSubsystem = Subsystem.WaveParent` on
+  `Subsystem.WaveChild` wrote all three files correctly and then failed with
+  `[EDT_TRANSACTION_FAILED] Metadata object not found after commit`, because the child's `.mdo` still sat at
+  `src/Subsystems/WaveChild/`. The reason, decompiled from EDT 2025.2.3: a subsystem's BM FQN is its OWNER
+  CHAIN — `MdTopObjectFqnGeneratorDelegate` registers a root one as `Subsystem.<Name>` and a nested one as
+  `<ownerFqn>.Subsystem.<Name>` — and `QualifiedNameFilePathConverter.handleCommonResource` turns that chain
+  into `src/Subsystems/<A>/Subsystems/<B>/<B>.mdo`. A parent's `.mdo` refers to its children by BARE NAME,
+  resolved against that chain, so a child left under the flat FQN turns the parent's own down-link into a
+  nameless stub: nothing name-based can match it, and no tool can address the object any more. The fix mirrors
+  EDT's own `MdRefactoringService.SubsystemMoveOperation` — detach from the old owner, `updateTopObjectFqn`
+  into the new owner's slot, then join its list — which EDT itself routes through `initiateRename` with an
+  unchanged name, a move being an FQN rename and nothing else. The root entry is surrendered only *against* a
+  successful relocation and restored when there is none: a double registration is cosmetically wrong, no
+  registration that resolves is a lost object. The relocated FQN is also what the export batch now targets,
+  and one unresolvable target no longer sinks the whole batch — after a relocation the old FQN IS
+  unresolvable, and the per-target retry is what keeps the co-edited parent reaching disk. New pure
+  `SubsystemTree.qualifiedName`/`nameChain` carry the FQN rule; the "flat at any depth" claim the old javadoc
+  and one test repeated is corrected — flat is an alias our tree walk supports, not the storage FQN.
+
+* **Deleting a subsystem now sweeps and exports every parent, and deletes the right directory.** Two breaks
+  independent of the above, both reachable on a correctly nested subsystem. `removeSubsystemLinks` matched
+  parents' entries by `getName()`, which reads back `null` on an unresolved proxy — exactly the entries that
+  need sweeping — so it now compares `SubsystemIdentity`. And the parents it edits are separate top objects
+  that were in no export target at all (the only target was the object that had just ceased to exist), so
+  `delete_metadata` gains the same co-edited-FQN collection `update_metadata`/`create_metadata` have. The
+  filesystem cleanup derived `src/Subsystems/<Name>` from the request's flat FQN, which for a nested subsystem
+  names a top-level sibling that does not exist — the real directory survived the delete and would be
+  re-imported as a resurrected subsystem; the storage FQN is now captured before the unlink and drives the
+  path through the new `MetadataResourcePaths.subsystemDirectory`. 21 new behavioural tests on the pure FQN and
+  path rules, plus 5 wiring assertions. Live validation pending.
+
+### Round-6 (2026-07-29) — live validation of round 5, and the hole the guard's own javadoc named
+
+* **The unknown-parameter advisory now covers every registered tool, not just the ones that inherit it.**
+  `8ed8c67` added the note to `AbstractTool.execute`, and its javadoc cites `get_diagnostics` answering a
+  `project=…` call about the default project "without a word" as one of the three live cases that motivated
+  it. `get_diagnostics` and `get_diagnostics_details` are the only two tools that `implement ITool` directly,
+  so neither ever received the note the commit was written for. Measured live on build
+  `0.1.7.20260729-0811`: `get_diagnostics(project="TestConfiguration", scope=project)` returned 6402 errors
+  belonging to **`/Accounting management`** — the accepted spelling is `project_name`, the key was dropped,
+  `resolveDefaultProjectName()` picked another project, and nothing in the answer said so. Every other tool
+  called in the same session did emit its note. The advisory moves out of `AbstractTool`'s private methods
+  into a shared `ToolAdvisory`, and `ToolRegistry.register`/`registerDynamicTool` wrap any non-`AbstractTool`
+  in `AdvisoryToolWrapper` — coverage becomes a property of *registration* rather than of a superclass, so a
+  future tool cannot opt out by picking a different base. Nothing in the UI bundle changes, which matters
+  because that bundle has no test runtime. The wrapper delegates all seven `ITool` defaults on purpose: one
+  that answered them itself would quietly strip a destructive tool of its confirmation prompt, and a test
+  pins that. 8 behavioural tests.
+
 ### Round-5 (2026-07-29) — the parameter round-trip, answered by a zero-build probe
 
 * **`dcs_manage create_main_schema` can now repair the state it gets reported in.** The persistence fix

@@ -664,7 +664,73 @@ platform-resource, поэтому `toProjectRelativePath` (`:8081`, без фи�
   отдельную секцию), но выставляет эти маркеры **другой** плагин (commit-review), а в песочном EDT он не
   установлен — исключать нечего. Проверка требует стенда с обоими плагинами.
 
-## Addendum round 5 — 2026-07-29 вечер (сборка зелёная, живая валидация pending)
+## Addendum round 6 — живая валидация round 5 на билде `0.1.7.20260729-0811`
+
+Установлен через `redeploy-1529.ps1`, оба проекта READY, индекс готов. Итог по четырём фиксам round 5:
+
+| Фикс | Вердикт живьём |
+|---|---|
+| параметр макета (`82d86b5`) | **ЗАКРЫТ.** `inspect_template` на `Catalog.Catalog.Template.WaveTplR5b` вернул `[Название] \| [Сумма]`; в `Template.mxlx` на диске лежат `<parameter>` + `<format><fillType>Parameter</fillType>`. Это факт о writer'е, не о reader'е. Эталон «как было» — `WaveTplR4`, там по-прежнему пусто |
+| DCS (`b2066ab`) | **ЗАКРЫТ, и допущение снято фактом.** См. ниже |
+| `Configuration.subsystems` (`ce4bf06`) | **НЕ ЗАКРЫТ — фикс неполон и в текущем виде регрессивен.** См. ниже |
+| висячая `<subsystems>` при удалении (`ce4bf06`) | **ПРОВАЛ живьём** — тот же корень |
+| `get_diagnostics` origins (`fc9861f`) | **НЕИНФОРМАТИВНО.** `origin=review-annotation` даёт 0, но в песочнице нет поставщика review-маркеров ⇒ «корректно исключено» и «их и не было» неразличимы. Живьём подтверждена только проводка (дефолтный фильтр и явный origin работают, проект наводится верно). Остаётся 15 юнит-тестов `07c1049` |
+
+### DCS: диагностическая сборка отработала ровно по назначению (закрыт, `b2066ab`)
+Три вызова на `Report.WaveR5Dcs` дали три разных плана в `[dcs]`-строке:
+`plan=CREATE sameNameSchemaBound=false templates=0` (свежий) → `plan=NO_OP sameNameSchemaBound=true
+existingSchema=true source=main` (здоровое повторно) → **`plan=REBIND_SAME_NAME sameNameSchemaBound=false
+existingSchema=false source=templates templates=1`** на висячем состоянии (файл `Template.dcs` удалён, запись
+в `.mdo` осталась) — и вылечил: `schemaCreated=true, templateCreated=false, schemaFilePresent=true`.
+**Живьём непроверенное допущение round 5 теперь измеренный факт:** висячий `BasicTemplate.template`
+читается как ОТСУТСТВУЮЩИЙ, не как прокси, удовлетворяющий `instanceof` (`sameNameSchemaBound=false` плюс
+`getTopObjectByFqn(...) -> <null>`). Риск «план посчитает `NO_OP` и лечение не сработает» не реализовался.
+Диагностическое логирование можно снимать.
+
+### ЧЕТВЁРТАЯ сторона вложенности подсистем — корень провала `ce4bf06` (НЕ закрыт)
+`update_metadata set.parentSubsystem` на `Subsystem.WaveChild` вернул
+`[EDT_TRANSACTION_FAILED] Metadata object not found after commit` — **на мутации, чьё состояние файлов ровно
+правильное**. Лог: `Subsystem WaveChild dropped from the configuration root: it is nested now` → далее
+`resolveByFqn top-level type=Subsystem name=WaveChild found=false`.
+
+Корень прочитан на эталоне AM, а не выведен:
+* `Configuration.mdo` в AM — **34** записи `<subsystems>`; в `src/Subsystems` — **34** каталога верхнего
+  уровня. **Корневая регистрация ⟺ каталог верхнего уровня.**
+* Из 132 `.mdo` подсистем AM **99 лежат по ВЛОЖЕННЫМ путям** `src/Subsystems/<Parent>/Subsystems/<Child>/<Child>.mdo`.
+* Родитель перечисляет детей голыми именами, ребёнок ссылается назад плоским FQN — обе стороны как раньше.
+* В AM down-links **резолвятся с именами**: `Subsystem.Accounting` → `subsystems = [Subsystem.Accounting.Subsystem.Settlements, …]`,
+  и плоский FQN вложенной `Subsystem.Settlements` даёт `exists:true`. Вся резолюция подсистем
+  (`SubsystemTree.flatten`, `TopLevelCollections.forKind`, `findSubsystemAnywhere`) **исправна** — она не баг.
+* В песочнице тот же рендер даёт `subsystems | [Subsystem, Subsystem]`, а `EdtMetadataInspectorService:240-250`
+  печатает голое `eClass().getName()` **только при пустом `name`** ⇒ это наблюдение, а не догадка о прокси.
+
+Итог: `ce4bf06` снимает корневую регистрацию, **не перемещая `.mdo` ребёнка** под вложенный путь. Файл
+остаётся на верхнем уровне, поэтому голая ссылка родителя резолвится в безымянную заглушку, обход её не
+матчит, и объект становится **неадресуемым ни одним тулом** (`update_metadata` на него → `METADATA_NOT_FOUND`,
+`edt_metadata_details` → `exists:false`). Неадресуемость хуже двойной регистрации, которую фикс убирал.
+Тот же корень объясняет провал уборки: `delete_metadata force=true` на `Subsystem.WaveChild2` удалил объект,
+но `<subsystems>WaveChild2</subsystems>` в `WaveParent.mdo` осталась.
+
+Отдано в работу: фикс должен НИКОГДА не оставлять объект неадресуемым — либо перемещать `.mdo` (как делает
+EDT), либо, если перемещение недостижимо через API, сохранять корневую регистрацию и честно об этом
+сообщать.
+
+### НОВЫЙ ДЕФЕКТ: advisory о проглоченном ключе не покрывает `get_diagnostics` (закрыт этим раундом)
+`get_diagnostics(project="TestConfiguration", scope=project)` вернул 6402 ошибки проекта
+**`/Accounting management`** — принимаемое имя `project_name`, ключ отброшен, `resolveDefaultProjectName()`
+выбрал другой проект, и **ни слова** об этом. Все прочие тулы в той же сессии пометку выдавали.
+Причина: `GetDiagnosticsTool` и `GetDiagnosticsDetailsTool` — единственные два, что `implements ITool`
+напрямую, а advisory жил приватным методом `AbstractTool`. При этом javadoc самого `AbstractTool:196`
+называет ровно этот случай (`get_diagnostics … project — both without a word`) как мотивацию гарда
+`8ed8c67`. **Фикс, который цитирует случай, его не покрывал.** Закрыто переносом в общий `ToolAdvisory` +
+`AdvisoryToolWrapper` на точке регистрации (`ToolRegistry`), UI-бандл не тронут.
+
+### Расхождение в имени команды DCS
+Тул принимает `create_schema`; артефакт, CHANGELOG и снапшот говорят `create_main_schema`, и сообщение
+валидатора тоже («Операция dcs_create_main_schema валидирована»). Внешнее имя одно, внутренние — другое;
+при упоминании в документах использовать `create_schema`.
+
+## Addendum round 5 — 2026-07-29 вечер (сборка зелёная; живая валидация ВЫПОЛНЕНА — см. Addendum round 6 выше)
 
 ### Параметр макета: направление установлено пробой БЕЗ сборки, фикс однозначен (закрыт, `82d86b5`)
 
