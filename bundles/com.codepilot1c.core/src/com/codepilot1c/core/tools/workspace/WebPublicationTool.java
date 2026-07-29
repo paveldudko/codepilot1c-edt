@@ -138,7 +138,7 @@ public class WebPublicationTool extends AbstractTool {
                 },
                 "probe_user": {
                   "type": "string",
-                  "description": "publish/restart/probe: HTTP Basic login for the check — applies to the inline check of publish/restart as well, not only to action=probe. Without it that inline check goes UNAUTHENTICATED and any 1C HTTP/web service with mandatory auth answers 401, which reads as a broken publication. Requires probe_password."
+                  "description": "publish/restart/probe: HTTP Basic login for the check — applies to the inline check of publish/restart as well, not only to action=probe. Without it the check falls back to the Usr=/Pwd= pair of infobase_connection when that string carries one (the payload then says probe_credentials_source), and goes UNAUTHENTICATED when it does not — any 1C HTTP/web service with mandatory auth then answers 401, which reads as a broken publication. Pass it explicitly when the endpoint authenticates against an account other than the infobase user. Requires probe_password."
                 },
                 "probe_password": {
                   "type": "string",
@@ -383,18 +383,78 @@ public class WebPublicationTool extends AbstractTool {
         int timeoutS = asInt(get(parameters, "timeout_s"), DEFAULT_PROBE_TIMEOUT_S); //$NON-NLS-1$
         String user = asString(get(parameters, "probe_user")); //$NON-NLS-1$
         String password = asString(get(parameters, "probe_password")); //$NON-NLS-1$
+        boolean borrowed = false;
+        if (user == null && password == null) {
+            String[] fromConnection = connectionStringCredentials(
+                    asString(get(parameters, "infobase_connection"))); //$NON-NLS-1$
+            if (fromConnection != null) {
+                user = fromConnection[0];
+                password = fromConnection[1];
+                borrowed = true;
+            }
+        }
         EdtWebPublicationService.ProbeOutcome outcome =
                 publicationService.probe(url, timeoutS * 1000, user, password);
         result.addProperty("probe_url", url); //$NON-NLS-1$
         result.addProperty("probe_status", outcome.statusCode()); //$NON-NLS-1$
         result.addProperty("probe_elapsed_ms", outcome.elapsedMs()); //$NON-NLS-1$
         result.addProperty("probe_authenticated", user != null); //$NON-NLS-1$
+        if (borrowed) {
+            // Owner-approved 2026-07-29, on the condition that a borrowed credential is never silent:
+            // the caller has to be able to see WHOSE login answered the probe, because an infobase user
+            // and the web endpoint's user are not the same account in the general case.
+            result.addProperty("probe_credentials_source", "infobase_connection"); //$NON-NLS-1$ //$NON-NLS-2$
+            result.addProperty("probe_credentials_note", //$NON-NLS-1$
+                    "No probe_user was given, so the check reused the Usr= login from " //$NON-NLS-1$
+                            + "infobase_connection (\"" + user + "\"). Pass probe_user/probe_password " //$NON-NLS-1$ //$NON-NLS-2$
+                            + "explicitly when the endpoint authenticates against a different account."); //$NON-NLS-1$
+        }
         if (outcome.statusCode() >= 400) {
             throw new EdtToolException(EdtToolErrorCode.PROBE_FAILED,
                     "Probe of " + url + " returned HTTP " + outcome.statusCode() //$NON-NLS-1$ //$NON-NLS-2$
                             + (outcome.statusCode() == 401 && user == null
-                                    ? " — endpoint requires auth; pass probe_user/probe_password" : "")); //$NON-NLS-1$ //$NON-NLS-2$
+                                    ? " — endpoint requires auth; pass probe_user/probe_password" : "") //$NON-NLS-1$ //$NON-NLS-2$
+                            + (outcome.statusCode() == 401 && borrowed
+                                    ? " — the borrowed infobase login (\"" + user + "\") was rejected;" //$NON-NLS-1$ //$NON-NLS-2$
+                                            + " the endpoint likely wants a different account, pass" //$NON-NLS-1$
+                                            + " probe_user/probe_password" : "")); //$NON-NLS-1$
         }
+    }
+
+    /**
+     * The {@code Usr=}/{@code Pwd=} pair carried by a 1C connection string, or {@code null} when it
+     * has none. Both must be present: a login without a password is not a usable Basic credential and
+     * silently probing with half of one would report an auth failure as a broken publication.
+     *
+     * <p>Package-private and pure so the parsing is unit-tested without a web server. The password is
+     * returned for the probe call only — it is never written into the payload.</p>
+     */
+    static String[] connectionStringCredentials(String connectionString) {
+        if (connectionString == null || connectionString.isBlank()) {
+            return null;
+        }
+        String user = connectionStringToken(connectionString, "Usr"); //$NON-NLS-1$
+        String password = connectionStringToken(connectionString, "Pwd"); //$NON-NLS-1$
+        if (user == null || user.isEmpty() || password == null) {
+            return null;
+        }
+        return new String[] { user, password };
+    }
+
+    /** One {@code Name="value"} / {@code Name=value} token of a connection string, case-insensitively. */
+    private static String connectionStringToken(String connectionString, String name) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "(?:^|;)\\s*" + name + "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^;\"']*))", //$NON-NLS-1$ //$NON-NLS-2$
+                java.util.regex.Pattern.CASE_INSENSITIVE).matcher(connectionString);
+        if (!m.find()) {
+            return null;
+        }
+        for (int group = 1; group <= 3; group++) {
+            if (m.group(group) != null) {
+                return m.group(group).trim();
+            }
+        }
+        return null;
     }
 
     private static void appendRestart(EdtWebPublicationService.RestartOutcome outcome, JsonObject result) {

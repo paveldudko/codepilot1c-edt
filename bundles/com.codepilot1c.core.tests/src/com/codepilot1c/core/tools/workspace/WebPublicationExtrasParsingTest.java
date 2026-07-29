@@ -127,4 +127,58 @@ public class WebPublicationExtrasParsingTest {
         // {pool:{}} carries nothing → pool null → and with no other extras, the whole thing is null.
         assertNull(WebPublicationTool.parsePublicationExtras(params("pool", params()))); //$NON-NLS-1$
     }
+
+    // -- probe credentials borrowed from infobase_connection (owner-approved 2026-07-29) -----------
+
+    @Test
+    public void probeBorrowsTheConnectionStringLogin() {
+        String[] creds = WebPublicationTool.connectionStringCredentials(
+                "File=\"C:\\db\\demo\";Usr=\"Admin\";Pwd=\"s3cret\";"); //$NON-NLS-1$
+        assertEquals("Admin", creds[0]); //$NON-NLS-1$
+        assertEquals("s3cret", creds[1]); //$NON-NLS-1$
+    }
+
+    @Test
+    public void borrowingIsCaseInsensitiveAndUnquotedFormWorks() {
+        String[] creds = WebPublicationTool.connectionStringCredentials(
+                "Srvr=host;Ref=base;usr=svc_probe;pwd=p1;"); //$NON-NLS-1$
+        assertEquals("svc_probe", creds[0]); //$NON-NLS-1$
+        assertEquals("p1", creds[1]); //$NON-NLS-1$
+    }
+
+    /**
+     * A login with no password is not a usable Basic credential. Probing with half of one would answer
+     * 401 and read as a broken publication — the very misdiagnosis this borrowing exists to prevent.
+     */
+    @Test
+    public void aLoginWithoutAPasswordIsNotBorrowed() {
+        assertNull(WebPublicationTool.connectionStringCredentials(
+                "File=\"C:\\db\\demo\";Usr=\"Admin\";")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void anEmptyPasswordIsStillACredential() {
+        // Pwd="" is a real 1C configuration (a user with a blank password), unlike an absent Pwd.
+        String[] creds = WebPublicationTool.connectionStringCredentials(
+                "File=\"C:\\db\\demo\";Usr=\"Admin\";Pwd=\"\";"); //$NON-NLS-1$
+        assertEquals("Admin", creds[0]); //$NON-NLS-1$
+        assertEquals("", creds[1]); //$NON-NLS-1$
+    }
+
+    @Test
+    public void aConnectionStringWithoutCredentialsBorrowsNothing() {
+        assertNull(WebPublicationTool.connectionStringCredentials("File=\"C:\\db\\demo\";")); //$NON-NLS-1$
+        assertNull(WebPublicationTool.connectionStringCredentials("")); //$NON-NLS-1$
+        assertNull(WebPublicationTool.connectionStringCredentials(null));
+    }
+
+    /**
+     * The token match must be anchored on a separator, or {@code UsrExtra=} would be read as {@code Usr=}
+     * and the probe would authenticate as whatever that unrelated value happens to be.
+     */
+    @Test
+    public void aLongerTokenIsNotMistakenForUsr() {
+        assertNull(WebPublicationTool.connectionStringCredentials(
+                "File=\"C:\\db\\demo\";UsrExtra=\"nope\";Pwd=\"x\";")); //$NON-NLS-1$
+    }
 }
