@@ -7682,18 +7682,7 @@ public class EdtMetadataService {
     }
 
     private boolean isUsableMetadataResourcePath(String resourcePath) {
-        if (resourcePath == null || resourcePath.isBlank()) {
-            return false;
-        }
-        String normalized = resourcePath.replace('\\', '/');
-        if (normalized.startsWith("/")) { //$NON-NLS-1$
-            normalized = normalized.substring(1);
-        }
-        if (!normalized.startsWith("src/")) { //$NON-NLS-1$
-            return false;
-        }
-        String lower = normalized.toLowerCase(Locale.ROOT);
-        return lower.endsWith(".mdo") || lower.endsWith(".form"); //$NON-NLS-1$ //$NON-NLS-2$
+        return MetadataResourcePaths.isUsableMetadataResourcePath(resourcePath);
     }
 
     private String moduleFileName(ModuleArtifactKind kind, String className) {
@@ -8305,15 +8294,33 @@ public class EdtMetadataService {
         LOG.debug("initializeTemplateIfNeeded: type=%s for template %s", templateType, child.getName()); //$NON-NLS-1$
     }
 
+    /**
+     * Resolves the requested template type, defaulting to a spreadsheet document only when
+     * nothing was asked for.
+     *
+     * <p>Both silent behaviours this used to have wrote the wrong artifact and reported success.
+     * (1) The key was read with an exact-case {@code get}, so the camelCase spelling
+     * {@code properties.templateType} was dropped — and asking for {@code dcs} while getting a
+     * spreadsheet is how a caller ended up with a 13-byte {@code Template.mxl} instead of a
+     * schema. (2) An unrecognized value fell through to the spreadsheet default, so a typo was
+     * indistinguishable from not asking. Both now behave like the rest of the property surface:
+     * aliases are accepted, unknown values fail loud and name what is accepted.</p>
+     */
     private TemplateType resolveTemplateType(Map<String, Object> properties) {
         if (properties == null || properties.isEmpty()) {
             return TemplateType.SPREADSHEET_DOCUMENT;
         }
-        Object raw = properties.get("template_type"); //$NON-NLS-1$
+        Object raw = getMapValueIgnoreCase(properties, "template_type"); //$NON-NLS-1$
+        if (raw == null) {
+            raw = getMapValueIgnoreCase(properties, "templateType"); //$NON-NLS-1$
+        }
         if (raw == null) {
             return TemplateType.SPREADSHEET_DOCUMENT;
         }
         String value = String.valueOf(raw).trim().toLowerCase(Locale.ROOT);
+        if (value.isEmpty()) {
+            return TemplateType.SPREADSHEET_DOCUMENT;
+        }
         return switch (value) {
             case "spreadsheet", "spreadsheet_document", "mxl", "табличныйдокумент" -> //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
                     TemplateType.SPREADSHEET_DOCUMENT;
@@ -8333,7 +8340,12 @@ public class EdtMetadataService {
                     TemplateType.DATA_COMPOSITION_SCHEMA;
             case "addin", "add_in", "внешняякомпонента" -> //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                     TemplateType.ADD_IN;
-            default -> TemplateType.SPREADSHEET_DOCUMENT;
+            default -> throw new MetadataOperationException(
+                    MetadataOperationCode.INVALID_PROPERTY_VALUE,
+                    "Unknown template type: " + raw //$NON-NLS-1$
+                            + ". Accepted: spreadsheet, html, text, binary, active_document, " //$NON-NLS-1$
+                            + "geographical_schema, graphical_schema, dcs, addin.", //$NON-NLS-1$
+                    false);
         };
     }
 
@@ -9050,11 +9062,7 @@ public class EdtMetadataService {
             if (owner == null || ownerUri == null) {
                 return null;
             }
-            String resourcePath = toProjectRelativePath(project, ownerUri);
-            if (isUsableMetadataResourcePath(resourcePath) && resourcePath.toLowerCase(Locale.ROOT).endsWith(".mdo")) { //$NON-NLS-1$
-                return resourcePath;
-            }
-            return null;
+            return asOwnerMdoPath(toProjectRelativePath(project, ownerUri));
         }
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
         Configuration configuration = configurationProvider.getConfiguration(project);
@@ -9071,8 +9079,27 @@ public class EdtMetadataService {
             if (owner == null || ownerUri == null) {
                 return null;
             }
-            return toProjectRelativePath(project, ownerUri);
+            return asOwnerMdoPath(toProjectRelativePath(project, ownerUri));
         });
+    }
+
+    /**
+     * Keeps only a path that can actually name an owner {@code .mdo} file in the workspace, and
+     * answers {@code null} for anything else so the caller falls back to its computed path.
+     *
+     * <p>Both branches of {@link #resolveOwnerMdoWorkspacePath} must filter, because
+     * {@link #toProjectRelativePath} does not: a base-configuration top object's URI is not a
+     * platform-resource URI, so it yields the FQN-shaped string {@code Catalog.Catalog} rather
+     * than a file path. Only the external branch used to filter, and the unfiltered value was
+     * non-null — which suppressed the {@code src/<folder>/<name>/<name>.mdo} fallback in
+     * {@link #waitForFormMaterialization} and left it polling a file that can never exist. The
+     * form itself was written correctly, so {@code create_form} raised
+     * {@code FORM_MATERIALIZATION_TIMEOUT} on a fully successful mutation (live 2026-07-29) — a
+     * false negative the caller can only read as "retry or roll back". The wait path is not
+     * optional, so no parameter could route around it.</p>
+     */
+    private String asOwnerMdoPath(String resourcePath) {
+        return MetadataResourcePaths.asOwnerMdoPath(resourcePath);
     }
 
     private MdObject findTopLevel(Configuration configuration, String type, String name) {
@@ -10523,8 +10550,78 @@ public class EdtMetadataService {
         if (containsSubsystem(parent.getSubsystems(), child)) {
             return false;
         }
+        logSubsystemMembershipMiss(parent, child);
         parent.getSubsystems().add(child);
         return true;
+    }
+
+    /**
+     * Describes every entry of {@code parent.subsystems} whenever the membership test found no
+     * match, because the test is known to be unable to see one.
+     *
+     * <p>Live 2026-07-29: re-running the same {@code set.parentSubsystem} duplicated
+     * {@code <subsystems>WaveChild</subsystems>} in the parent's {@code .mdo}, and inspecting the
+     * parent rendered its whole collection as nameless entries ({@code [Subsystem, Subsystem]})
+     * while the child's own {@code parentSubsystem} read back fine. So {@link #sameSubsystem},
+     * which compares {@link Subsystem#getName()}, can never match an existing entry and every
+     * repeat request appends. What those entries actually ARE is not established — an unresolved
+     * EMF proxy, a BM handle, or something resolvable on demand — and each answer implies a
+     * different identity key, so this logs the discriminating facts rather than guessing one.
+     * Remove it once the identity is fixed; until then the duplicate it precedes is expected.</p>
+     */
+    private void logSubsystemMembershipMiss(Subsystem parent, Subsystem child) {
+        List<Subsystem> siblings = parent.getSubsystems();
+        if (siblings.isEmpty()) {
+            return;
+        }
+        StringBuilder entries = new StringBuilder();
+        for (int i = 0; i < siblings.size(); i++) {
+            Subsystem sibling = siblings.get(i);
+            if (i > 0) {
+                entries.append(" | "); //$NON-NLS-1$
+            }
+            entries.append(describeSubsystemEntry(sibling));
+        }
+        LOG.info("Subsystem membership miss: parent=%s child=%s childProxy=%s childBmFqn=%s existing=[%s]", //$NON-NLS-1$
+                parent.getName(),
+                child.getName(),
+                Boolean.valueOf(child.eIsProxy()),
+                safeBmFqn(child),
+                entries);
+    }
+
+    private String describeSubsystemEntry(Subsystem entry) {
+        if (entry == null) {
+            return "null"; //$NON-NLS-1$
+        }
+        String uri;
+        try {
+            uri = String.valueOf(EcoreUtil.getURI(entry));
+        } catch (RuntimeException e) {
+            uri = "uri-failed:" + e.getClass().getSimpleName(); //$NON-NLS-1$
+        }
+        return "class=" + entry.eClass().getName() //$NON-NLS-1$
+                + " impl=" + entry.getClass().getSimpleName() //$NON-NLS-1$
+                + " proxy=" + entry.eIsProxy() //$NON-NLS-1$
+                + " name=" + entry.getName() //$NON-NLS-1$
+                + " bmFqn=" + safeBmFqn(entry) //$NON-NLS-1$
+                + " uri=" + uri; //$NON-NLS-1$
+    }
+
+    /** The BM FQN of a subsystem when it is a live BM object, else a reason it is not available. */
+    private String safeBmFqn(Subsystem subsystem) {
+        if (!(subsystem instanceof IBmObject bmObject)) {
+            return "not-bm"; //$NON-NLS-1$
+        }
+        try {
+            if (bmObject.bmIsTransient()) {
+                return "transient"; //$NON-NLS-1$
+            }
+            String fqn = bmObject.bmGetFqn();
+            return fqn != null ? fqn : "null-fqn"; //$NON-NLS-1$
+        } catch (RuntimeException e) {
+            return "fqn-failed:" + e.getClass().getSimpleName(); //$NON-NLS-1$
+        }
     }
 
     /** Removes {@code child} from {@code parent.subsystems}; returns whether the list changed. */
@@ -11929,10 +12026,19 @@ public class EdtMetadataService {
                     MetadataOperationCode.INVALID_PROPERTY_VALUE,
                     "Type value cannot be null", false); //$NON-NLS-1$
         }
-        InlineTypeSpec inline = parseInlineTypeSpec(value);
         Map<String, Object> root = asMap(value);
         Object rootType = getMapValueIgnoreCase(root, "type"); //$NON-NLS-1$
         Object typeCarrier = rootType != null ? rootType : value;
+        InlineTypeSpec inline = parseInlineTypeSpec(value);
+        if (inline == null) {
+            // The inline qualifier may sit one level in — {type:"String(100)"} — and it always
+            // does for a composite request, because the splitter turns every element of
+            // ["String(100)","Boolean"] into its own {type:<element>} carrier. Parsing only the
+            // outer value meant the length was read for a bare "String(100)" and silently
+            // dropped for both map shapes, which is why a composite request needed a separate
+            // length sibling to keep its qualifier.
+            inline = parseInlineTypeSpec(typeCarrier);
+        }
         String typeQuery = normalizeTypeLookupQuery(typeCarrier);
         if ((typeQuery == null || typeQuery.isBlank()) && inline != null) {
             typeQuery = inline.typeQuery();

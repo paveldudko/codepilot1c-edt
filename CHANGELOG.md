@@ -9,6 +9,49 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Round-3 live probes (2026-07-29) — one round-2 claim withdrawn, wave 3 started
+
+Two calls on the sandbox settled the "composite types are still collapsed on the CREATE path" claim from the
+round-2 section below: it is **withdrawn**. `add_metadata_child` with `properties.type:["String","Boolean"]`
+writes two `<types>` on the create path exactly as it does through `update_metadata`; the failing round-2
+repro had passed `type` as a **top-level** parameter instead, and the `String(150)` it produced was the
+default-type branch plus the string-length fallback, not a lost list. Nothing needs fixing between
+`normalizeTypeSpecList` and `setAttributeType` (commit `04e34e6`).
+
+What the probe did expose is worse: `edt_validate_request` accepted the payload carrying an unknown
+top-level key, **dropped the key**, answered `valid:true` and issued a token — so a mistyped parameter
+wrote wrong metadata to disk and reported success. Third live instance of the swallowed-parameter class
+(after `scan_metadata_index kinds` and `get_diagnostics project`), and the first that mutates. Fix in
+progress.
+
+**F1 non-idempotency reproduced** on this build (a repeated `set.parentSubsystem` duplicates the parent's
+entry) and its root confirmed by observation, not inference: every entry of the parent's `subsystems`
+collection reads back nameless, so the name-based identity test can never match. What those entries are is
+not yet established, so this build ships **diagnostics** on that path and the identity fix follows from
+their output rather than from a guess.
+
+* **`create_form` no longer fails a fully successful materialization.** `resolveOwnerMdoWorkspacePath` had
+  two branches and only the external one filtered its result; the base-configuration branch returned the raw
+  project-relative conversion, which for a top object is the FQN-shaped string `Catalog.Catalog`. Non-null
+  suppressed the correct `src/<folder>/<name>/<name>.mdo` fallback, so the wait polled a file that can never
+  exist and raised `FORM_MATERIALIZATION_TIMEOUT` **after** the form was written correctly — a false negative
+  the caller can only read as "retry or roll back", and the wait path is mandatory so no parameter routed
+  around it. The filter now lives in one place (`MetadataResourcePaths.asOwnerMdoPath`) used by both
+  branches, so the asymmetry cannot come back. Covered by `MetadataResourcePathsTest` (8 cases, behavioural).
+* **`template_type` stopped being silently ignored or silently downgraded.** The key was read case-exactly,
+  so `properties.templateType` was dropped, and an unrecognized value fell through to the spreadsheet
+  default — which is how asking for `dcs` produced a 13-byte `Template.mxl`. The key is now alias-tolerant
+  and an unknown value fails loud naming every accepted value.
+* **Inline qualifiers survive a map carrier.** `parseInlineTypeSpec` only looked at the outer value, so
+  `{type:"String(100)"}` lost its length. This bit composite requests hardest: the splitter turns every
+  element of `["String(100)","Boolean"]` into its own `{type:<element>}` carrier, so each element's inline
+  qualifier was dropped and a separate `length` sibling was needed to keep it. The inline spec is now parsed
+  from the type carrier as well.
+
+Latent and **not** fixed, kept as a separate issue: EDT's own `TEMPLATE_EXTENSIONS` maps a spreadsheet
+template to `mxlx` while `ensureTemplateArtifact` writes `.mxl`. The sandbox contains no spreadsheet
+templates at all, so there is no ground truth here to settle it against — parked rather than guessed.
+
 ### Round-2 live validation of build `0.1.7.20260729-0028` — two entries above are overstated
 
 Validated on a real EDT after installing the wave. **Confirmed working:** `ExchangePlan.content` in both
