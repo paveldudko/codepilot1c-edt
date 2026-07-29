@@ -9,6 +9,33 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Round-11 (2026-07-29) — `update_infobase` stops calling a deferred schema an update (BF-12843)
+
+* **CONTRACT CHANGE — `dynamic_only:true` now implies `updated:false`, and `schema_applied` is always
+  present** (`c8cc713`). A non-exclusive apply commits the stored configuration and defers the physical
+  restructure; the payload used to answer `updated:true` beside `dynamic_only:true`, so the one flag every
+  caller gates on said "done" for an infobase whose schema was not live. Measured live by the orchestrator on
+  a 1.51 GB file infobase, and caught only because a human read the whole payload. The apply outcome now also
+  carries `status:"partial"`. The CALL stays successful: a dynamic apply does land BSL code, so for a
+  code-only update it is a complete result and an error channel would be a lie in the other direction — the
+  hard failure stays bound to EDT's own verdict. `schema_applied` is on every outcome of the tool including
+  errors and the async acceptance, so no caller has to read an absent field as a value; the EQUAL-skip is the
+  case where it legitimately disagrees with `updated` (nothing applied, schema live).
+* **A blocking status wait can now outlast the update it observes** (`c8cc713`). `update_infobase` permits
+  `timeout_s` up to 1800s while `update_infobase_status(wait_for_completion=true)` capped its own wait at 600s
+  under a 660s transport cap — so a healthy 13-minute update made the poller abort first and the caller report
+  a false `failed`, a symptom indistinguishable from the client-side abort that `timeout_s` was added to fix.
+  The tool's ceiling is now 1800s and its per-tool transport cap 1860s (`connect_infobase_status` keeps 660s).
+  An expired wait already returned success with `timed_out:true`; it now also says which one expired and that
+  this is not a verdict.
+* **An empty Designer scan says so instead of omitting the key** (`c8cc713`). `PROCESS_TIMEOUT` surfaces the
+  still-running Designer PIDs, but when the scan found none it dropped the field entirely — indistinguishable
+  from a build predating the feature, which is how a retest reported the PID as "still absent from the payload"
+  for a build that had carried it since `3ca38df`. The empty result is now explicit
+  (`designer_scan: no_designer_bound_to_this_infobase`) and the message admits that a process whose command
+  line cannot be read cannot be attributed to an infobase at all. Note for future detail fields: the error
+  renderer is an allowlist — a detail key with no branch there never reaches the payload.
+
 ### Round-10 (2026-07-29) — the cascaded subtree also learns who its new owner is
 
 * **A cascaded descendant's up-link now follows its owner too** (`fcc6c7b`). Round-9's cascade re-keyed every
