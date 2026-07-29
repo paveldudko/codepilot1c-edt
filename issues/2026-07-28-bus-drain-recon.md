@@ -664,6 +664,77 @@ platform-resource, поэтому `toProjectRelativePath` (`:8081`, без фи�
   отдельную секцию), но выставляет эти маркеры **другой** плагин (commit-review), а в песочном EDT он не
   установлен — исключать нечего. Проверка требует стенда с обоими плагинами.
 
+## Addendum round 9 — каскад по потомкам закрыт, up-link вскрыт (билды `1142` → `1206`)
+
+### Что было измерено на билде `1142` (проба ДО фикса)
+
+Гипотеза round 8 («`updateTopObjectFqn` перерегистрирует только тот объект, которому его дали») —
+**подтверждена живьём**, не только по коду. `Subsystem.WaveR8P` с ребёнком `WaveR8C`, переезд `WaveR8P`
+под `WaveParent`:
+
+* `WaveR8P.mdo` уехал верно → `src/Subsystems/WaveParent/Subsystems/WaveR8P/WaveR8P.mdo`;
+* `WaveR8C.mdo` **остался** в освобождаемом каталоге `src/Subsystems/WaveR8P/Subsystems/WaveR8C/`;
+* `WaveR8P.subsystems` выродился в **безымянную заглушку** `[Subsystem]` (до переезда было
+  `[Subsystem.WaveR8P.Subsystem.WaveR8C]`);
+* `Subsystem.WaveR8C` → `exists:false` в `edt_metadata_details` **и** `METADATA_NOT_FOUND` в
+  `update_metadata`, т.е. объект неадресуем и **тулом не лечится** — ровно класс `747d617`.
+* Уборка `998ad72` сработала правильно и данные не пострадали: каталог с посторонними записями не снесён,
+  удалён только дескриптор (`Removed the storage Subsystem.WaveR8P vacated: …/WaveR8P.mdo`).
+
+### Фикс (`00e8d16`) и его живая проверка на билде `1206`
+
+Каскад: FQN всего поддерева читаются **до** переезда владельца, перерегистрация — после. Порядок и есть
+фикс: down-link'и `subsystems` — это БАРЕ-имена, резолвящиеся против FQN владельца, поэтому план,
+прочитанный после переезда, пуст и каскад молча не сделает ничего. Содержимое плана решает EMF-свободный
+`SubsystemTree.descendantRelocations` (тесты по результату).
+
+Проверено на **свежих** объектах и на ТРИ уровня: `WaveR9P > WaveR9C > WaveR9G`, переезд `WaveR9P` под
+`WaveParent` →
+
+* три `.mdo` на вложенных путях: `…/WaveParent/Subsystems/WaveR9P/{WaveR9P.mdo,
+  Subsystems/WaveR9C/{WaveR9C.mdo, Subsystems/WaveR9G/WaveR9G.mdo}}`;
+* все три адресуемы плоским FQN (`exists:true`);
+* down-link'и — полные цепочки: `WaveR9P.subsystems = [Subsystem.WaveParent.Subsystem.WaveR9P.Subsystem.WaveR9C]`,
+  `WaveR9C.subsystems = […Subsystem.WaveR9G]`. Заглушек нет.
+* старый каталог `src/Subsystems/WaveR9P/` `.mdo`-файлов не содержит.
+
+### ВСКРЫТО этим же прогоном — up-link потомка остаётся прежним (ГЛАВНОЕ ОТКРЫТОЕ)
+
+`parentSubsystem` у каскадных потомков хранит **старый** FQN родителя, и на диске это видно точно:
+
+* `WaveR9C.mdo` → `<parentSubsystem>Subsystem.WaveR9P</parentSubsystem>` (родитель теперь
+  `Subsystem.WaveParent.Subsystem.WaveR9P`);
+* `WaveR9G.mdo` → `<parentSubsystem>Subsystem.WaveR9P.Subsystem.WaveR9C</parentSubsystem>` (старая цепочка).
+
+EDT рендерит это как безымянную заглушку `parentSubsystem | Subsystem`. Побочно установлено: `parentSubsystem`
+сериализуется **storage-FQN родителя**, а не плоским именем — плоским он выглядит только когда родитель
+корневой. Контрактный тест `SubsystemNestingSymmetryContractTest` (шапка класса) называет его «FLAT FQN» —
+это верно лишь для корневого родителя.
+
+**Тулом не лечится, и это измерено, а не выведено.** Повторный `update_metadata Subsystem.WaveR9G
+set.parentSubsystem = Subsystem.WaveR9C` вернул **SUCCESS**, а файл не изменился и заглушка осталась.
+Причина в коде: `reparentSubsystem` читает `child.getParentSubsystem()` — висячий прокси — и
+`sameSubsystem(oldParent, newParent)` через `SubsystemIdentity.same` отвечает «тот же», поэтому
+`setParentSubsystem` пропускается. То есть гард идемпотентности принимает висячий прокси за живого
+родителя. Ещё один случай канала «success = вердикт есть», где успех означает «ничего не сделано»
+(ср. `yaxunit_qa_channel_contract`).
+
+**Направление фикса (не реализовано):** после перерегистрации потомка переставить его `parentSubsystem` на
+живой объект родителя — `Relocation` должен нести узел-родителя (для первого уровня это сама переезжающая
+подсистема), тогда `descendant.setParentSubsystem(parentNode)` заменит висячий прокси и сериализатор
+напишет новый FQN. Отдельно стоит починить `sameSubsystem`, чтобы висячий прокси НЕ считался равным живому
+объекту — иначе ручной ремонт так и останется молчаливым no-op'ом. Порча половинчатая (родительская сторона
+верна), объект адресуем, поэтому это НЕ потеря объекта.
+
+### Тестовый мусор этого раунда
+
+* `Subsystem.WaveR8P` / `WaveR8C` — **эталон ПОРЧИ до фикса**: `WaveR8C` неадресуем и не лечится
+  (`WaveR8C.mdo` лежит в `src/Subsystems/WaveR8P/Subsystems/WaveR8C/`, `WaveR8P` уехал под `WaveParent`).
+  `WaveR8P` дополнительно был успешно обновлён по ПАРНОЙ цепочке — доказательство, что она резолвится.
+* `Subsystem.WaveR9P` / `WaveR9C` / `WaveR9G` под `WaveParent` — **эталон работающего каскада** с
+  оставшимся дефектом up-link'а. `WaveR9C` не трогать: это чистый слепок «после каскада». На `WaveR9G`
+  проверялся молчаливый no-op ремонта.
+
 ## Addendum round 8 — остаток round 7 закрыт живьём (билд `0.1.7.20260729-1142`)
 
 Уборка освобождённого каталога сделана (`998ad72`) и **проверена на свежем объекте**: создать

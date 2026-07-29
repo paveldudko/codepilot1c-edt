@@ -14,8 +14,14 @@ import org.junit.Test;
  * <p>Ground truth from an EDT-authored configuration (live 2026-07-28, 132 {@code .mdo}: 98 with
  * {@code parentSubsystem}, 22 with {@code subsystems}): EDT writes nesting on BOTH sides — the
  * parent lists {@code <subsystems>WaveChild</subsystems>} by BARE NAME, the child carries
- * {@code <parentSubsystem>Subsystem.WaveParent</parentSubsystem>} as a FLAT FQN. They are two
- * independent non-containment references with no {@code EOpposite}.</p>
+ * {@code <parentSubsystem>Subsystem.WaveParent</parentSubsystem>}. They are two independent
+ * non-containment references with no {@code EOpposite}.</p>
+ *
+ * <p>That {@code parentSubsystem} value is the parent's STORAGE FQN, not a flat name — it only looks
+ * flat while the parent sits at the root. Measured live 2026-07-29: a grandchild under a nested parent
+ * carries {@code <parentSubsystem>Subsystem.WaveR9P.Subsystem.WaveR9C</parentSubsystem>}. Which is why
+ * moving a subsystem leaves its descendants' up-links pointing at an FQN that no longer exists — open,
+ * diagnosed in {@code issues/2026-07-28-bus-drain-recon.md}.</p>
  *
  * <p>What was broken: {@code update_metadata set.parentSubsystem} wrote only the child side, so
  * {@code WaveParent.subsystems} stayed empty — the nesting was HALF-LINKED and the parent could not

@@ -9,6 +9,47 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Round-9 (2026-07-29) — a move now takes the whole subtree, and a refuted rule stops being repeated
+
+* **A moved subsystem re-registers every subsystem below it** (`00e8d16`). `updateTopObjectFqn` re-keys the ONE
+  object it is handed, and a subsystem's children are separate top objects with chains of their own — so a move
+  left every descendant registered under a chain whose root no longer existed. Measured live on build
+  `0.1.7.20260729-1142`: `WaveR8P` holding `WaveR8C` moved under `WaveParent`, and afterwards
+  `WaveR8P.subsystems` read back as a NAMELESS stub, `WaveR8C.mdo` sat inside the vacated directory, and
+  `Subsystem.WaveR8C` answered *Object not found* to `edt_metadata_details` **and** to `update_metadata` —
+  unaddressable, and unrepairable through any tool. Same corruption class as the half-linked move closed by
+  `747d617`, one level down.
+  The whole subtree's FQNs are now read **before** the owner moves and each descendant re-registered against the
+  owner's new chain afterwards. That order is the fix, not a detail: `subsystems` down-links are bare names
+  resolved against the owner's FQN, so a plan read after the move comes back empty and the cascade would
+  silently do nothing. What the plan contains is decided by the EMF-free
+  `SubsystemTree.descendantRelocations` and tested by result; each descendant's new FQN reaches the export and
+  its vacated path the cleanup. A taken target slot aborts the move rather than leaving the tree half
+  re-registered; a descendant that cannot follow (no readable name, not a BM object) keeps its old registration
+  and is logged — which is now the reason Round-8's "other entries" guard exists, rather than "the move does not
+  re-register children" as that entry put it.
+  **Live-validated** on build `0.1.7.20260729-1206`, three levels deep on fresh objects: `WaveR9P > WaveR9C >
+  WaveR9G` moved under `WaveParent`, all three addressable, all three `.mdo` at the nested paths, both
+  down-links full chains, the old directory gone.
+* **Known remaining, measured on that same run:** a cascaded descendant's own `<parentSubsystem>` still holds its
+  parent's OLD FQN, so EDT renders the up-link as a nameless stub. Re-issuing `set.parentSubsystem` does **not**
+  repair it — `reparentSubsystem` reads the dangling proxy as the current parent, `sameSubsystem` answers
+  "unchanged", and the write is skipped while the tool reports success. The parent-side down-link is correct, so
+  this is a half-linked state rather than a lost object. Diagnosis in `issues/2026-07-28-bus-drain-recon.md`.
+* **Eight places stopped claiming a dotted subsystem FQN resolves nowhere** (`d914e10`, `00e8d16`). The sentence
+  *"Subsystem FQNs are FLAT at any nesting depth … no dotted form built from the parent resolves, so never pass
+  one"* was false in both halves. `Subsystem.<Parent>.Subsystem.<Name>` **is** the FQN a nested subsystem is
+  registered under and the resolver takes it (`findNestedSubsystemAlias`); live-confirmed 2026-07-29 —
+  `update_metadata` accepted `Subsystem.WaveParent.Subsystem.WaveR8P` and answered with it. The flat form is a
+  name-based alias the forest walk supplies, refused as ambiguous when the name is not unique. Corrected in
+  `update_metadata.target_fqn`, `edt_metadata_details.objectFqns`, `SubsystemTree.nestedFqnRejectionMessage`
+  (which had been contradicting `describeAmbiguity` in the same class), `EdtMetadataInspectorService` (where
+  flat-only is right for *that* tool but was stated as a property of the model), two `EdtMetadataService`
+  javadocs — one of which invented a mechanism — and `TopLevelCollections`. Dropped outright from
+  `add_metadata_child.parent_fqn`: none of its nine child kinds hangs off a Subsystem, so it was dead advice
+  billed on every tool listing. `SubsystemFqnRejectionMessageTest` had been **asserting** the falsehood; it now
+  pins that neither the original marker/name-pair dead end nor the over-corrected flat-only claim comes back.
+
 ### Round-8 (2026-07-29) — the relocation now takes its old file with it
 
 * **A relocated subsystem no longer leaves a duplicate definition behind** (`998ad72`). Moving a subsystem
