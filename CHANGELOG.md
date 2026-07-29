@@ -11,6 +11,16 @@ commit hash in parentheses where useful.
 
 ### Round-11 (2026-07-29) — `update_infobase` stops calling a deferred schema an update (BF-12843)
 
+* **The inline probe may borrow the connection string's login, and says when it did** (`1345a04`). Owner-approved
+  2026-07-29 on the condition that a borrowed credential is never silent. `web_publication` ran its inline check
+  unauthenticated whenever `probe_user` was absent, so a 1C HTTP/web service with mandatory auth answered 401 and
+  read as a broken publication — even though the caller had already handed the tool an `infobase_connection`
+  carrying `Usr=`/`Pwd=`. The check now falls back to that pair and reports `probe_credentials_source` plus which
+  login answered; a 401 on a borrowed credential says so explicitly, because an infobase user and the endpoint's
+  user need not be the same account. Both halves are required — a login without a password is not a usable Basic
+  credential, and probing with half of one reproduces the same misdiagnosis. The token match is separator-anchored
+  so `UsrExtra=` is not read as `Usr=`.
+
 * **CONTRACT CHANGE — `dynamic_only:true` now implies `updated:false`, and `schema_applied` is always
   present** (`c8cc713`). A non-exclusive apply commits the stored configuration and defers the physical
   restructure; the payload used to answer `updated:true` beside `dynamic_only:true`, so the one flag every
