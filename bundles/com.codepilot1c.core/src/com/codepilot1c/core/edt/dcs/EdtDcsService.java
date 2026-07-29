@@ -296,7 +296,9 @@ public class EdtDcsService {
         SchemaResolution existing = resolveSchema(owner);
         Template ownerDcsTemplate = findDcsTemplate(templates.templates(), existing.schema());
         // Whether the SAME-NAMED template's schema reference really resolves. A DCS-typed template
-        // whose reference resolves to nothing is the reported broken state, not an idempotent hit.
+        // whose reference resolves to nothing is the reported broken state, not an idempotent hit —
+        // and a dangling reference reads as ABSENT rather than as a proxy, confirmed live 2026-07-29
+        // on a template whose Template.dcs was never written.
         boolean sameNameSchemaBound = extractSchema(sameName) != null;
         DcsSchemaSupport.MutationPlan plan = DcsSchemaSupport.planMutation(
                 slot,
@@ -304,8 +306,11 @@ public class EdtDcsService {
                 existing.schema() != null,
                 ownerDcsTemplate != null,
                 request.shouldForceReplace());
-        LOG.info("[dcs][%s] name-slot=%s plan=%s sameNameSchemaBound=%s existingSchema=%s source=%s templates=%d", //$NON-NLS-1$
-                opId, slot, plan, Boolean.valueOf(sameNameSchemaBound),
+        // plan= stays: it is the decision taken, which is what support has to read back. The
+        // sameNameSchemaBound= probe that rode along for one diagnostic round is gone — the question
+        // it split is settled, and plan already distinguishes the two answers.
+        LOG.info("[dcs][%s] name-slot=%s plan=%s existingSchema=%s source=%s templates=%d", //$NON-NLS-1$
+                opId, slot, plan,
                 Boolean.valueOf(existing.schema() != null), existing.source(),
                 Integer.valueOf(templates.templates().size()));
 
