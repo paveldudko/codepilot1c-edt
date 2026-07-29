@@ -44,11 +44,11 @@ public class UpdateInfobaseStatusTool extends AbstractTool {
                 },
                 "wait_for_completion": {
                   "type": "boolean",
-                  "description": "Block server-side until the job reaches a terminal state (or timeout_seconds elapses), then return the final result — instead of returning the current state immediately. PREFER this over a client-side poll loop: it makes one call and never times out the transport (the host allows this tool up to 660s). Default false returns the last-known state immediately (cheap status read)."
+                  "description": "Block server-side until the job reaches a terminal state (or timeout_seconds elapses), then return the final result — instead of returning the current state immediately. PREFER this over a client-side poll loop: it makes one call and never times out the transport (the host allows this tool up to 1860s, above the 1800s update_infobase itself permits). Default false returns the last-known state immediately (cheap status read)."
                 },
                 "timeout_seconds": {
                   "type": "integer",
-                  "description": "Max seconds to wait when wait_for_completion=true (default 120, clamped to [1, 600]). Set it to match the expected op duration (e.g. 600 for a full config update) so the call returns the final result in one shot; on expiry the still-running state is returned with timed_out=true (re-call to keep waiting)."
+                  "description": "Max seconds to wait when wait_for_completion=true (default 120, clamped to [1, 1800] — the same ceiling update_infobase allows for timeout_s, so one blocking call can cover the longest update the tool permits). Set it to match the expected op duration (e.g. 1200 for the first full-schema update of a multi-GB file infobase) so the call returns the final result in one shot; on expiry the still-running state is returned with timed_out=true, which means KEEP WAITING (re-call), not failed."
                 }
               },
               "required": ["job_id"]
@@ -57,7 +57,13 @@ public class UpdateInfobaseStatusTool extends AbstractTool {
 
     private static final long POLL_INTERVAL_MS = 500L;
     private static final int DEFAULT_TIMEOUT_SECONDS = 120;
-    private static final int MAX_TIMEOUT_SECONDS = 600;
+    /**
+     * Matches the {@code timeout_s} ceiling of {@code update_infobase} itself. It used to be 600, below
+     * even the 1200s a real first full-schema update needs, so a blocking wait returned before the job
+     * it was observing and a caller that read that as the verdict reported a FALSE {@code failed} on a
+     * healthy update (feedback 2026-07-29 §4). A poller must be able to outwait what it polls.
+     */
+    private static final int MAX_TIMEOUT_SECONDS = 1800;
 
     private final BackgroundJobRegistry registry;
 
@@ -119,10 +125,20 @@ public class UpdateInfobaseStatusTool extends AbstractTool {
                 ToolResult result = renderLookup(jobId);
                 if (present && !terminal) {
                     // Re-render with a timed_out marker so the caller knows the wait expired.
-                    JsonObject payload = render(registry.lookupJob(jobId).getStatus());
+                    BackgroundJobRegistry.JobStatus current = registry.lookupJob(jobId).getStatus();
+                    JsonObject payload = render(current);
                     payload.addProperty("timed_out", true); //$NON-NLS-1$
                     payload.addProperty("waited_ms", //$NON-NLS-1$
                             (System.nanoTime() - startedAt) / 1_000_000L);
+                    // Say which one expired. A caller that reads an expired WAIT as the job's verdict
+                    // reports a false "failed" on a healthy long update — the same symptom as the
+                    // client-side abort timeout_s was added to fix, so it gets misdiagnosed as that
+                    // (feedback 2026-07-29 §4).
+                    payload.addProperty("message", //$NON-NLS-1$
+                            "The WAIT expired, not the job — it is still " + current.getState() //$NON-NLS-1$
+                                    + ". This is not a verdict: re-call to keep waiting, or poll with" //$NON-NLS-1$
+                                    + " wait_for_completion=false. Raise timeout_seconds (max 1800) to" //$NON-NLS-1$
+                                    + " cover the update's own timeout_s in a single call."); //$NON-NLS-1$
                     return ToolResult.success(pretty(payload), ToolResult.ToolResultType.CODE);
                 }
                 return result;

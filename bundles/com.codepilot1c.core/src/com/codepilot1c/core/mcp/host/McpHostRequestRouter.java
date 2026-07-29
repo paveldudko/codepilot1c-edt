@@ -169,8 +169,14 @@ public class McpHostRequestRouter {
                 timeoutSeconds = 3600;
             } else if ("connect_infobase".equals(toolName)) { //$NON-NLS-1$
                 timeoutSeconds = 300;
-            } else if ("update_infobase_status".equals(toolName) //$NON-NLS-1$
-                    || "connect_infobase_status".equals(toolName)) { //$NON-NLS-1$
+            } else if ("update_infobase_status".equals(toolName)) { //$NON-NLS-1$
+                // This poller has to be able to outwait the job it observes: update_infobase permits
+                // timeout_s up to 1800s, and a cap below that made a blocking wait report a FALSE
+                // "failed" for a perfectly healthy long update — a symptom indistinguishable from the
+                // client-side abort that the timeout_s parameter was added to fix (feedback
+                // 2026-07-29 §4). Kept 60s above the tool's own max, as for the pollers below.
+                timeoutSeconds = 1860;
+            } else if ("connect_infobase_status".equals(toolName)) { //$NON-NLS-1$
                 // The async-job pollers block server-side up to their own timeout_seconds (max 600s)
                 // when wait_for_completion=true. The client cap MUST exceed that, otherwise the
                 // server-side wait races the 120s client timeout and ~1 in 4 polls failed outright

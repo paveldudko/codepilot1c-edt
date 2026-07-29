@@ -164,7 +164,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
     public String getDescription() {
         return "Updates the infobase linked to an EDT project via the EDT runtime. " //$NON-NLS-1$
                 + "Platform version: EDT pin (runtime_version pins persistently) > auto " //$NON-NLS-1$
-                + "(NEWEST installed, including pre-releases) — check runtime_used in dry_run."; //$NON-NLS-1$
+                + "(NEWEST installed, including pre-releases) — check runtime_used in dry_run. " //$NON-NLS-1$
+                + "Gate on schema_applied, not on status: a non-exclusive apply commits code but " //$NON-NLS-1$
+                + "defers the schema and answers status=partial, updated=false."; //$NON-NLS-1$
     }
 
     @Override
@@ -239,6 +241,9 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 accepted.addProperty("job_id", jobId); //$NON-NLS-1$
                 accepted.addProperty("state", BackgroundJobRegistry.JobState.RUNNING.name());
                 accepted.addProperty("updated", false); //$NON-NLS-1$
+                // Not a verdict — the job has only been accepted. Present so that "no schema_applied
+                // field" never has to be read as "an old build", which is what made ask #2 ambiguous.
+                accepted.addProperty("schema_applied", false); //$NON-NLS-1$
                 accepted.add("details", new JsonObject()); //$NON-NLS-1$
                 return CompletableFuture.completedFuture(
                         ToolResult.success(pretty(accepted), ToolResult.ToolResultType.CODE));
@@ -247,6 +252,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 LOG.warn("[%s] edt_update_infobase async rejected: %s", opId, e.getMessage()); //$NON-NLS-1$
                 JsonObject rejected = basePayload(opId, "error", projectName, false, workspaceRoot); //$NON-NLS-1$
                 rejected.addProperty("updated", false); //$NON-NLS-1$
+                rejected.addProperty("schema_applied", false); //$NON-NLS-1$
                 rejected.addProperty("error", "queue_saturated"); //$NON-NLS-1$ //$NON-NLS-2$
                 rejected.addProperty("message", "Background job queue full; retry later"); //$NON-NLS-1$ //$NON-NLS-2$
                 rejected.add("details", new JsonObject()); //$NON-NLS-1$
@@ -309,6 +315,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 applyRuntimeControls(result, projectName, runtimeVersion, dryRun);
                 if (dryRun) {
                     result.addProperty("updated", false); //$NON-NLS-1$
+                    result.addProperty("schema_applied", false); //$NON-NLS-1$
                     return ToolResult.success(pretty(result), ToolResult.ToolResultType.CODE);
                 }
                 // Lease first: on live pools a web server is ALWAYS up, so the webserver guard
@@ -318,7 +325,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 killPhantomsIfRequested(result, killAgentMode, ibPath);
                 EdtRuntimeService.UpdateInfobaseStatus status =
                         runUpdateWithGuiProgress(projectName, keepConnected, timeoutMs, ibPath);
-                result.addProperty("updated", status.updated()); //$NON-NLS-1$
+                fillAppliedOutcome(result, status.updated(), status.dynamicOnly());
                 if (skipIfCurrent) {
                     annotateEqualityProceeding(result, equalityState);
                 }
@@ -564,7 +571,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             EdtRuntimeService.UpdateInfobaseStatus status =
                     runUpdateWithGuiProgress(projectName, keepConnected, timeoutMs, ibPath);
             boolean updated = status.updated();
-            result.addProperty("updated", updated); //$NON-NLS-1$
+            fillAppliedOutcome(result, updated, status.dynamicOnly());
             if (skipIfCurrent) {
                 annotateEqualityProceeding(result, equalityState);
             }
@@ -791,6 +798,12 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                     .append("still hold the infobase file lock and may still be doing real work. If the ") //$NON-NLS-1$
                     .append("update is genuinely wedged (NOT still progressing), retry with ") //$NON-NLS-1$
                     .append("kill_agent_mode=true to terminate them right before the lock is taken. "); //$NON-NLS-1$
+        } else {
+            sb.append("The scan found NO still-running Designer bound to this infobase, so there is ") //$NON-NLS-1$
+                    .append("probably nothing to sweep before a retry — but note that on Windows a ") //$NON-NLS-1$
+                    .append("process whose command line cannot be read cannot be attributed to an ") //$NON-NLS-1$
+                    .append("infobase at all, so one manual Get-CimInstance Win32_Process check is ") //$NON-NLS-1$
+                    .append("still worth doing before ruling a phantom out. "); //$NON-NLS-1$
         }
         sb.append("Stop any real holder (web_publication action=restart, or close the client) or raise ") //$NON-NLS-1$
                 .append("timeout_s, then retry."); //$NON-NLS-1$
@@ -809,6 +822,12 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         details.put("update_timeout_s", Long.toString(timeoutSeconds)); //$NON-NLS-1$
         if (designerPids != null && !designerPids.isEmpty()) {
             details.put("designer_pids_still_holding", joinPids(designerPids)); //$NON-NLS-1$
+        } else {
+            // An OMITTED key was the only signal for "found nothing", and it reads exactly like a build
+            // that never had the feature. That ambiguity is how a 2026-07-29 retest concluded the PID is
+            // "still absent from the payload" for a build that had been surfacing it since 3ca38df. Say
+            // the empty result out loud so the next report is decidable either way.
+            details.put("designer_scan", "no_designer_bound_to_this_infobase"); //$NON-NLS-1$ //$NON-NLS-2$
         }
         return details;
     }
@@ -834,6 +853,10 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         result.addProperty("status", "skipped"); //$NON-NLS-1$ //$NON-NLS-2$
         result.addProperty("skipped", true); //$NON-NLS-1$
         result.addProperty("updated", false); //$NON-NLS-1$
+        // Nothing was applied, yet the schema IS live: the infobase already equals the project. That is
+        // the one outcome where the two fields legitimately disagree, and why schema_applied cannot be
+        // read off updated — see fillAppliedOutcome.
+        result.addProperty("schema_applied", true); //$NON-NLS-1$
         result.addProperty("equality_state", EQUALITY_EQUAL); //$NON-NLS-1$
         result.addProperty("message", //$NON-NLS-1$
                 "Infobase already equals the project configuration (getEqualityState=EQUAL); " //$NON-NLS-1$
@@ -895,6 +918,38 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                             + "re-run the same update expecting convergence — it will not converge. Apply " //$NON-NLS-1$
                             + "one EXCLUSIVE update with no other client/Designer session holding the " //$NON-NLS-1$
                             + "infobase, or treat this as advisory for a change with no schema impact."); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Writes the pair a caller gates on — {@code updated} and {@code schema_applied} — and downgrades
+     * {@code status} to {@code partial} when the apply was dynamic.
+     *
+     * <p>Owner-ruled contract change 2026-07-29 (feedback
+     * {@code 2026-07-29-update-infobase-timeout-s-accepted-retest-and-dynamic-only-masking.md} §3).
+     * A run that could not take the exclusive lock used to answer {@code updated:true} NEXT TO
+     * {@code dynamic_only:true}: the top-level success flag said "done" while the restructure had not
+     * happened. Measured live on a 1.51 GB file infobase — an agent gating on {@code updated:true},
+     * the documented happy path, accepted an infobase whose schema was not live, and it was caught
+     * only because a human read the whole payload.</p>
+     *
+     * <p>On an apply the two fields coincide — {@code updated} is the legacy name kept truthful for
+     * existing callers, {@code schema_applied} the self-describing one that answers "is the schema live"
+     * without inferring it from the absence of {@code dynamic_only}. They are not redundant: an
+     * EQUAL-skip applies nothing ({@code updated:false}) while the schema IS live
+     * ({@code schema_applied:true}), which is the case a caller most needs to tell from a dynamic apply.
+     * The field is present on every outcome of this tool, so no caller has to read absence as a value.</p>
+     *
+     * <p>The CALL stays successful. A dynamic apply does commit non-schema changes — BSL code lands —
+     * so for a code-only update this is a complete result, and routing it to the error channel would
+     * be a lie in the other direction. The hard failure stays bound to EDT's own verdict.</p>
+     */
+    static void fillAppliedOutcome(JsonObject result, boolean edtUpdated, boolean dynamicOnly) {
+        boolean schemaApplied = edtUpdated && !dynamicOnly;
+        result.addProperty("updated", schemaApplied); //$NON-NLS-1$
+        result.addProperty("schema_applied", schemaApplied); //$NON-NLS-1$
+        if (edtUpdated && dynamicOnly) {
+            result.addProperty("status", "partial"); //$NON-NLS-1$ //$NON-NLS-2$
         }
     }
 
@@ -1115,6 +1170,7 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
             EdtToolErrorCode code, String message) {
         JsonObject result = basePayload(opId, "error", projectName, false, workspaceRoot); //$NON-NLS-1$
         result.addProperty("updated", false); //$NON-NLS-1$
+        result.addProperty("schema_applied", false); //$NON-NLS-1$
         result.addProperty("error_code", code.name()); //$NON-NLS-1$
         result.addProperty("message", message == null ? "" : message); //$NON-NLS-1$ //$NON-NLS-2$
         result.add("details", new JsonObject()); //$NON-NLS-1$
@@ -1183,6 +1239,12 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
                 // Surfaced, not killed — see processTimeoutDetails. The name must not imply a kill.
                 json.add("designer_pids_still_holding", pids); //$NON-NLS-1$
             }
+        }
+        // This renderer is an ALLOWLIST: a detail key with no branch here never reaches the payload at
+        // all. The empty-scan marker needs its own branch for that reason — dropping the field that
+        // exists to disambiguate an absence would have reproduced the very defect it addresses.
+        if (details.containsKey("designer_scan")) { //$NON-NLS-1$
+            json.addProperty("designer_scan", details.get("designer_scan")); //$NON-NLS-1$ //$NON-NLS-2$
         }
         return json;
     }

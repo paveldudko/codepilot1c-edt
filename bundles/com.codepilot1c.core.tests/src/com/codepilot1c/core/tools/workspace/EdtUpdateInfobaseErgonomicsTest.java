@@ -148,4 +148,84 @@ public class EdtUpdateInfobaseErgonomicsTest {
                 details.containsKey("designer_pids_still_holding")); //$NON-NLS-1$
         assertEquals("300", details.get("update_timeout_s")); //$NON-NLS-1$ //$NON-NLS-2$
     }
+
+    /**
+     * An empty scan has to SAY it was empty. Omitting the key was the only signal, and it reads exactly
+     * like a build predating the feature — which is how the 2026-07-29 retest reported the PID as "still
+     * absent from the payload" for a build that had been surfacing it since {@code 3ca38df}. One of the
+     * two claims had to be wrong and the payload gave no way to tell which.
+     */
+    @Test
+    public void anEmptyDesignerScanSaysSoInsteadOfGoingSilent() {
+        java.util.Map<String, String> details =
+                EdtUpdateInfobaseTool.processTimeoutDetails(300L, List.of());
+        assertEquals("no_designer_bound_to_this_infobase", details.get("designer_scan")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("and a non-empty scan must not claim an empty one", //$NON-NLS-1$
+                EdtUpdateInfobaseTool.processTimeoutDetails(300L, List.of(Long.valueOf(4242L)))
+                        .containsKey("designer_scan")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void anEmptyScanMessageDoesNotSendTheCallerHuntingAPhantom() {
+        String message = EdtUpdateInfobaseTool.processTimeoutMessage(300L, List.of());
+        assertTrue("the message must state that nothing was found", //$NON-NLS-1$
+                message.contains("found NO still-running Designer")); //$NON-NLS-1$
+        assertTrue("and admit that an unreadable command line cannot be attributed at all", //$NON-NLS-1$
+                message.contains("command line cannot be read")); //$NON-NLS-1$
+    }
+
+    // -- 2026-07-29 §3: dynamic_only must not ride along with updated:true -----------------------
+
+    /**
+     * The contract change owner-ruled 2026-07-29. A dynamic apply commits the stored configuration but
+     * defers the physical restructure, and the payload used to answer {@code updated:true} beside
+     * {@code dynamic_only:true} — so the flag every caller gates on said "done" for an infobase whose
+     * schema was not live. Measured on a 1.51 GB file infobase.
+     */
+    @Test
+    public void aDynamicApplyIsNotReportedAsUpdated() {
+        com.google.gson.JsonObject result = new com.google.gson.JsonObject();
+        result.addProperty("status", "updated"); //$NON-NLS-1$ //$NON-NLS-2$
+        EdtUpdateInfobaseTool.fillAppliedOutcome(result, true, true);
+        assertFalse("the flag callers gate on must not say done for a deferred restructure", //$NON-NLS-1$
+                result.get("updated").getAsBoolean()); //$NON-NLS-1$
+        assertFalse(result.get("schema_applied").getAsBoolean()); //$NON-NLS-1$
+        assertEquals("and the status must name the outcome, not borrow the happy path's", //$NON-NLS-1$
+                "partial", result.get("status").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void anExclusiveApplyReportsBothTrueAndKeepsItsStatus() {
+        com.google.gson.JsonObject result = new com.google.gson.JsonObject();
+        result.addProperty("status", "updated"); //$NON-NLS-1$ //$NON-NLS-2$
+        EdtUpdateInfobaseTool.fillAppliedOutcome(result, true, false);
+        assertTrue(result.get("updated").getAsBoolean()); //$NON-NLS-1$
+        assertTrue(result.get("schema_applied").getAsBoolean()); //$NON-NLS-1$
+        assertEquals("updated", result.get("status").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void aFailedApplyIsNotDowngradedToPartial() {
+        com.google.gson.JsonObject result = new com.google.gson.JsonObject();
+        result.addProperty("status", "updated"); //$NON-NLS-1$ //$NON-NLS-2$
+        EdtUpdateInfobaseTool.fillAppliedOutcome(result, false, true);
+        assertFalse(result.get("updated").getAsBoolean()); //$NON-NLS-1$
+        assertFalse(result.get("schema_applied").getAsBoolean()); //$NON-NLS-1$
+        assertEquals("\"partial\" claims something landed; nothing did", //$NON-NLS-1$
+                "updated", result.get("status").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
+     * The one outcome where the two fields legitimately disagree, and the reason {@code schema_applied}
+     * cannot be read off {@code updated}: an EQUAL-skip applies nothing while the schema IS live.
+     */
+    @Test
+    public void anEqualSkipAppliesNothingYetTheSchemaIsLive() {
+        com.google.gson.JsonObject result = new com.google.gson.JsonObject();
+        EdtUpdateInfobaseTool.fillSkippedEqual(result);
+        assertFalse(result.get("updated").getAsBoolean()); //$NON-NLS-1$
+        assertTrue("the infobase already equals the project — the schema is live", //$NON-NLS-1$
+                result.get("schema_applied").getAsBoolean()); //$NON-NLS-1$
+        assertEquals("skipped", result.get("status").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
 }
