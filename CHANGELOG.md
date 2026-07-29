@@ -9,6 +9,59 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Round-4 (2026-07-29) — F1 root-caused off its own diagnostic, template artifacts renamed
+
+The diagnostic build shipped in `c24ccd7` answered on the first live call, so the F1 fix rests on an
+observation rather than on a guess. Re-running `update_metadata set.parentSubsystem` printed, per entry of
+`WaveParent.subsystems`:
+
+```
+parent=WaveParent child=WaveChild childProxy=false childBmFqn=Subsystem.WaveChild
+existing=[class=Subsystem impl=SubsystemImpl proxy=true name=null bmFqn=transient
+          uri=bm://TestConfiguration/Subsystem.WaveParent.Subsystem.WaveChild#/ | ...]
+```
+
+* **A repeated `set.parentSubsystem` no longer duplicates the child in the parent's `.mdo`, and clears the
+  duplicates it already wrote.** The entries of a parent's `subsystems` collection are unresolved EMF proxies:
+  no name, no usable BM FQN, identity only in the URI — so the name-only membership test could never match one
+  and every repeat appended another `<subsystems>` line. Identity now falls back to the URI when no name is
+  readable, and the reading is deliberately strict: the last slash segment must be a dotted chain whose
+  penultimate element is literally `Subsystem`. A shape that does not match yields **no** identity rather than
+  a guessed one, because a missed match merely reproduces the old duplicate while a wrong match would silently
+  drop somebody's real child. On the same grounds `addSubsystemChild` now prunes repeat occurrences of the same
+  child (a subsystem listed twice under one parent is invalid anyway) and leaves unidentifiable entries strictly
+  alone. New `SubsystemIdentity`, free of EMF types so the rule is tested by result; the diagnostic logging it
+  replaces is removed as its javadoc asked. 19 tests.
+
+* **Template artifacts are written and read under the name EDT actually uses.** Every path was hard-coded to
+  `Template.mxl`, which EDT uses for no template type at all. Live against the real Accounting management
+  configuration (680 template artifacts): 270 spreadsheets are stored as `Template.mxlx` and **zero** as
+  `Template.mxl`, and the format is XML (`<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet">`), not the
+  binary MOXCEL this plugin wrote. `inspect_template` on a real template answered `(файл не найден)` — the read
+  path missed every template a real project has. The mapping is not inferred from that survey: it is EDT's own,
+  read out of the constant pool of `com._1c.g5.v8.dt.ide.QualifiedNameFilePathConverter` (2025.2.3), and covers
+  all ten `TemplateType` constants — `mxlx`, `txt`, `bin`, `htmldoc`, `axdt`, `scheme`, `geos`, `dcs`, `dcsat`,
+  `addin`. Serialization moves to `MoxelResourceMxlx` (an `AbstractXmlResource`) for both `render_template` and
+  the empty artifact `add_metadata_child` creates; reads try the correct name first and a legacy `Template.mxl`
+  second, so projects that already received one still resolve. An unknown template type yields no extension
+  instead of a default, and the types this service cannot serialize now leave the artifact **absent** with an
+  honest log rather than receiving a spreadsheet blob under a foreign extension — the raw-MOXCEL fallback is
+  gone for the same reason. New `TemplateArtifactPath` (pure, no EDT types), 9 tests; `Import-Package` gains
+  `com._1c.g5.modeling.xml[.serializer]`, which `MoxelResourceMxlx` needs.
+
+* **A composite tool no longer swallows a key belonging to a different command.** `dcs_manage`,
+  `external_manage` and `extension_manage` declare the *union* of every command's parameters, so both layers of
+  `8ed8c67` waved through `dataset_name` sent with `command:"upsert_param"`: the schema declares the key, so it
+  counted as known, and nobody read it. The per-command contract is **extracted from the schema** rather than
+  restated: each property's description already begins with its owning command (`(upsert_dataset) Dataset
+  name`, `(upsert_param/upsert_field) Expression`), which held for all three tools when checked key-by-key
+  against their `doExecute`. An untagged key, a prose tag (`(mutating commands)`), or a tag matching no command
+  is treated as shared, so tag drift cannot produce a false refusal. `edt_validate_request` refuses a foreign
+  key before issuing the token (naming the key, its owning command, the requested command and the keys that
+  command accepts); `AbstractTool` appends an advisory for the read-only path. New `CompositeCommandKeyGuard`,
+  45 tests, including nine that replay a full legitimate payload per mutating command so the guard cannot
+  regress a working call.
+
 ### Round-3 live probes (2026-07-29) — one round-2 claim withdrawn, wave 3 started
 
 Two calls on the sandbox settled the "composite types are still collapsed on the CREATE path" claim from the

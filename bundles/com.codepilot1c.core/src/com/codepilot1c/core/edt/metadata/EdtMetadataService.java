@@ -48,6 +48,7 @@ import org.eclipse.emf.ecore.EEnum;
 import org.eclipse.emf.ecore.EEnumLiteral;
 import org.eclipse.emf.ecore.EReference;
 import org.eclipse.emf.ecore.EStructuralFeature;
+import org.eclipse.emf.ecore.resource.Resource;
 import org.eclipse.emf.ecore.util.EcoreUtil;
 
 import com._1c.g5.v8.bm.core.IBmCrossReference;
@@ -191,6 +192,7 @@ import com._1c.g5.v8.dt.moxel.Merge;
 import com._1c.g5.v8.dt.moxel.MoxelFactory;
 import com._1c.g5.v8.dt.moxel.MoxelResourceFactory;
 import com._1c.g5.v8.dt.moxel.MoxelResourceMxl;
+import com._1c.g5.v8.dt.moxel.MoxelResourceMxlx;
 import com._1c.g5.v8.dt.moxel.NamedItemCells;
 import com._1c.g5.v8.dt.moxel.Rect;
 import com._1c.g5.v8.dt.moxel.Row;
@@ -7037,59 +7039,66 @@ public class EdtMetadataService {
     }
 
     /**
-     * Creates the physical .mxl template artifact file on disk after the Template metadata
-     * has been created in BM. EDT stores SpreadsheetDocument as an external resource file,
-     * not as an embedded BM containment reference.
+     * Creates the physical template artifact file on disk after the Template metadata has been
+     * created in BM. EDT stores a template body as an external resource file, not as an embedded BM
+     * containment reference, and the file name carries the type — see {@link TemplateArtifactPath}.
      *
-     * Path convention: src/{TopFolder}/{TopName}/Templates/{TemplateName}/Template.mxl
+     * <p>Path convention: {@code src/{TopFolder}/{TopName}/Templates/{TemplateName}/Template.<ext>}.
+     * Only the two types this service can actually serialize get a body; for the rest the metadata
+     * is created and the artifact is left absent, because writing a spreadsheet blob under, say,
+     * {@code Template.htmldoc} is worse than writing nothing.</p>
      */
     private String ensureTemplateArtifact(IProject project, String parentFqn, String templateName, TemplateType templateType, String opId) {
-        // DCS templates are handled by EdtDcsService — do not create .mxl artifact
-        if (templateType == TemplateType.DATA_COMPOSITION_SCHEMA
-                || templateType == TemplateType.DATA_COMPOSITION_APPEARANCE_TEMPLATE) {
+        String templateTypeName = templateType != null ? templateType.name() : TemplateType.SPREADSHEET_DOCUMENT.name();
+        // DCS templates are handled by EdtDcsService — do not create an artifact here
+        if (TemplateArtifactPath.isDataCompositionManaged(templateTypeName)) {
             LOG.debug("[%s] ensureTemplateArtifact: skipping artifact for DCS template %s", opId, templateName); //$NON-NLS-1$
             return null;
         }
         try {
-            String topKind = topKindFromFqn(parentFqn);
-            String topName = topNameFromFqn(parentFqn);
-            if (topKind == null || topName == null) {
-                LOG.warn("[%s] ensureTemplateArtifact: cannot resolve top-level from parentFqn=%s", opId, parentFqn); //$NON-NLS-1$
+            String templateFqn = parentFqn + ".Template." + templateName; //$NON-NLS-1$
+            String templatePath = resolveTemplateArtifactPath(templateFqn, templateTypeName);
+            if (templatePath == null) {
+                LOG.warn("[%s] ensureTemplateArtifact: cannot resolve artifact path for %s (type=%s)", //$NON-NLS-1$
+                        opId, templateFqn, templateTypeName);
                 return null;
             }
-            String topFolder = tryMapTopFolder(topKind);
-            if (topFolder == null) {
-                LOG.warn("[%s] ensureTemplateArtifact: cannot resolve topFolder for kind=%s", opId, topKind); //$NON-NLS-1$
-                return null;
-            }
-            String templatePath = "src/" + topFolder + "/" + topName //$NON-NLS-1$ //$NON-NLS-2$
-                    + "/Templates/" + templateName + "/Template.mxl"; //$NON-NLS-1$ //$NON-NLS-2$
             IFile templateFile = project.getFile(templatePath);
             if (templateFile.exists()) {
                 LOG.debug("[%s] ensureTemplateArtifact: file already exists at %s", opId, templatePath); //$NON-NLS-1$
                 return templatePath;
             }
 
-            createParentsIfMissing(templateFile);
-
-            // Create empty SpreadsheetDocument and serialize via MoxelResourceMxl (binary MOXCEL format)
-            String mxlCreationResult = createEmptyMxlViaMoxelResource(project, templatePath, opId);
-            if (mxlCreationResult != null) {
+            if (TemplateArtifactPath.isSpreadsheet(templateTypeName)) {
+                createParentsIfMissing(templateFile);
+                // EDT reads Template.mxlx as XML (AbstractXmlResource); the binary MOXCEL writer
+                // this used to call produced a file EDT never looks at.
+                if (createEmptySpreadsheetArtifact(project, templatePath, opId) == null) {
+                    // Fail loud rather than leaving a corrupt body: the metadata object stands, the
+                    // artifact does not, and the caller is told which.
+                    LOG.warn("[%s] ensureTemplateArtifact: could not serialize an empty spreadsheet at %s", //$NON-NLS-1$
+                            opId, templatePath);
+                    return null;
+                }
                 refreshProjectSafely(project);
-                LOG.info("[%s] ensureTemplateArtifact SUCCESS (MOXCEL): created %s", opId, templatePath); //$NON-NLS-1$
+                LOG.info("[%s] ensureTemplateArtifact SUCCESS: created %s", opId, templatePath); //$NON-NLS-1$
                 return templatePath;
             }
 
-            // Fallback: write raw MOXCEL minimal binary header if EMF Resource approach fails
-            LOG.warn("[%s] ensureTemplateArtifact: MoxelResource approach failed, using raw MOXCEL fallback", opId); //$NON-NLS-1$
-            byte[] minimalMoxcel = createMinimalMoxcelBytes();
-            try (ByteArrayInputStream source = new ByteArrayInputStream(minimalMoxcel)) {
-                templateFile.create(source, IResource.FORCE, null);
-                templateFile.refreshLocal(IResource.DEPTH_ZERO, null);
+            if (templateType == TemplateType.TEXT_DOCUMENT) {
+                createParentsIfMissing(templateFile);
+                try (ByteArrayInputStream source = new ByteArrayInputStream(new byte[0])) {
+                    templateFile.create(source, IResource.FORCE, null);
+                    templateFile.refreshLocal(IResource.DEPTH_ZERO, null);
+                }
+                refreshProjectSafely(project);
+                LOG.info("[%s] ensureTemplateArtifact SUCCESS: created empty %s", opId, templatePath); //$NON-NLS-1$
+                return templatePath;
             }
-            refreshProjectSafely(project);
-            LOG.info("[%s] ensureTemplateArtifact SUCCESS (raw fallback): created %s", opId, templatePath); //$NON-NLS-1$
-            return templatePath;
+
+            LOG.info("[%s] ensureTemplateArtifact: no serializer for type %s, leaving %s absent", //$NON-NLS-1$
+                    opId, templateTypeName, templatePath);
+            return null;
         } catch (Exception e) {
             LOG.warn("[%s] ensureTemplateArtifact failed for %s.Template.%s: %s", //$NON-NLS-1$
                     opId, parentFqn, templateName, e.getMessage());
@@ -7098,12 +7107,13 @@ public class EdtMetadataService {
     }
 
     /**
-     * Create an empty .mxl file using MoxelResourceMxl EMF Resource (produces valid binary MOXCEL format).
-     * MoxelResourceMxl implements IDtProjectAware and requires setDtProject for proper serialization.
+     * Create an empty spreadsheet artifact using the XML resource EDT reads
+     * ({@link MoxelResourceMxlx}, an {@code AbstractXmlResource}). It implements
+     * {@code IDtProjectAware} and wants {@code setDtProject} for full serialization fidelity.
      *
      * @return "ok" on success, null on failure
      */
-    private String createEmptyMxlViaMoxelResource(IProject project, String templatePath, String opId) {
+    private String createEmptySpreadsheetArtifact(IProject project, String templatePath, String opId) {
         try {
             // Build minimal SpreadsheetDocument with empty Columns
             SpreadsheetDocument sheet = MoxelFactory.eINSTANCE.createSpreadsheetDocument();
@@ -7112,57 +7122,31 @@ public class EdtMetadataService {
             columns.setSize(100); // total width in internal units (NOT column count)
             sheet.setColumns(columns);
 
-            // Serialize via MoxelResourceMxl — this produces binary MOXCEL format
             URI fileUri = URI.createPlatformResourceURI(project.getName() + "/" + templatePath, true); //$NON-NLS-1$
-            MoxelResourceMxl mxlResource = new MoxelResourceMxl(fileUri);
+            MoxelResourceMxlx mxlxResource = new MoxelResourceMxlx(fileUri);
 
             // Set IDtProject context if available (required for full serialization fidelity)
             try {
                 IDtProjectManager projectManager = gateway.getDtProjectManager();
                 IDtProject dtProject = projectManager.getDtProject(project);
                 if (dtProject != null) {
-                    mxlResource.setDtProject(dtProject);
-                    LOG.debug("[%s] createEmptyMxlViaMoxelResource: IDtProject set for %s", opId, project.getName()); //$NON-NLS-1$
+                    mxlxResource.setDtProject(dtProject);
+                    LOG.debug("[%s] createEmptySpreadsheetArtifact: IDtProject set for %s", opId, project.getName()); //$NON-NLS-1$
                 } else {
-                    LOG.debug("[%s] createEmptyMxlViaMoxelResource: IDtProject is null, proceeding without it", opId); //$NON-NLS-1$
+                    LOG.debug("[%s] createEmptySpreadsheetArtifact: IDtProject is null, proceeding without it", opId); //$NON-NLS-1$
                 }
             } catch (Exception e) {
-                LOG.debug("[%s] createEmptyMxlViaMoxelResource: could not obtain IDtProject: %s", opId, e.getMessage()); //$NON-NLS-1$
+                LOG.debug("[%s] createEmptySpreadsheetArtifact: could not obtain IDtProject: %s", opId, e.getMessage()); //$NON-NLS-1$
             }
 
-            mxlResource.getContents().add(sheet);
-            mxlResource.save(Collections.emptyMap());
-            LOG.debug("[%s] createEmptyMxlViaMoxelResource: MoxelResourceMxl.save() succeeded for %s", opId, templatePath); //$NON-NLS-1$
+            mxlxResource.getContents().add(sheet);
+            mxlxResource.save(Collections.emptyMap());
+            LOG.debug("[%s] createEmptySpreadsheetArtifact: save() succeeded for %s", opId, templatePath); //$NON-NLS-1$
             return "ok"; //$NON-NLS-1$
         } catch (Exception e) {
-            LOG.warn("[%s] createEmptyMxlViaMoxelResource failed: %s", opId, e.getMessage()); //$NON-NLS-1$
+            LOG.warn("[%s] createEmptySpreadsheetArtifact failed: %s", opId, e.getMessage()); //$NON-NLS-1$
             return null;
         }
-    }
-
-    /**
-     * Creates minimal valid MOXCEL binary bytes as a fallback when MoxelResourceMxl is unavailable.
-     * The MOXCEL format starts with magic bytes "MOXCEL" (0x4D 0x4F 0x58 0x43 0x45 0x4C)
-     * followed by version/header data and an empty spreadsheet structure.
-     *
-     * This produces the smallest valid .mxl that EDT can import without errors.
-     */
-    private byte[] createMinimalMoxcelBytes() {
-        // Minimal MOXCEL binary: magic header + version 8 + empty spreadsheet descriptor
-        // Format: MOXCEL (6 bytes) + version (2 bytes) + flags (2 bytes) + minimal body
-        // The body contains a text-encoded spreadsheet descriptor: {columns,rows,formatCount,...}
-        byte[] header = new byte[] {
-            0x4D, 0x4F, 0x58, 0x43, 0x45, 0x4C, // "MOXCEL" magic
-            0x00, 0x08,                             // version 8
-            0x00, 0x01,                             // flags
-            0x00, 0x04                              // minimal body length indicator
-        };
-        // Empty spreadsheet body: 0 columns, 0 rows, 0 formats
-        byte[] body = "{0}".getBytes(StandardCharsets.UTF_8); //$NON-NLS-1$
-        byte[] result = new byte[header.length + body.length];
-        System.arraycopy(header, 0, result, 0, header.length);
-        System.arraycopy(body, 0, result, header.length, body.length);
-        return result;
     }
 
     // ─── render_template: section-based layout generation ──────────────────
@@ -7212,12 +7196,12 @@ public class EdtMetadataService {
             LOG.debug("[%s] renderTemplate: could not validate template in BM: %s", opId, e.getMessage()); //$NON-NLS-1$
         }
 
-        // Resolve .mxl path from FQN
-        String mxlPath = resolveTemplateMxlPath(templateFqn);
+        // render_template only handles spreadsheets (checked above), so the artifact is Template.mxlx
+        String mxlPath = resolveTemplateArtifactPath(templateFqn, TemplateType.SPREADSHEET_DOCUMENT.name());
         if (mxlPath == null) {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_NAME,
-                    "Cannot resolve .mxl path from FQN: " + templateFqn, false); //$NON-NLS-1$
+                    "Cannot resolve the template artifact path from FQN: " + templateFqn, false); //$NON-NLS-1$
         }
         IFile mxlFile = project.getFile(mxlPath);
         if (!mxlFile.exists()) {
@@ -7360,10 +7344,10 @@ public class EdtMetadataService {
         }
         totalRows = currentRow;
 
-        // Serialize via MoxelResourceMxl
+        // Serialize as the XML EDT reads back (Template.mxlx), not the binary MOXCEL it ignores
         try {
             URI fileUri = URI.createPlatformResourceURI(project.getName() + "/" + mxlPath, true); //$NON-NLS-1$
-            MoxelResourceMxl mxlResource = new MoxelResourceMxl(fileUri);
+            MoxelResourceMxlx mxlResource = new MoxelResourceMxlx(fileUri);
 
             // Set IDtProject context
             try {
@@ -7423,7 +7407,6 @@ public class EdtMetadataService {
         IProject project = requireProject(request.projectName());
 
         String templateFqn = request.templateFqn();
-        String mxlPath = resolveTemplateMxlPath(templateFqn);
 
         // Determine template type from metadata
         String templateType = "SpreadsheetDocument"; //$NON-NLS-1$
@@ -7440,37 +7423,47 @@ public class EdtMetadataService {
             LOG.debug("[%s] inspectTemplate: could not resolve template type: %s", opId, e.getMessage()); //$NON-NLS-1$
         }
 
-        // If DCS template, return minimal info
-        if ("DataCompositionSchema".equals(templateType)) { //$NON-NLS-1$
+        // The artifact name carries the type; before this, every lookup used Template.mxl and so
+        // missed every template a real configuration has.
+        String mxlPath = resolveTemplateArtifactPath(templateFqn, templateType);
+
+        // Only spreadsheets have a cell grid to return; for the rest report the type and the path.
+        if (!TemplateArtifactPath.isSpreadsheet(templateType)) {
             return new InspectTemplateResult(
                     request.projectName(), templateFqn, templateType,
                     mxlPath, 0, 0, List.of(), List.of());
         }
 
-        // Try to load .mxl file via MoxelResourceMxl
         if (mxlPath == null) {
             throw new MetadataOperationException(
                     MetadataOperationCode.INVALID_METADATA_NAME,
-                    "Cannot resolve .mxl path from FQN: " + templateFqn, false); //$NON-NLS-1$
+                    "Cannot resolve the template artifact path from FQN: " + templateFqn, false); //$NON-NLS-1$
         }
 
-        IFile mxlFile = project.getFile(mxlPath);
-        if (!mxlFile.exists()) {
+        String existingPath = resolveExistingTemplateArtifactPath(project, templateFqn, templateType);
+        if (existingPath == null) {
             return new InspectTemplateResult(
                     request.projectName(), templateFqn, templateType,
                     mxlPath, 0, 0, List.of(), List.of(List.of("(файл не найден)"))); //$NON-NLS-1$
         }
+        mxlPath = existingPath;
 
-        // Load SpreadsheetDocument from .mxl
+        // Load SpreadsheetDocument from the artifact — XML for .mxlx, binary MOXCEL for a legacy .mxl
         SpreadsheetDocument sheet = null;
         try {
             URI fileUri = URI.createPlatformResourceURI(project.getName() + "/" + mxlPath, true); //$NON-NLS-1$
-            MoxelResourceMxl mxlResource = new MoxelResourceMxl(fileUri);
+            Resource mxlResource = mxlPath.endsWith(".mxlx") //$NON-NLS-1$
+                    ? new MoxelResourceMxlx(fileUri)
+                    : new MoxelResourceMxl(fileUri);
             try {
                 IDtProjectManager projectManager = gateway.getDtProjectManager();
                 IDtProject dtProject = projectManager.getDtProject(project);
                 if (dtProject != null) {
-                    mxlResource.setDtProject(dtProject);
+                    if (mxlResource instanceof MoxelResourceMxlx mxlx) {
+                        mxlx.setDtProject(dtProject);
+                    } else if (mxlResource instanceof MoxelResourceMxl mxl) {
+                        mxl.setDtProject(dtProject);
+                    }
                 }
             } catch (Exception e) {
                 LOG.debug("[%s] inspectTemplate: could not set IDtProject: %s", opId, e.getMessage()); //$NON-NLS-1$
@@ -7575,11 +7568,11 @@ public class EdtMetadataService {
     }
 
     /**
-     * Resolve .mxl file path from template FQN.
+     * Resolve the folder that holds a template's artifact, from the template FQN.
      * FQN format: Document.ПеремещениеТоваров.Template.МакетПеремещения
-     * Path: src/Documents/ПеремещениеТоваров/Templates/МакетПеремещения/Template.mxl
+     * Folder: src/Documents/ПеремещениеТоваров/Templates/МакетПеремещения
      */
-    private String resolveTemplateMxlPath(String templateFqn) {
+    private String resolveTemplateFolder(String templateFqn) {
         if (templateFqn == null || !templateFqn.contains(".Template.")) { //$NON-NLS-1$
             return null;
         }
@@ -7597,7 +7590,39 @@ public class EdtMetadataService {
             return null;
         }
         return "src/" + topFolder + "/" + topName //$NON-NLS-1$ //$NON-NLS-2$
-                + "/Templates/" + templateName + "/Template.mxl"; //$NON-NLS-1$ //$NON-NLS-2$
+                + "/Templates/" + templateName; //$NON-NLS-1$
+    }
+
+    /**
+     * The path an artifact of this template type belongs at — the name EDT itself uses, per
+     * {@link TemplateArtifactPath}. {@code null} when the FQN or the type cannot be mapped.
+     */
+    private String resolveTemplateArtifactPath(String templateFqn, String templateType) {
+        String folder = resolveTemplateFolder(templateFqn);
+        String fileName = TemplateArtifactPath.fileNameFor(templateType);
+        if (folder == null || fileName == null) {
+            return null;
+        }
+        return folder + "/" + fileName; //$NON-NLS-1$
+    }
+
+    /**
+     * The path of the artifact that actually exists on disk, preferring the name EDT uses and
+     * falling back to the {@code Template.mxl} earlier builds of this plugin wrote. {@code null}
+     * when no candidate is present.
+     */
+    private String resolveExistingTemplateArtifactPath(IProject project, String templateFqn, String templateType) {
+        String folder = resolveTemplateFolder(templateFqn);
+        if (folder == null) {
+            return null;
+        }
+        for (String candidate : TemplateArtifactPath.candidateFileNames(templateType)) {
+            String path = folder + "/" + candidate; //$NON-NLS-1$
+            if (project.getFile(path).exists()) {
+                return path;
+            }
+        }
+        return null;
     }
 
     @SuppressWarnings("unchecked")
@@ -10543,85 +10568,45 @@ public class EdtMetadataService {
     }
 
     /**
-     * Adds {@code child} to {@code parent.subsystems} unless already there. Returns whether the
-     * list changed, so a repeated request does not report a co-edit it did not make.
+     * Adds {@code child} to {@code parent.subsystems} unless already there, and drops any duplicate
+     * the earlier name-only membership test had let through. Returns whether the list changed, so a
+     * repeated request does not report a co-edit it did not make.
      */
     private boolean addSubsystemChild(Subsystem parent, Subsystem child) {
+        boolean pruned = pruneDuplicateSubsystems(parent);
         if (containsSubsystem(parent.getSubsystems(), child)) {
-            return false;
+            return pruned;
         }
-        logSubsystemMembershipMiss(parent, child);
         parent.getSubsystems().add(child);
         return true;
     }
 
     /**
-     * Describes every entry of {@code parent.subsystems} whenever the membership test found no
-     * match, because the test is known to be unable to see one.
-     *
-     * <p>Live 2026-07-29: re-running the same {@code set.parentSubsystem} duplicated
-     * {@code <subsystems>WaveChild</subsystems>} in the parent's {@code .mdo}, and inspecting the
-     * parent rendered its whole collection as nameless entries ({@code [Subsystem, Subsystem]})
-     * while the child's own {@code parentSubsystem} read back fine. So {@link #sameSubsystem},
-     * which compares {@link Subsystem#getName()}, can never match an existing entry and every
-     * repeat request appends. What those entries actually ARE is not established — an unresolved
-     * EMF proxy, a BM handle, or something resolvable on demand — and each answer implies a
-     * different identity key, so this logs the discriminating facts rather than guessing one.
-     * Remove it once the identity is fixed; until then the duplicate it precedes is expected.</p>
+     * Removes every repeat occurrence of the same child from {@code parent.subsystems}, keeping the
+     * first. Repairs the {@code .mdo} files that the name-only membership test had already grown a
+     * duplicate {@code <subsystems>} line in; a subsystem listed twice under one parent is invalid
+     * anyway, so dropping the repeat cannot lose information. Entries whose identity cannot be
+     * established are left strictly alone.
      */
-    private void logSubsystemMembershipMiss(Subsystem parent, Subsystem child) {
+    private boolean pruneDuplicateSubsystems(Subsystem parent) {
         List<Subsystem> siblings = parent.getSubsystems();
-        if (siblings.isEmpty()) {
-            return;
-        }
-        StringBuilder entries = new StringBuilder();
+        Set<String> seen = new HashSet<>();
+        boolean changed = false;
         for (int i = 0; i < siblings.size(); i++) {
-            Subsystem sibling = siblings.get(i);
-            if (i > 0) {
-                entries.append(" | "); //$NON-NLS-1$
+            String identity = subsystemIdentity(siblings.get(i));
+            if (identity == null) {
+                continue;
             }
-            entries.append(describeSubsystemEntry(sibling));
-        }
-        LOG.info("Subsystem membership miss: parent=%s child=%s childProxy=%s childBmFqn=%s existing=[%s]", //$NON-NLS-1$
-                parent.getName(),
-                child.getName(),
-                Boolean.valueOf(child.eIsProxy()),
-                safeBmFqn(child),
-                entries);
-    }
-
-    private String describeSubsystemEntry(Subsystem entry) {
-        if (entry == null) {
-            return "null"; //$NON-NLS-1$
-        }
-        String uri;
-        try {
-            uri = String.valueOf(EcoreUtil.getURI(entry));
-        } catch (RuntimeException e) {
-            uri = "uri-failed:" + e.getClass().getSimpleName(); //$NON-NLS-1$
-        }
-        return "class=" + entry.eClass().getName() //$NON-NLS-1$
-                + " impl=" + entry.getClass().getSimpleName() //$NON-NLS-1$
-                + " proxy=" + entry.eIsProxy() //$NON-NLS-1$
-                + " name=" + entry.getName() //$NON-NLS-1$
-                + " bmFqn=" + safeBmFqn(entry) //$NON-NLS-1$
-                + " uri=" + uri; //$NON-NLS-1$
-    }
-
-    /** The BM FQN of a subsystem when it is a live BM object, else a reason it is not available. */
-    private String safeBmFqn(Subsystem subsystem) {
-        if (!(subsystem instanceof IBmObject bmObject)) {
-            return "not-bm"; //$NON-NLS-1$
-        }
-        try {
-            if (bmObject.bmIsTransient()) {
-                return "transient"; //$NON-NLS-1$
+            if (!seen.add(identity)) {
+                siblings.remove(i);
+                i--;
+                changed = true;
             }
-            String fqn = bmObject.bmGetFqn();
-            return fqn != null ? fqn : "null-fqn"; //$NON-NLS-1$
-        } catch (RuntimeException e) {
-            return "fqn-failed:" + e.getClass().getSimpleName(); //$NON-NLS-1$
         }
+        if (changed) {
+            LOG.info("Subsystem %s: dropped duplicate child entries from its collection", parent.getName()); //$NON-NLS-1$
+        }
+        return changed;
     }
 
     /** Removes {@code child} from {@code parent.subsystems}; returns whether the list changed. */
@@ -10637,10 +10622,10 @@ public class EdtMetadataService {
     }
 
     /**
-     * Subsystem identity by name. A subsystem's canonical FQN is flat at any depth
-     * ({@code Subsystem.<Name>}), so the name IS the identity; instance equality is unreliable
-     * because a value can arrive as a BM transaction object while the list holds another handle
-     * on the same object.
+     * Subsystem identity by name where a name is readable and by proxy URI where it is not — see
+     * {@link SubsystemIdentity} for why the parent's own collection offers neither a name nor a
+     * usable BM FQN. Instance equality alone is unreliable because a value can arrive as a BM
+     * transaction object while the list holds another handle on the same object.
      */
     private boolean sameSubsystem(Subsystem left, Subsystem right) {
         if (left == right) {
@@ -10649,9 +10634,28 @@ public class EdtMetadataService {
         if (left == null || right == null) {
             return false;
         }
-        String leftName = left.getName();
-        String rightName = right.getName();
-        return leftName != null && rightName != null && leftName.equalsIgnoreCase(rightName);
+        return SubsystemIdentity.same(subsystemIdentity(left), subsystemIdentity(right));
+    }
+
+    /** Reads whatever identifies {@code subsystem} off the model: its name, else its (proxy) URI. */
+    private String subsystemIdentity(Subsystem subsystem) {
+        if (subsystem == null) {
+            return null;
+        }
+        String name;
+        try {
+            name = subsystem.getName();
+        } catch (RuntimeException e) {
+            // An unresolved proxy can refuse the getter outright; the URI below is the fallback.
+            name = null;
+        }
+        String uri;
+        try {
+            uri = String.valueOf(EcoreUtil.getURI(subsystem));
+        } catch (RuntimeException e) {
+            uri = null;
+        }
+        return SubsystemIdentity.of(name, uri);
     }
 
     private boolean containsSubsystem(List<? extends Subsystem> subsystems, Subsystem candidate) {
