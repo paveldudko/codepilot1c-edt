@@ -198,8 +198,9 @@ public class ToolRegistry {
      * @param tool the tool to register
      */
     public void register(ITool tool) {
-        tools.put(tool.getName(), tool);
-        ToolDescriptorRegistry.getInstance().registerTool(tool);
+        ITool registered = AdvisoryToolWrapper.wrapIfNeeded(tool);
+        tools.put(registered.getName(), registered);
+        ToolDescriptorRegistry.getInstance().registerTool(registered);
     }
 
     /**
@@ -219,9 +220,10 @@ public class ToolRegistry {
      * @param tool the tool to register
      */
     public void registerDynamicTool(ITool tool) {
-        dynamicTools.put(tool.getName(), tool);
-        ToolDescriptorRegistry.getInstance().registerTool(tool);
-        LOG.debug("Registered dynamic tool: %s", tool.getName()); //$NON-NLS-1$
+        ITool registered = AdvisoryToolWrapper.wrapIfNeeded(tool);
+        dynamicTools.put(registered.getName(), registered);
+        ToolDescriptorRegistry.getInstance().registerTool(registered);
+        LOG.debug("Registered dynamic tool: %s", registered.getName()); //$NON-NLS-1$
     }
 
     /**

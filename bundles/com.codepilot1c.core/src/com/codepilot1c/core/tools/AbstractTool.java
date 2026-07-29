@@ -38,24 +38,6 @@ public abstract class AbstractTool implements ITool {
 
     private static final String PLUGIN_ID = "com.codepilot1c.core"; //$NON-NLS-1$
 
-    /**
-     * Tools reached only by dispatch, never called directly, so an "unknown parameter" advisory on
-     * them would report the dispatcher's own routing rather than a caller mistake.
-     *
-     * <p>{@code edt_diagnostics}, {@code qa_inspect} and {@code qa_generate} forward the whole
-     * argument map to the chosen delegate — {@code command} included, and {@code edt_diagnostics}
-     * additionally injects BOTH {@code project} and {@code project_name} via
-     * {@code EdtDiagnosticsCommandContract.applyProjectFieldAliases}. The delegates below therefore
-     * always see keys their own schemas do not declare. (The three dispatchers themselves need no
-     * entry: their schemas state {@code additionalProperties: true}, which already turns the guard
-     * off.)</p>
-     */
-    private static final Set<String> ADVISORY_EXEMPT_TOOLS = Set.of(
-            "edt_metadata_smoke", "edt_trace_export", "analyze_tool_error", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            "edt_update_infobase", "edt_launch_app", //$NON-NLS-1$ //$NON-NLS-2$
-            "qa_explain_config", "qa_status", "qa_steps_search", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            "qa_init_config", "qa_migrate_config", "qa_compile_feature"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-
     private static final ILog NOOP_LOG = new ILog() {
         @Override
         public void addLogListener(ILogListener listener) {
@@ -203,59 +185,7 @@ public abstract class AbstractTool implements ITool {
      * {@code dataset_name}), which need no validation token and therefore never meet the L2 refusal.</p>
      */
     private ToolResult withUnknownParameterAdvisory(ToolResult result, Map<String, Object> parameters) {
-        try {
-            if (result == null || parameters == null || parameters.isEmpty()
-                    || ADVISORY_EXEMPT_TOOLS.contains(name)) {
-                return result;
-            }
-            String advisory = unknownParameterAdvisory(parameters) + foreignCommandParameterAdvisory(parameters);
-            if (advisory.isEmpty()) {
-                return result;
-            }
-            if (!result.isSuccess()) {
-                String error = result.getErrorMessage() == null ? "" : result.getErrorMessage(); //$NON-NLS-1$
-                return ToolResult.failure(error + advisory);
-            }
-            String content = result.getContent() == null ? "" : result.getContent(); //$NON-NLS-1$
-            return result.getStructuredData() != null
-                    ? ToolResult.success(content + advisory, result.getType(), result.getStructuredData())
-                    : ToolResult.success(content + advisory, result.getType());
-        } catch (RuntimeException e) {
-            // An advisory must never be the reason a call fails.
-            return result;
-        }
-    }
-
-    /** The note for a key this tool's schema does not declare at all, or {@code ""} when there is none. */
-    private String unknownParameterAdvisory(Map<String, Object> parameters) {
-        SchemaKeyGuard.Report report = SchemaKeyGuard.inspect(getParameterSchema(), parameters.keySet());
-        if (report.isClean()) {
-            return ""; //$NON-NLS-1$
-        }
-        return SchemaKeyGuard.advisoryLine(name, report.unknownKeys(),
-                SchemaKeyGuard.forDisplay(report.acceptedKeys(), null));
-    }
-
-    /**
-     * The note for a key this tool declares for another {@code command} than the one just dispatched,
-     * or {@code ""} when there is none.
-     *
-     * <p>Generic on purpose: it fires for any tool whose schema declares a {@code command} enum and
-     * tags its per-command properties {@code (command) …}, which today is exactly
-     * {@code dcs_manage} / {@code external_manage} / {@code extension_manage}. Everything else — the
-     * {@code additionalProperties:true} dispatchers included — is unenforceable and stays silent.</p>
-     */
-    private String foreignCommandParameterAdvisory(Map<String, Object> parameters) {
-        Object command = parameters.get("command"); //$NON-NLS-1$
-        CompositeCommandKeyGuard.Report report = CompositeCommandKeyGuard.inspect(
-                getParameterSchema(),
-                command == null ? null : String.valueOf(command),
-                parameters.keySet());
-        if (report.isClean()) {
-            return ""; //$NON-NLS-1$
-        }
-        return CompositeCommandKeyGuard.advisoryLine(name, report.command(), report.foreignKeys(),
-                SchemaKeyGuard.forDisplay(report.acceptedKeys(), null));
+        return ToolAdvisory.annotate(name, getParameterSchema(), result, parameters);
     }
 
     /**
