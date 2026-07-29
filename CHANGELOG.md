@@ -9,6 +9,29 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Round-8 (2026-07-29) — the relocation now takes its old file with it
+
+* **A relocated subsystem no longer leaves a duplicate definition behind** (`998ad72`). Moving a subsystem
+  re-keys its FQN and the export writes the `.mdo` at the new path; nothing removed the old file, so the
+  configuration carried the definition twice and the next refresh would read the leftover as a second,
+  top-level subsystem. The vacated FQN is only known inside the write transaction, so it now rides the sink the
+  write chain already carries (`CoEditedSink`), and the cleanup runs after the export in all three flows that
+  can relocate storage — `update_metadata`, `delete_metadata` (deleting a parent sends its children back to the
+  root) and `create_metadata` (an ADOPTED orphan already has a `.mdo` on disk).
+  What may be deleted is decided by the new `VacatedSubsystemStorage` over plain booleans and tested by result:
+  the new descriptor must be on disk, or the vacated file is the only copy there is; and the old directory is
+  spared whenever it holds anything else, because a subsystem's children are separate top objects that the move
+  does not re-register — their files sit inside the directory being vacated. A move under one's own descendant
+  is refused the directory removal for the same reason. Failure is never fatal: the move succeeded and the
+  object is addressable, so a leftover is logged loudly rather than reported as a failed write.
+  **Live-validated** on build `0.1.7.20260729-1142`: a fresh `WaveR7Child` moved under `WaveParent` left
+  exactly one `.mdo` (`src/Subsystems/WaveParent/Subsystems/WaveR7Child/WaveR7Child.mdo`), the old
+  `src/Subsystems/WaveR7Child/` is gone, and the log names what it removed.
+* **`create_schema`'s diagnostic probe retired** (`1a30556`). `sameNameSchemaBound=` rode the `[dcs]` log line
+  for one diagnostic round to settle whether a dangling `BasicTemplate.template` reads as absent or as a proxy.
+  Live validation answered "absent", so the probe is spent and `plan=` — the decision taken, which is what
+  support reads back — stays alone, with the answer moved into the comment beside the flag.
+
 ### Round-7 live validation (2026-07-29) — the relocation works; the old directory survives it
 
 On build `0.1.7.20260729-0912`, re-parenting a fresh subsystem no longer reports a false
