@@ -1,5 +1,6 @@
 package com.codepilot1c.core.edt.metadata;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -20,8 +21,8 @@ import org.junit.Test;
  * <p>That {@code parentSubsystem} value is the parent's STORAGE FQN, not a flat name — it only looks
  * flat while the parent sits at the root. Measured live 2026-07-29: a grandchild under a nested parent
  * carries {@code <parentSubsystem>Subsystem.WaveR9P.Subsystem.WaveR9C</parentSubsystem>}. Which is why
- * moving a subsystem leaves its descendants' up-links pointing at an FQN that no longer exists — open,
- * diagnosed in {@code issues/2026-07-28-bus-drain-recon.md}.</p>
+ * moving a subsystem left its descendants' up-links pointing at an FQN that no longer existed, and why
+ * the cascade has to re-point them as well as re-key them — the sixth side, pinned below.</p>
  *
  * <p>What was broken: {@code update_metadata set.parentSubsystem} wrote only the child side, so
  * {@code WaveParent.subsystems} stayed empty — the nesting was HALF-LINKED and the parent could not
@@ -225,6 +226,66 @@ public class SubsystemNestingSymmetryContractTest {
                 descendants.contains("reportStorageRelocated(previousFqn, targetFqn, coEditedTopObjectSink)")); //$NON-NLS-1$
         assertTrue("a taken slot must abort the move, not leave the tree half re-registered", //$NON-NLS-1$
                 descendants.contains("catch (BmFqnAlreadyInUseException e)")); //$NON-NLS-1$
+    }
+
+    /**
+     * The SIXTH side: a descendant that followed its owner still has to be told who its owner now is.
+     *
+     * <p>Re-keying the FQN makes the descendant addressable again, but its own {@code .mdo} carries
+     * {@code <parentSubsystem>} — the owner's STORAGE FQN — and that reference is a proxy resolved
+     * against the chain the owner had BEFORE the move. Live-measured 2026-07-29 on the sandbox, on the
+     * very build that fixed the re-keying: {@code WaveR9C.mdo} still read
+     * {@code <parentSubsystem>Subsystem.WaveR9P</parentSubsystem>} while the owner had become
+     * {@code Subsystem.WaveParent.Subsystem.WaveR9P}, and EDT rendered the up-link as a stub.</p>
+     *
+     * <p>What only the source shows is that BOTH branches re-point — including the one where the FQN
+     * was already right. That branch is how a tree corrupted by an earlier cascade gets healed: its
+     * descendants are keyed correctly and pointed wrongly, so a re-run that skipped them would report
+     * SUCCESS and change nothing. Which is precisely the failure this whole fix is about.</p>
+     */
+    @Test
+    public void aDescendantThatFollowedItsOwnerIsAlsoRePointedAtIt() {
+        String source = readSource(SERVICE_PATH);
+        String descendants = methodBody(source, "private void relocateSubsystemDescendants("); //$NON-NLS-1$
+        assertTrue("the plan has to carry the live owner, not a recomputed FQN string", //$NON-NLS-1$
+                descendants.contains("repointParentSubsystem(descendant, relocation.parent())")); //$NON-NLS-1$
+        assertEquals("both branches must re-point: the re-keyed one and the already-in-slot one," //$NON-NLS-1$
+                + " which is the one that heals an earlier cascade", //$NON-NLS-1$
+                2, countOccurrences(descendants, "repointParentSubsystem(descendant, relocation.parent())")); //$NON-NLS-1$
+
+        String repoint = methodBody(source, "private void repointParentSubsystem("); //$NON-NLS-1$
+        assertTrue("handing the setter the live object is what makes the serializer write the new chain", //$NON-NLS-1$
+                repoint.contains("descendant.setParentSubsystem(parent);")); //$NON-NLS-1$
+        assertTrue("and a failure here must not abort a move that already made the object addressable", //$NON-NLS-1$
+                repoint.contains("catch (RuntimeException e)")); //$NON-NLS-1$
+    }
+
+    /**
+     * The pointer decision is made by CHAIN, not by leaf name — the bug that made the manual repair a
+     * silent no-op.
+     *
+     * <p>A stale up-link proxy and the live parent it went stale on share a leaf name, so the
+     * name-based identity answered "same" and the write was skipped: {@code update_metadata
+     * set.parentSubsystem} returned SUCCESS with the file untouched. The membership tests keep the
+     * name-based identity on purpose — inside one parent's collection the entries are proxies with
+     * nothing but a name to match on. What each rule answers is tested by result in
+     * {@link SubsystemIdentityTest}; only which rule is used where needs the source.</p>
+     */
+    @Test
+    public void thePointerDecisionUsesTheChainNotTheLeafName() {
+        String body = methodBody(readSource(SERVICE_PATH), "private void reparentSubsystem("); //$NON-NLS-1$
+        int decision = body.indexOf("if (!sameSubsystemChain(oldParent, newParent)) {"); //$NON-NLS-1$
+        int write = body.indexOf("child.setParentSubsystem(newParent);"); //$NON-NLS-1$
+        assertTrue("the up-link write must be gated on the chain comparison", //$NON-NLS-1$
+                decision >= 0 && write > decision);
+    }
+
+    private int countOccurrences(String haystack, String needle) {
+        int count = 0;
+        for (int at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + needle.length())) {
+            count++;
+        }
+        return count;
     }
 
     /**

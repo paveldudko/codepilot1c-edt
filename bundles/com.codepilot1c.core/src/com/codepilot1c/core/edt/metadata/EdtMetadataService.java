@@ -10592,7 +10592,10 @@ public class EdtMetadataService {
             }
         }
         detachRootAndRelocate(configuration, child, newParent, transaction, coEditedTopObjectSink);
-        if (!sameSubsystem(oldParent, newParent)) {
+        // By CHAIN, not by name: a stale up-link proxy and the live parent it went stale on share a
+        // leaf name, so the name-based identity answered "already correct" and this write was skipped
+        // — the repair reported SUCCESS having changed nothing. See SubsystemIdentity#chainOf.
+        if (!sameSubsystemChain(oldParent, newParent)) {
             child.setParentSubsystem(newParent);
         }
         // Also runs when the pointer was already correct: that is exactly the half-linked state
@@ -10685,7 +10688,7 @@ public class EdtMetadataService {
         // relocateSubsystemDescendants. Nothing is written until the plan is complete.
         List<SubsystemTree.Relocation<Subsystem>> descendants = SubsystemTree.descendantRelocations(
                 targetFqn,
-                child.getSubsystems(),
+                child,
                 Subsystem::getName,
                 this::subsystemStorageFqn,
                 Subsystem::getSubsystems);
@@ -10714,7 +10717,8 @@ public class EdtMetadataService {
 
     /**
      * Re-registers the subsystems BELOW a relocated one, so each lands in the slot its own owner
-     * now occupies.
+     * now occupies — and re-points each one's up-link at that owner, which is the other half of the
+     * same move (see {@link #repointParentSubsystem}).
      *
      * <p>{@code updateTopObjectFqn} moves exactly the object it is handed, and a subsystem's
      * children are separate top objects carrying FQN chains of their own — so moving only the
@@ -10732,7 +10736,8 @@ public class EdtMetadataService {
      *
      * @param plan the descendants' re-registrations as read BEFORE the owner's own FQN changed;
      *        {@code subsystems} down-links are bare names resolved against the owner's FQN, so they
-     *        stop resolving the moment it moves
+     *        stop resolving the moment it moves. Each entry also carries the live object that will
+     *        own it, which is what the up-link write needs
      */
     private void relocateSubsystemDescendants(
             IBmPlatformTransaction transaction,
@@ -10757,6 +10762,10 @@ public class EdtMetadataService {
             String previousFqn = relocation.previousFqn();
             if (targetFqn.equals(previousFqn)) {
                 reportCoEditedFqn(targetFqn, coEditedTopObjectSink);
+                // Still re-point the up-link: an FQN that is already right with a pointer that is not
+                // is exactly the state an earlier cascade left behind, and re-running the move is the
+                // only way to heal it.
+                repointParentSubsystem(descendant, relocation.parent());
                 continue;
             }
             try {
@@ -10776,6 +10785,38 @@ public class EdtMetadataService {
                     descendant.getName(), previousFqn, targetFqn);
             reportCoEditedFqn(targetFqn, coEditedTopObjectSink);
             reportStorageRelocated(previousFqn, targetFqn, coEditedTopObjectSink);
+            repointParentSubsystem(descendant, relocation.parent());
+        }
+    }
+
+    /**
+     * Replaces {@code descendant}'s {@code parentSubsystem} with the live {@code parent} object.
+     *
+     * <p>The other half of following an owner. {@code updateTopObjectFqn} re-keys the descendant so
+     * every tool can address it again, but the descendant's own {@code .mdo} carries
+     * {@code <parentSubsystem>} — the parent's STORAGE FQN, not a bare name — and that value is held
+     * as a proxy resolved against the chain the parent had BEFORE the move. Live-measured 2026-07-29
+     * on the sandbox: after {@code WaveR9P} moved under {@code WaveParent}, its child's {@code .mdo}
+     * still read {@code <parentSubsystem>Subsystem.WaveR9P</parentSubsystem>} while the parent was
+     * {@code Subsystem.WaveParent.Subsystem.WaveR9P}, and EDT rendered the up-link as a stub.</p>
+     *
+     * <p>Handing the setter the live object — rather than re-computing a string — is what makes the
+     * serializer write the new chain, because it serializes whatever the reference resolves to.</p>
+     *
+     * <p>A failure here is logged rather than thrown: the FQN re-registration has already succeeded,
+     * so the object is addressable, and aborting the transaction over the pointer would trade a
+     * cosmetically wrong up-link for the unaddressable descendant the cascade exists to prevent.</p>
+     */
+    private void repointParentSubsystem(Subsystem descendant, Subsystem parent) {
+        if (descendant == null || parent == null) {
+            return;
+        }
+        try {
+            descendant.setParentSubsystem(parent);
+        } catch (RuntimeException e) {
+            LOG.warn("Subsystem %s was re-registered under its owner but its parentSubsystem pointer" //$NON-NLS-1$
+                    + " could not be re-pointed, so its .mdo keeps the owner's old chain: %s", //$NON-NLS-1$
+                    descendant.getName(), e.toString());
         }
     }
 
@@ -10975,6 +11016,40 @@ public class EdtMetadataService {
             return false;
         }
         return SubsystemIdentity.same(subsystemIdentity(left), subsystemIdentity(right));
+    }
+
+    /**
+     * Whether two subsystem handles denote the same POSITION in the tree — the question
+     * {@link #sameSubsystem} must not be asked, because it compares leaf names and a stale up-link
+     * proxy shares its leaf name with the live parent it went stale on.
+     *
+     * <p>Used for the one decision where that distinction is the whole point: whether a
+     * {@code parentSubsystem} pointer still points where it should. Membership tests keep the
+     * name-based identity, which is correct for them — inside one parent's collection the entries are
+     * proxies with nothing but a name to match on.</p>
+     */
+    private boolean sameSubsystemChain(Subsystem left, Subsystem right) {
+        if (left == right) {
+            return true;
+        }
+        if (left == null || right == null) {
+            return false;
+        }
+        return SubsystemIdentity.sameChain(subsystemChain(left), subsystemChain(right));
+    }
+
+    /** The owner chain of {@code subsystem}: its live BM FQN where readable, else its (proxy) URI. */
+    private String subsystemChain(Subsystem subsystem) {
+        if (subsystem == null) {
+            return null;
+        }
+        String uri;
+        try {
+            uri = String.valueOf(EcoreUtil.getURI(subsystem));
+        } catch (RuntimeException e) {
+            uri = null;
+        }
+        return SubsystemIdentity.chainOf(subsystemStorageFqn(subsystem), uri);
     }
 
     /** Reads whatever identifies {@code subsystem} off the model: its name, else its (proxy) URI. */

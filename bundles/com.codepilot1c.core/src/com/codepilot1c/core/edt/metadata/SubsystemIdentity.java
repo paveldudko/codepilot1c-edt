@@ -3,6 +3,8 @@
  */
 package com.codepilot1c.core.edt.metadata;
 
+import java.util.List;
+
 /**
  * Identity of a subsystem for membership tests inside a parent's {@code subsystems} collection.
  *
@@ -88,5 +90,66 @@ final class SubsystemIdentity {
      */
     static boolean same(String leftIdentity, String rightIdentity) {
         return leftIdentity != null && leftIdentity.equals(rightIdentity);
+    }
+
+    /**
+     * The full owner CHAIN of a subsystem, lowercased — {@code subsystem.waveparent.subsystem.child}
+     * — or {@code null} when neither the FQN nor the URI spells a well-formed chain.
+     *
+     * <p><strong>Not interchangeable with {@link #of}.</strong> {@code of} answers "which subsystem is
+     * this", by leaf name, and that is right for a membership test inside one parent's collection.
+     * It is WRONG for the question "does this pointer still point where it should", because a stale
+     * proxy and the live object it went stale on share a leaf name. Live-measured 2026-07-29: after
+     * {@code WaveR9P} moved under {@code WaveParent}, its child's {@code parentSubsystem} held a proxy
+     * at {@code Subsystem.WaveR9P} while the live parent was
+     * {@code Subsystem.WaveParent.Subsystem.WaveR9P} — both named {@code waver9p}, so the name-based
+     * comparison answered "same", the pointer write was skipped, and {@code update_metadata} reported
+     * SUCCESS having changed nothing. The chain is what tells those two apart.</p>
+     *
+     * <p>The live FQN wins when BM can answer it; the URI is the fallback, because a dangling proxy is
+     * exactly the case where BM cannot and the URI is the only thing still carrying the old chain.</p>
+     */
+    static String chainOf(String fqn, String uri) {
+        String fromFqn = chainFrom(fqn);
+        return fromFqn != null ? fromFqn : chainFrom(uriPath(uri));
+    }
+
+    /**
+     * Whether two chains denote the same position in the subsystem tree. An unreadable chain matches
+     * nothing, so a caller deciding whether to write a pointer writes it — the repairing direction.
+     * Guessing "already correct" from an unreadable chain is what leaves a dangling proxy in place.
+     */
+    static boolean sameChain(String leftChain, String rightChain) {
+        return leftChain != null && leftChain.equals(rightChain);
+    }
+
+    /** The canonical lowercased chain of {@code candidate}, or {@code null} when it is not one. */
+    private static String chainFrom(String candidate) {
+        List<String> names = SubsystemTree.nameChain(candidate);
+        if (names.isEmpty()) {
+            return null;
+        }
+        StringBuilder chain = new StringBuilder();
+        for (String name : names) {
+            if (chain.length() > 0) {
+                chain.append('.');
+            }
+            chain.append(SUBSYSTEM_SEGMENT).append('.').append(name);
+        }
+        return chain.toString().toLowerCase();
+    }
+
+    /** The dotted chain a BM/EMF URI carries: its last slash segment, fragment stripped. */
+    private static String uriPath(String uri) {
+        if (uri == null || uri.isBlank()) {
+            return null;
+        }
+        String path = uri;
+        int hash = path.indexOf('#');
+        if (hash >= 0) {
+            path = path.substring(0, hash);
+        }
+        int lastSlash = path.lastIndexOf('/');
+        return lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
     }
 }

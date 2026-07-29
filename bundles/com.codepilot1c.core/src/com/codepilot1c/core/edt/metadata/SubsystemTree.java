@@ -101,12 +101,18 @@ public final class SubsystemTree {
      * One subsystem's re-registration, forced on it by the move of an ancestor.
      *
      * @param node the subsystem to re-register
+     * @param parent the subsystem that owns {@code node} — for the top level of the plan that is the
+     *        moved subsystem itself, deeper down it is the planned node above. Carried because
+     *        re-registering the FQN is only half the move: the node's own {@code parentSubsystem}
+     *        up-link holds a proxy resolved against the owner's OLD chain, and handing the caller the
+     *        live owner object is what lets it replace that stale proxy — see
+     *        {@code EdtMetadataService.relocateSubsystemDescendants}
      * @param previousFqn the FQN it is registered under now, or {@code null} when BM cannot answer
      * @param targetFqn the FQN its owner's new position dictates, or {@code null} when the node has
      *        no readable name — there is then no slot to name for it, and the caller must leave it
      *        alone rather than move it somewhere unnameable
      */
-    public record Relocation<T>(T node, String previousFqn, String targetFqn) {
+    public record Relocation<T>(T node, T parent, String previousFqn, String targetFqn) {
     }
 
     /**
@@ -129,17 +135,25 @@ public final class SubsystemTree {
      *
      * @param ownerFqn the FQN the owner will carry AFTER its move; blank or {@code null} means the
      *        configuration root
+     * @param owner the subsystem being moved; its children are read through {@code childrenOf}, and
+     *        it is itself the {@link Relocation#parent()} of the plan's top level — the owner object
+     *        has to reach the caller, because each descendant's up-link has to be re-pointed at the
+     *        live parent and not merely re-keyed
      * @param currentFqnOf reads a node's live registered FQN
      */
     public static <T> List<Relocation<T>> descendantRelocations(
             String ownerFqn,
-            List<? extends T> children,
+            T owner,
             Function<? super T, String> nameOf,
             Function<? super T, String> currentFqnOf,
             Function<? super T, ? extends List<? extends T>> childrenOf
     ) {
         List<Relocation<T>> plan = new ArrayList<>();
-        planRelocations(ownerFqn, children, nameOf, currentFqnOf, childrenOf, newIdentitySet(), plan);
+        if (owner == null) {
+            return plan;
+        }
+        planRelocations(ownerFqn, owner, childrenOf.apply(owner), nameOf, currentFqnOf, childrenOf,
+                newIdentitySet(), plan);
         return plan;
     }
 
@@ -245,6 +259,7 @@ public final class SubsystemTree {
 
     private static <T> void planRelocations(
             String ownerFqn,
+            T owner,
             List<? extends T> nodes,
             Function<? super T, String> nameOf,
             Function<? super T, String> currentFqnOf,
@@ -260,11 +275,12 @@ public final class SubsystemTree {
                 continue;
             }
             String targetFqn = qualifiedName(ownerFqn, nameOf.apply(node));
-            plan.add(new Relocation<>(node, currentFqnOf.apply(node), targetFqn));
+            plan.add(new Relocation<>(node, owner, currentFqnOf.apply(node), targetFqn));
             if (targetFqn == null) {
                 continue;
             }
-            planRelocations(targetFqn, childrenOf.apply(node), nameOf, currentFqnOf, childrenOf, visited, plan);
+            planRelocations(targetFqn, node, childrenOf.apply(node), nameOf, currentFqnOf, childrenOf,
+                    visited, plan);
         }
     }
 

@@ -282,7 +282,7 @@ public class SubsystemTreeTest {
 
     private static List<SubsystemTree.Relocation<Node>> plan(String ownerFqn, Node owner) {
         return SubsystemTree.descendantRelocations(
-                ownerFqn, owner.children(), Node::name, Node::storageFqn, Node::children);
+                ownerFqn, owner, Node::name, Node::storageFqn, Node::children);
     }
 
     @Test
@@ -377,8 +377,42 @@ public class SubsystemTreeTest {
     @Test
     public void aChildlessOwnerPlansNothing() {
         assertTrue(plan("Subsystem.Finance", new Node("Finance")).isEmpty()); //$NON-NLS-1$ //$NON-NLS-2$
+        // And no owner at all: the caller has nothing to move, so there is nothing below it either.
         assertTrue(SubsystemTree.descendantRelocations(
                 "Subsystem.Finance", null, Node::name, Node::storageFqn, Node::children).isEmpty()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void everyDescendantCarriesTheLiveObjectThatWillOwnIt() {
+        // The up-link half of a move. Re-keying the FQN leaves the descendant's own parentSubsystem
+        // holding a proxy resolved against the owner's OLD chain, so the plan has to hand the caller
+        // the live owner object to write over it — a recomputed string would not do, because the
+        // serializer writes whatever the reference resolves to. Live-measured 2026-07-29: after
+        // WaveR9P moved under WaveParent, WaveR9C.mdo still read
+        // <parentSubsystem>Subsystem.WaveR9P</parentSubsystem> and EDT rendered the up-link as a stub.
+        Node grandChild = new Node("Debts"); //$NON-NLS-1$
+        Node child = new Node("Calendar").with(grandChild); //$NON-NLS-1$
+        Node owner = new Node("Finance").with(child); //$NON-NLS-1$
+
+        List<SubsystemTree.Relocation<Node>> plan = plan("Subsystem.Group.Subsystem.Finance", owner); //$NON-NLS-1$
+
+        assertSame("the top level of the plan is owned by the subsystem being moved", //$NON-NLS-1$
+                owner, plan.get(0).parent());
+        assertSame("and anything deeper by the planned node directly above it", //$NON-NLS-1$
+                child, plan.get(1).parent());
+    }
+
+    @Test
+    public void anUnnameableDescendantStillNamesItsOwner() {
+        // Its subtree is skipped, but the entry itself is reported — and the caller may still want to
+        // repair the pointer of the one node it can see.
+        Node unnamed = new Node(null);
+        Node owner = new Node("Finance").with(unnamed); //$NON-NLS-1$
+
+        SubsystemTree.Relocation<Node> entry = plan("Subsystem.Finance", owner).get(0); //$NON-NLS-1$
+
+        assertNull(entry.targetFqn());
+        assertSame(owner, entry.parent());
     }
 
     @Test

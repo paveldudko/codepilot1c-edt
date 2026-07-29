@@ -146,6 +146,76 @@ public class SubsystemIdentityTest {
         assertNull(SubsystemIdentity.of(null, null));
     }
 
+    // --- chain identity: the question a leaf name cannot answer --------------
+
+    @Test
+    public void aStaleFlatUpLinkIsNotTheSamePositionAsTheNestedLiveParent() {
+        // The silent no-op, as a test. After WaveR9P moved under WaveParent, its child's
+        // parentSubsystem still held a proxy at the flat Subsystem.WaveR9P while the live parent was
+        // Subsystem.WaveParent.Subsystem.WaveR9P. Both are named "waver9p", so the name-based identity
+        // answered "same", the pointer write was skipped, and update_metadata reported SUCCESS having
+        // changed nothing on disk. The chain is what tells the two apart.
+        String staleUri = "bm://TestConfiguration/Subsystem.WaveR9P#/"; //$NON-NLS-1$
+        String stale = SubsystemIdentity.chainOf(null, staleUri);
+        String live = SubsystemIdentity.chainOf("Subsystem.WaveParent.Subsystem.WaveR9P", null); //$NON-NLS-1$
+
+        assertFalse("the chains differ, so the pointer has to be rewritten", //$NON-NLS-1$
+                SubsystemIdentity.sameChain(stale, live));
+        assertTrue("...while the leaf names do NOT differ — which is the whole reason chainOf exists", //$NON-NLS-1$
+                SubsystemIdentity.same(
+                        SubsystemIdentity.of(null, staleUri), SubsystemIdentity.of("WaveR9P", null))); //$NON-NLS-1$
+    }
+
+    @Test
+    public void anUpLinkThatAlreadyPointsRightIsLeftAlone() {
+        // The other side of it: no churn when nothing moved, whichever source answered.
+        assertTrue(SubsystemIdentity.sameChain(
+                SubsystemIdentity.chainOf("Subsystem.WaveParent.Subsystem.WaveR9P", null), //$NON-NLS-1$
+                SubsystemIdentity.chainOf(null,
+                        "bm://Proj/Subsystem.WaveParent.Subsystem.WaveR9P#/"))); //$NON-NLS-1$
+    }
+
+    @Test
+    public void theLiveFqnWinsOverTheUri() {
+        assertEquals("subsystem.a.subsystem.b", //$NON-NLS-1$
+                SubsystemIdentity.chainOf("Subsystem.A.Subsystem.B", "bm://Proj/Subsystem.Stale#/")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void theUriIsTheFallbackBecauseADanglingProxyHasNoReadableFqn() {
+        String uri = "bm://TestConfiguration/Subsystem.WaveR9P#/"; //$NON-NLS-1$
+        assertEquals("subsystem.waver9p", SubsystemIdentity.chainOf(null, uri)); //$NON-NLS-1$
+        assertEquals("subsystem.waver9p", SubsystemIdentity.chainOf("   ", uri)); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void chainsAreComparedCaseInsensitively() {
+        assertTrue(SubsystemIdentity.sameChain(
+                SubsystemIdentity.chainOf("Subsystem.A.Subsystem.B", null), //$NON-NLS-1$
+                SubsystemIdentity.chainOf("subsystem.a.SUBSYSTEM.b", null))); //$NON-NLS-1$
+    }
+
+    @Test
+    public void aShorterChainIsNotAPrefixMatchForALongerOne() {
+        assertFalse(SubsystemIdentity.sameChain(
+                SubsystemIdentity.chainOf("Subsystem.A", null), //$NON-NLS-1$
+                SubsystemIdentity.chainOf("Subsystem.A.Subsystem.B", null))); //$NON-NLS-1$
+    }
+
+    @Test
+    public void anUnreadableChainMatchesNothingSoThePointerGetsWritten() {
+        // The repairing direction. Reading "already correct" out of a chain we cannot parse is exactly
+        // what leaves a dangling proxy in place.
+        assertNull(SubsystemIdentity.chainOf(null, null));
+        assertNull("another metadata kind is not a subsystem chain", //$NON-NLS-1$
+                SubsystemIdentity.chainOf("Catalog.Foo", "bm://Proj/Catalog.Foo#/")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNull("an odd segment count is a half-understood chain, so no chain at all", //$NON-NLS-1$
+                SubsystemIdentity.chainOf(null, "bm://Proj/Subsystem.A.Subsystem#/")); //$NON-NLS-1$
+        assertFalse(SubsystemIdentity.sameChain(null, null));
+        assertFalse(SubsystemIdentity.sameChain(null, "subsystem.a")); //$NON-NLS-1$
+        assertFalse(SubsystemIdentity.sameChain("subsystem.a", null)); //$NON-NLS-1$
+    }
+
     // --- what the service does with those answers ----------------------------
 
     /**
