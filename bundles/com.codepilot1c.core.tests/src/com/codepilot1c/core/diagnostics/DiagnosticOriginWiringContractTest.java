@@ -19,9 +19,14 @@ import org.junit.Test;
 /**
  * Source-grep contract test pinning the {@code origin} (marker provenance)
  * wiring inside the UI bundle. The rules themselves are unit-tested in
- * {@link DiagnosticOriginTest}; this test asserts that the collector and the
- * diagnostic record actually USE them — the step that turns a unit-tested rule
- * into live behaviour.
+ * {@link DiagnosticOriginTest} and {@link DiagnosticOriginSelectionTest}; this
+ * test asserts that the collector and the diagnostic record actually USE them —
+ * the step that turns a unit-tested rule into live behaviour.
+ *
+ * <p>A source grep is deliberately the weaker half of the pair: it cannot see
+ * whether a review entry ends up in {@code infoCount}. Anything that can be
+ * asserted on a returned value belongs in
+ * {@link DiagnosticOriginSelectionTest}, not here.</p>
  *
  * <p>Same technique (and same reason) as
  * {@link EdtDiagnosticsCollectorWiringContractTest}: {@code com.codepilot1c.ui}
@@ -102,12 +107,18 @@ public class DiagnosticOriginWiringContractTest {
     }
 
     @Test
-    public void reviewEntriesAreExcludedFromSeverityCounters() throws Exception {
+    public void severityCountingAndFilteringDelegateToTheUnitTestedRules() throws Exception {
+        // The rules themselves are asserted on returned values in
+        // DiagnosticOriginSelectionTest; what this test can add is that the
+        // collector holds no second copy of them. A source-grep assertion cannot
+        // see whether a review entry lands in infoCount — hence the split.
         String src = read(COLLECTOR_PATH);
-        assertTrue("severity counting must go through countBySeverity", //$NON-NLS-1$
+        assertTrue("severity counting must go through the single countBySeverity entry point", //$NON-NLS-1$
                 src.contains("countBySeverity(")); //$NON-NLS-1$
-        assertTrue("countBySeverity must skip review overlays", //$NON-NLS-1$
-                src.contains("isReviewAnnotation()")); //$NON-NLS-1$
+        assertTrue("counting must delegate to DiagnosticOriginSelection (unit-tested rule)", //$NON-NLS-1$
+                src.contains("DiagnosticOriginSelection.countBySeverity(")); //$NON-NLS-1$
+        assertTrue("origin filtering must delegate to DiagnosticOriginSelection (unit-tested rule)", //$NON-NLS-1$
+                src.contains("DiagnosticOriginSelection.retain(")); //$NON-NLS-1$
         assertFalse("the old inline severity counting must be gone — it counted review overlays " //$NON-NLS-1$
                 + "as info and inflated the 'is this file clean' signal", //$NON-NLS-1$
                 src.contains("d.severity() == Severity.ERROR).count()")); //$NON-NLS-1$

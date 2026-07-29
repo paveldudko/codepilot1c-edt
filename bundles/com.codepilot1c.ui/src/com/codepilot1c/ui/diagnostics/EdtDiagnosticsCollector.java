@@ -71,6 +71,7 @@ import com.codepilot1c.core.diagnostics.DcsSchemaValidator;
 import com.codepilot1c.core.diagnostics.DcsSchemaValidator.DcsSchemaIssue;
 import com.codepilot1c.core.diagnostics.CheckInfoResolver;
 import com.codepilot1c.core.diagnostics.DiagnosticOrigin;
+import com.codepilot1c.core.diagnostics.DiagnosticOriginSelection;
 import com.codepilot1c.core.diagnostics.DiagnosticsLineFilter;
 import com.codepilot1c.core.diagnostics.PathMatchTokens;
 import com.codepilot1c.core.diagnostics.RelativePathCandidates;
@@ -1001,42 +1002,30 @@ public class EdtDiagnosticsCollector {
      * soft scan budget.
      */
     private List<EdtDiagnostic> applyOriginFilter(List<EdtDiagnostic> diagnostics, DiagnosticsQuery query) {
-        if (diagnostics == null || diagnostics.isEmpty() || query == null) {
+        if (query == null) {
             return diagnostics;
         }
-        List<EdtDiagnostic> filtered = new ArrayList<>(diagnostics.size());
-        for (EdtDiagnostic d : diagnostics) {
-            if (DiagnosticOrigin.accepts(query.originFilter(), d.origin())) {
-                filtered.add(d);
-            }
-        }
-        return filtered.size() == diagnostics.size() ? diagnostics : filtered;
+        return DiagnosticOriginSelection.retain(diagnostics, query.originFilter(), EdtDiagnostic::origin);
     }
 
     /**
      * Counts diagnostics per severity, EXCLUDING review overlays — a review
      * comment is not an error/warning/info, so it must never inflate the
-     * counters a caller uses to decide "is this file clean".
+     * counters a caller uses to decide "is this file clean". Holds even when the
+     * caller asked for review entries ({@code origin=all}) and they are present
+     * in the returned list.
+     *
+     * <p>The rule itself lives in {@link DiagnosticOriginSelection} so it is
+     * covered by a hermetic unit test — this bundle has no reachable test
+     * runtime.</p>
      *
      * @return {@code [errors, warnings, infos]}
      */
     private static int[] countBySeverity(List<EdtDiagnostic> diagnostics) {
-        int errors = 0;
-        int warnings = 0;
-        int infos = 0;
-        if (diagnostics != null) {
-            for (EdtDiagnostic d : diagnostics) {
-                if (d.isReviewAnnotation()) {
-                    continue;
-                }
-                switch (d.severity()) {
-                    case ERROR -> errors++;
-                    case WARNING -> warnings++;
-                    default -> infos++;
-                }
-            }
-        }
-        return new int[] {errors, warnings, infos};
+        return DiagnosticOriginSelection.countBySeverity(
+                diagnostics,
+                EdtDiagnostic::origin,
+                d -> d.severity() == null ? 0 : d.severity().getLevel());
     }
 
     private int getSoftScanLimit(int maxItems, int multiplier) {

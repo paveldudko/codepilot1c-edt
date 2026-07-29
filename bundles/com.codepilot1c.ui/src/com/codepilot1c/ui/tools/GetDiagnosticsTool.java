@@ -61,7 +61,7 @@ public class GetDiagnosticsTool implements ITool {
                     "origin": {
                         "type": "string",
                         "enum": ["diagnostics", "all", "compiler", "analyzer", "custom-check", "review-annotation", "unknown"],
-                        "description": "Which marker provenances to include. Default 'diagnostics' = real EDT diagnostics only (compiler/analyzer/custom-check/unknown) and EXCLUDES review annotations contributed by other plugins — e.g. the commit-review plugin's comment markers, which declare no severity and used to leak in as INFO with nothing to tell them apart. Use 'all' to also get them (rendered as a separate 'Review annotations' section, never counted as errors/warnings/info), or a single origin name to narrow to just that provenance. A comma-separated list is accepted too."
+                        "description": "Which marker provenances to include. Default 'diagnostics' = real EDT diagnostics only; review/comment annotations contributed by other EDT plugins are left out and never counted. Pass 'all' when you also want those annotations, or one origin name (comma-separated list accepted) to narrow to a single provenance."
                     },
                     "max_items": {
                         "type": "integer",
