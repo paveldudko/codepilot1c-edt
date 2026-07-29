@@ -1,4 +1,5 @@
 package com.codepilot1c.core.tools.metadata;
+import com.codepilot1c.core.tools.SchemaKeyGuard;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.ToolParameters;
 import com.codepilot1c.core.tools.ToolMeta;
@@ -6,6 +7,7 @@ import com.codepilot1c.core.tools.AbstractTool;
 
 import java.util.Map;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 import com.codepilot1c.core.edt.metadata.MetadataOperationException;
@@ -39,7 +41,7 @@ public class EdtValidateRequestTool extends AbstractTool {
                 },
                 "payload": {
                   "type": "object",
-                  "description": "Те же аргументы, которые потом будут переданы в мутационный tool без validation_token; для composite tools должен включать command"
+                  "description": "Те же аргументы, которые потом будут переданы в мутационный tool без validation_token; для composite tools должен включать command. Top-level keys are checked against the target tool's own schema and an unknown one is REFUSED (not dropped): put per-object values such as 'type' / 'length' inside the nested 'properties' object, not at the top level."
                 }
               },
               "required": ["project", "operation", "payload"],
@@ -81,6 +83,11 @@ public class EdtValidateRequestTool extends AbstractTool {
                 }
                 ValidationOperation operation = ValidationOperation.resolve(requestedOperation, (Map<String, Object>) payloadMap);
 
+                ToolResult refusal = refuseUnknownPayloadKeys(requestedOperation, operation, payloadMap);
+                if (refusal != null) {
+                    return refusal;
+                }
+
                 ValidationRequest request = new ValidationRequest(project, operation, (Map<String, Object>) payloadMap);
                 ValidationResult result = service.validateAndIssueToken(request);
                 result = new ValidationResult(
@@ -98,6 +105,48 @@ public class EdtValidateRequestTool extends AbstractTool {
                 return ToolResult.failure(errorJson("INTERNAL_ERROR", e.getMessage(), false)); //$NON-NLS-1$
             }
         });
+    }
+
+    /**
+     * Refuses a payload whose top-level keys the target mutating tool does not accept, instead of
+     * letting the normalizer drop them and issuing a token anyway.
+     *
+     * <p>This is the layer the live defect needed (2026-07-29): {@code add_metadata_child} was called
+     * with {@code type} at the top level instead of inside {@code properties}. Validation answered
+     * {@code valid:true} with a {@code normalizedPayload} that no longer mentioned {@code type},
+     * handed out a token, and the mutation then took its "no type requested" branch and wrote the
+     * default {@code String(150)} to the .mdo while reporting success. Catching a bad request before
+     * a mutation is precisely this tool's mandate, so a payload whose keys would be discarded must
+     * not receive a token.</p>
+     *
+     * <p>Top level only — {@code properties}, {@code changes} and the operation descriptors are
+     * legitimately open-ended and are never judged. Fail-open by construction: an unobtainable or
+     * non-enumerating schema yields a clean report (see {@link SchemaKeyGuard}).</p>
+     *
+     * @return the refusal, or {@code null} when the payload's keys are all accounted for
+     */
+    private ToolResult refuseUnknownPayloadKeys(
+            String requestedOperation,
+            ValidationOperation operation,
+            Map<?, ?> payload
+    ) {
+        if (ValidationPayloadKeyContract.isExempt(operation)) {
+            return null;
+        }
+        SchemaKeyGuard.Report report = SchemaKeyGuard.inspect(
+                ValidationPayloadKeyContract.targetToolSchema(operation),
+                payload.keySet(),
+                ValidationPayloadKeyContract.extraAcceptedKeys(operation));
+        if (report.isClean()) {
+            return null;
+        }
+        // validation_token is a real parameter of the target tool but never part of the payload
+        // (the payload is what gets passed WITHOUT it), so it is accepted silently yet not advertised.
+        String message = SchemaKeyGuard.refusalMessage(
+                requestedOperation,
+                report.unknownKeys(),
+                SchemaKeyGuard.forDisplay(report.acceptedKeys(), Set.of("validation_token"))); //$NON-NLS-1$
+        return ToolResult.failure(errorJson("KNOWLEDGE_REQUIRED", message, false)); //$NON-NLS-1$
     }
 
     private String stringParam(Map<String, Object> params, String key) {

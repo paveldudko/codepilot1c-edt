@@ -38,6 +38,24 @@ public abstract class AbstractTool implements ITool {
 
     private static final String PLUGIN_ID = "com.codepilot1c.core"; //$NON-NLS-1$
 
+    /**
+     * Tools reached only by dispatch, never called directly, so an "unknown parameter" advisory on
+     * them would report the dispatcher's own routing rather than a caller mistake.
+     *
+     * <p>{@code edt_diagnostics}, {@code qa_inspect} and {@code qa_generate} forward the whole
+     * argument map to the chosen delegate — {@code command} included, and {@code edt_diagnostics}
+     * additionally injects BOTH {@code project} and {@code project_name} via
+     * {@code EdtDiagnosticsCommandContract.applyProjectFieldAliases}. The delegates below therefore
+     * always see keys their own schemas do not declare. (The three dispatchers themselves need no
+     * entry: their schemas state {@code additionalProperties: true}, which already turns the guard
+     * off.)</p>
+     */
+    private static final Set<String> ADVISORY_EXEMPT_TOOLS = Set.of(
+            "edt_metadata_smoke", "edt_trace_export", "analyze_tool_error", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "edt_update_infobase", "edt_launch_app", //$NON-NLS-1$ //$NON-NLS-2$
+            "qa_explain_config", "qa_status", "qa_steps_search", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "qa_init_config", "qa_migrate_config", "qa_compile_feature"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
     private static final ILog NOOP_LOG = new ILog() {
         @Override
         public void addLogListener(ILogListener listener) {
@@ -153,16 +171,55 @@ public abstract class AbstractTool implements ITool {
                 for (IToolInterceptor interceptor : ToolInterceptorRegistry.getInstance().getInterceptors()) {
                     effective = interceptor.afterToolCall(name, effective, duration);
                 }
-                return effective;
+                return withUnknownParameterAdvisory(effective, parameters);
             });
         } catch (ToolParameters.ToolParameterException e) {
-            return CompletableFuture.completedFuture(
-                    ToolResult.failure(String.format("Parameter error in %s: %s", name, e.getMessage()))); //$NON-NLS-1$
+            return CompletableFuture.completedFuture(withUnknownParameterAdvisory(
+                    ToolResult.failure(String.format("Parameter error in %s: %s", name, e.getMessage())), //$NON-NLS-1$
+                    parameters));
         } catch (Exception e) {
             log.log(new Status(IStatus.ERROR, "com.codepilot1c.core", //$NON-NLS-1$
                     String.format("Tool %s failed: %s", name, e.getMessage()), e)); //$NON-NLS-1$
-            return CompletableFuture.completedFuture(
-                    ToolResult.failure(String.format("Internal error in %s: %s", name, e.getMessage()))); //$NON-NLS-1$
+            return CompletableFuture.completedFuture(withUnknownParameterAdvisory(
+                    ToolResult.failure(String.format("Internal error in %s: %s", name, e.getMessage())), //$NON-NLS-1$
+                    parameters));
+        }
+    }
+
+    /**
+     * Appends an honest advisory when the caller passed a top-level parameter this tool's schema does
+     * not declare, so a mistyped or misplaced key stops being a silent no-op.
+     *
+     * <p>This is the read-only half of the silent-drop class that {@code edt_validate_request} closes
+     * for mutations: {@code scan_metadata_index} answered a {@code kinds=…} call with everything,
+     * unfiltered, and {@code get_diagnostics} answered a {@code project=…} call about the default
+     * project — both without a word. Advisory ONLY: it never fails a call and never changes
+     * behaviour, so a tool whose schema under-declares a pass-through key loses nothing but the
+     * accuracy of this note.</p>
+     */
+    private ToolResult withUnknownParameterAdvisory(ToolResult result, Map<String, Object> parameters) {
+        try {
+            if (result == null || parameters == null || parameters.isEmpty()
+                    || ADVISORY_EXEMPT_TOOLS.contains(name)) {
+                return result;
+            }
+            SchemaKeyGuard.Report report = SchemaKeyGuard.inspect(getParameterSchema(), parameters.keySet());
+            if (report.isClean()) {
+                return result;
+            }
+            String advisory = SchemaKeyGuard.advisoryLine(name, report.unknownKeys(),
+                    SchemaKeyGuard.forDisplay(report.acceptedKeys(), null));
+            if (!result.isSuccess()) {
+                String error = result.getErrorMessage() == null ? "" : result.getErrorMessage(); //$NON-NLS-1$
+                return ToolResult.failure(error + advisory);
+            }
+            String content = result.getContent() == null ? "" : result.getContent(); //$NON-NLS-1$
+            return result.getStructuredData() != null
+                    ? ToolResult.success(content + advisory, result.getType(), result.getStructuredData())
+                    : ToolResult.success(content + advisory, result.getType());
+        } catch (RuntimeException e) {
+            // An advisory must never be the reason a call fails.
+            return result;
         }
     }
 

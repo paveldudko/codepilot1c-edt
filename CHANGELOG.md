@@ -21,8 +21,37 @@ default-type branch plus the string-length fallback, not a lost list. Nothing ne
 What the probe did expose is worse: `edt_validate_request` accepted the payload carrying an unknown
 top-level key, **dropped the key**, answered `valid:true` and issued a token — so a mistyped parameter
 wrote wrong metadata to disk and reported success. Third live instance of the swallowed-parameter class
-(after `scan_metadata_index kinds` and `get_diagnostics project`), and the first that mutates. Fix in
-progress.
+(after `scan_metadata_index kinds` and `get_diagnostics project`), and the first that mutates. **Closed
+below.**
+
+* **`edt_validate_request` now refuses a payload whose top-level keys the target tool does not accept,
+  instead of dropping them and issuing a token anyway.** The accepted set is the target mutating tool's own
+  `getParameterSchema()` (single source — it cannot drift from what the tool really takes), plus the extra
+  spellings `MetadataRequestValidationService` genuinely reads (`adoptExisting`/`adopt`, the
+  `ensure_module_artifact` camelCase aliases, `role_fqn`/`role_name`) — a key that IS read is not silently
+  discarded, so it must not be refused. The refusal names the probable intent: a case/underscore variant, a
+  singular-plural variant, a short-edit-distance typo, or the nested container the key is documented to live
+  in (`type` → `properties.type`, which is the exact live case). **Top level only** — `properties`, `changes`
+  and the operation descriptors are legitimately open-ended and are never judged. Fail-open by construction:
+  an unparsable schema, a schema without `properties`, or an explicit `additionalProperties: true` (how the
+  dispatchers declare that they route keys they do not list) yields a clean verdict, so no legitimate call can
+  be falsely refused. All 21 operations of the advertised `operation` enum were audited against their target
+  tool's schema — including the three composite routers, which all enumerate their per-command keys — so the
+  exemption list ships **empty**. New `SchemaKeyGuard` (pure key-matching/did-you-mean, no EDT runtime) and
+  `ValidationPayloadKeyContract` (operation → target tool + audited aliases). Covered behaviourally by
+  `SchemaKeyGuardTest` (23), `EdtValidateRequestUnknownPayloadKeyTest` (13, incl. the live case and
+  "the same call with `type` inside `properties` still validates") and `ValidationPayloadKeyContractAuditTest`
+  (5, the audit encoded as a drift alarm).
+
+* **Every tool now says so when it ignores an unknown parameter.** `AbstractTool.execute` compares the
+  incoming top-level keys against the tool's schema and appends one honest advisory line naming the ignored
+  key(s) and the likely intended one. This is the layer that covers the read-only tools where the same class
+  was observed live (`scan_metadata_index` answered a `kinds=…` call with everything unfiltered;
+  `get_diagnostics` answered a `project=…` call about the default project). **Advisory only** — it never
+  fails a call, never re-routes one, and preserves the result's type and structured data, so a tool whose
+  schema under-declares a pass-through key cannot regress. Dispatch-only delegates (`edt_update_infobase`,
+  `qa_status`, …) are exempt because their dispatcher forwards `command` and both project aliases to them.
+  Covered by `AbstractToolUnknownParameterAdvisoryTest` (7).
 
 **F1 non-idempotency reproduced** on this build (a repeated `set.parentSubsystem` duplicates the parent's
 entry) and its root confirmed by observation, not inference: every entry of the parent's `subsystems`
