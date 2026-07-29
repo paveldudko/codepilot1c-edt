@@ -11,6 +11,30 @@ commit hash in parentheses where useful.
 
 ### Round-5 (2026-07-29) — the parameter round-trip, answered by a zero-build probe
 
+* **Nesting a subsystem takes it off the configuration root, and un-nesting puts it back.** F1 fixed two
+  sides of subsystem nesting; there is a third. Ground truth from Accounting management (live 2026-07-29):
+  `Configuration.mdo` holds exactly 34 `<subsystems>Subsystem.X</subsystems>` entries — one per top-level
+  subsystem — and no nested one (`AccessManagement`, `Calendar`, `Bonuses` are all absent, their root
+  `StandardSubsystems` present). The sandbox instead listed `Subsystem.WaveChild` both under `WaveParent`
+  **and** at the root, because nothing ever removed it: `reparentSubsystem` wrote the two subsystem-side
+  references and left `Configuration.subsystems` alone. The membership is now settled in both directions —
+  which also matters on detach, since a subsystem dropped from its parent and absent from the root would
+  leave the configuration altogether. Asymmetric on the same grounds as `SubsystemIdentity`: an entry that
+  cannot be identified is left alone rather than removed, and a subsystem that cannot be identified is not
+  added (a blind add would append a second root entry instead of matching the one already there).
+
+* **Deleting a subsystem no longer leaves a dangling entry in its parent.** `removeTopLevelObjectLinks` swept
+  only `Configuration.subsystems`, so deleting a subsystem EDT itself had nested left
+  `<subsystems>Name</subsystems>` behind in the parent's `.mdo` — and with the root fix above that would now
+  apply to the ones this plugin nests too. Every parent that lists the name is swept as well.
+
+* Two assertions of `SubsystemNestingSymmetryContractTest` had fallen behind the code in round 4 (the file
+  was outside that round's test filter, so its failure went unseen): one pinned a `return false;` that
+  `addSubsystemChild` no longer has, the other the name comparison `sameSubsystem` gave up when identity
+  moved into `SubsystemIdentity`. Both now describe the current code, and the identity internals are left to
+  `SubsystemIdentityTest`, which tests them by result. A reminder of why source-contract assertions are
+  only ever a supplement.
+
 * **A rendered parameter cell survives the round-trip.** `render_template` wrote
   `[["Товар","Цена"],["[Название]","[Сумма]"]]` and `inspect_template` read the second row back as two
   **empty** cells, while parameters in real EDT-authored templates read fine. Direction was undetermined at

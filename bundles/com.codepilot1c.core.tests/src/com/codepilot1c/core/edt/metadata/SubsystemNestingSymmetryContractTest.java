@@ -103,7 +103,7 @@ public class SubsystemNestingSymmetryContractTest {
         String add = methodBody(source, "private boolean addSubsystemChild("); //$NON-NLS-1$
         assertTrue("membership must be tested before adding, or a re-run duplicates the entry", //$NON-NLS-1$
                 add.contains("if (containsSubsystem(parent.getSubsystems(), child)) {")); //$NON-NLS-1$
-        assertTrue("and the caller must be able to tell nothing changed", add.contains("return false;")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("and the caller must be able to tell nothing changed", add.contains("return pruned;")); //$NON-NLS-1$ //$NON-NLS-2$
 
         String children = methodBody(source, "private void applySubsystemChildren("); //$NON-NLS-1$
         assertTrue("an unchanged list must not be cleared and rebuilt — that churns the .mdo", //$NON-NLS-1$
@@ -113,11 +113,40 @@ public class SubsystemNestingSymmetryContractTest {
     }
 
     @Test
-    public void identityIsTheFlatNameNotTheJavaInstance() {
+    public void identityIsNotTheJavaInstance() {
         String body = methodBody(readSource(SERVICE_PATH), "private boolean sameSubsystem("); //$NON-NLS-1$
         // A value resolved inside the write transaction is not the same handle as the one already
-        // in the list, so instance equality would make every write look like a move.
-        assertTrue(body.contains("leftName.equalsIgnoreCase(rightName)")); //$NON-NLS-1$
+        // in the list, so instance equality would make every write look like a move. What the
+        // identity itself is made of — a name where one is readable, the proxy URI where it is not —
+        // is decided by SubsystemIdentity and tested by result in SubsystemIdentityTest; asserting
+        // its internals here would only pin one more copy of the rule to the source text.
+        assertTrue(body.contains("SubsystemIdentity.same(")); //$NON-NLS-1$
+    }
+
+    /**
+     * The third side: {@code Configuration.subsystems} lists the ROOTS only. Ground truth from
+     * Accounting management (live 2026-07-29): 34 root entries in {@code Configuration.mdo}, and the
+     * nested {@code AccessManagement} / {@code Calendar} / {@code Bonuses} appear in none of them,
+     * while their root {@code StandardSubsystems} does. Gaining a parent therefore has to drop the
+     * subsystem from the root, and losing one has to put it back — or the subsystem leaves the
+     * configuration altogether.
+     */
+    @Test
+    public void gainingOrLosingAParentUpdatesTheConfigurationRoot() {
+        String source = readSource(SERVICE_PATH);
+        String reparent = methodBody(source, "private void reparentSubsystem("); //$NON-NLS-1$
+        assertTrue("re-parenting must settle root membership, in both directions", //$NON-NLS-1$
+                reparent.contains("setConfigurationRootMembership(configuration, child, newParent == null)")); //$NON-NLS-1$
+
+        String children = methodBody(source, "private void applySubsystemChildren("); //$NON-NLS-1$
+        assertTrue("a child dropped from the list becomes a root again", //$NON-NLS-1$
+                children.contains("setConfigurationRootMembership(configuration, dropped, true)")); //$NON-NLS-1$
+        assertTrue("and a child added to the list stops being one", //$NON-NLS-1$
+                children.contains("setConfigurationRootMembership(configuration, child, false)")); //$NON-NLS-1$
+
+        String remove = methodBody(source, "private void removeSubsystemLinks("); //$NON-NLS-1$
+        assertTrue("deleting a subsystem must unlink it from whatever parent lists it, not just the root", //$NON-NLS-1$
+                remove.contains("removeByName(subsystem.getSubsystems(), name)")); //$NON-NLS-1$
     }
 
     // --- the far side reaches disk ------------------------------------------

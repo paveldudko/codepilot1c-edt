@@ -10491,7 +10491,7 @@ public class EdtMetadataService {
     ) {
         if ("parentsubsystem".equals(normalizeToken(reference.getName()))) { //$NON-NLS-1$
             Subsystem newParent = resolveSubsystemValue(configuration, reference, value);
-            reparentSubsystem(target, newParent, coEditedTopObjectSink);
+            reparentSubsystem(configuration, target, newParent, coEditedTopObjectSink);
             return;
         }
         applySubsystemChildren(configuration, target, reference, value, coEditedTopObjectSink);
@@ -10523,7 +10523,12 @@ public class EdtMetadataService {
     }
 
     /** Moves {@code child} under {@code newParent} (or to the configuration root when null). */
-    private void reparentSubsystem(Subsystem child, Subsystem newParent, Consumer<String> coEditedTopObjectSink) {
+    private void reparentSubsystem(
+            Configuration configuration,
+            Subsystem child,
+            Subsystem newParent,
+            Consumer<String> coEditedTopObjectSink
+    ) {
         Subsystem oldParent = child.getParentSubsystem();
         if (oldParent != null && !sameSubsystem(oldParent, newParent)) {
             if (removeSubsystemChild(oldParent, child)) {
@@ -10533,14 +10538,66 @@ public class EdtMetadataService {
         if (!sameSubsystem(oldParent, newParent)) {
             child.setParentSubsystem(newParent);
         }
-        if (newParent == null) {
-            return;
-        }
         // Also runs when the pointer was already correct: that is exactly the half-linked state
         // this fix exists to repair.
-        if (addSubsystemChild(newParent, child)) {
+        if (newParent != null && addSubsystemChild(newParent, child)) {
             reportCoEditedSubsystem(newParent, coEditedTopObjectSink);
         }
+        setConfigurationRootMembership(configuration, child, newParent == null);
+    }
+
+    /**
+     * Keeps {@code Configuration.subsystems} listing the ROOTS only, which is the third side of a
+     * nesting EMF maintains none of.
+     *
+     * <p>Ground truth from an EDT-authored configuration (Accounting management, live 2026-07-29):
+     * {@code Configuration.mdo} carries exactly 34 {@code <subsystems>Subsystem.X</subsystems>}
+     * entries — one per top-level subsystem — and no nested one (checked: {@code AccessManagement},
+     * {@code Calendar} and {@code Bonuses} are all absent, while their root
+     * {@code StandardSubsystems} is present). Nesting is stored by qualified name at the root and by
+     * bare name inside a parent.</p>
+     *
+     * <p>Without this, a subsystem that gained a parent stayed listed at the root as well: the
+     * sandbox showed {@code Subsystem.WaveChild} both under {@code WaveParent} and in
+     * {@code Configuration.mdo}. It also matters in the other direction — detaching a nested
+     * subsystem has to put it back, or the subsystem would leave the configuration altogether.</p>
+     *
+     * <p>Asymmetric on purpose, on the same grounds as {@link SubsystemIdentity}: an entry we cannot
+     * identify is left alone rather than removed, and a subsystem we cannot identify is not added
+     * (adding one blind would append a duplicate root entry instead of matching the one there).</p>
+     */
+    private boolean setConfigurationRootMembership(
+            Configuration configuration,
+            Subsystem subsystem,
+            boolean shouldBeRoot
+    ) {
+        if (configuration == null || subsystem == null) {
+            return false;
+        }
+        List<Subsystem> roots = configuration.getSubsystems();
+        if (shouldBeRoot) {
+            if (subsystemIdentity(subsystem) == null) {
+                LOG.warn("Subsystem detached from its parent but not identifiable; left out of the" //$NON-NLS-1$
+                        + " configuration root to avoid a duplicate entry"); //$NON-NLS-1$
+                return false;
+            }
+            if (containsSubsystem(roots, subsystem)) {
+                return false;
+            }
+            roots.add(subsystem);
+            LOG.info("Subsystem %s listed at the configuration root: it has no parent", //$NON-NLS-1$
+                    subsystem.getName());
+            return true;
+        }
+        for (int i = 0; i < roots.size(); i++) {
+            if (sameSubsystem(roots.get(i), subsystem)) {
+                roots.remove(i);
+                LOG.info("Subsystem %s dropped from the configuration root: it is nested now", //$NON-NLS-1$
+                        subsystem.getName());
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Replaces {@code parent.subsystems} and re-points every affected child's parent slot. */
@@ -10565,6 +10622,7 @@ public class EdtMetadataService {
             }
             if (sameSubsystem(dropped.getParentSubsystem(), parent)) {
                 dropped.setParentSubsystem(null);
+                setConfigurationRootMembership(configuration, dropped, true);
                 reportCoEditedSubsystem(dropped, coEditedTopObjectSink);
             }
         }
@@ -10580,6 +10638,7 @@ public class EdtMetadataService {
                 child.setParentSubsystem(parent);
                 reportCoEditedSubsystem(child, coEditedTopObjectSink);
             }
+            setConfigurationRootMembership(configuration, child, false);
         }
 
         if (!sameSubsystemList(current, requested)) {
@@ -14971,7 +15030,7 @@ public class EdtMetadataService {
             case XDTO_PACKAGE -> removeByName(configuration.getXDTOPackages(), name);
             case WS_REFERENCE -> removeByName(configuration.getWsReferences(), name);
             case ROLE -> removeByName(configuration.getRoles(), name);
-            case SUBSYSTEM -> removeByName(configuration.getSubsystems(), name);
+            case SUBSYSTEM -> removeSubsystemLinks(configuration, name);
             case EXCHANGE_PLAN -> removeByName(configuration.getExchangePlans(), name);
             case CHART_OF_ACCOUNTS -> removeByName(configuration.getChartsOfAccounts(), name);
             case CHART_OF_CHARACTERISTIC_TYPES -> removeByName(configuration.getChartsOfCharacteristicTypes(), name);
@@ -14997,6 +15056,23 @@ public class EdtMetadataService {
             case INTEGRATION_SERVICE -> removeByName(configuration.getIntegrationServices(), name);
             case BOT -> removeByName(configuration.getBots(), name);
             case WEB_SOCKET_CLIENT -> removeByName(configuration.getWebSocketClients(), name);
+        }
+    }
+
+    /**
+     * Unlinks a deleted subsystem from every side of the nesting: the configuration root and any
+     * parent that lists it.
+     *
+     * <p>Sweeping the root alone was never enough — a subsystem EDT itself had nested is not listed
+     * there, so deleting one left a dangling {@code <subsystems>} line in its parent's {@code .mdo}.
+     * Now that {@link #setConfigurationRootMembership} keeps nested subsystems off the root, it would
+     * not be enough for the ones this plugin nests either.</p>
+     */
+    private void removeSubsystemLinks(Configuration configuration, String name) {
+        removeByName(configuration.getSubsystems(), name);
+        for (Subsystem subsystem : SubsystemTree.<Subsystem>flatten(
+                configuration.getSubsystems(), Subsystem::getSubsystems)) {
+            removeByName(subsystem.getSubsystems(), name);
         }
     }
 
