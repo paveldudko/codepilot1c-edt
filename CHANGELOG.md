@@ -9,6 +9,25 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Round-7 live validation (2026-07-29) — the relocation works; the old directory survives it
+
+On build `0.1.7.20260729-0912`, re-parenting a fresh subsystem no longer reports a false
+`EDT_TRANSACTION_FAILED`: the root entry is dropped, the `.mdo` moves to
+`src/Subsystems/WaveParent/Subsystems/WaveR6Child/`, the object stays addressable by its flat FQN
+(`exists:true`, `parentSubsystem` set), and the parent's down-link resolves with the owner chain —
+`subsystems = [… , Subsystem.WaveParent.Subsystem.WaveR6Child]` — exactly as the reference project does. The
+unaddressability regression is closed.
+
+One gap, measured rather than predicted, and it is the same one named as the only thing left to add: the OLD
+top-level directory survives the move, leaving a duplicate 206-byte `.mdo` that a workspace refresh would
+re-import as a second subsystem. Filesystem reconciliation after a successful relocation is **outstanding** —
+`relocateSubsystemStorage` already holds both FQNs and `MetadataResourcePaths.subsystemDirectory` computes both
+paths; the removal has to run after the export, guarded by "the new `.mdo` exists", or it would delete the only
+copy. The round-7 addendum in `issues/2026-07-28-bus-drain-recon.md` carries the insertion point.
+
+Pre-existing corruption is not repairable through the tool and should not be: `Subsystem.WaveChild` in the
+sandbox stays unaddressable and is left as the defect reference.
+
 ### Round-7 (2026-07-29) — the fourth side of subsystem nesting: the storage itself
 
 * **Re-parenting a subsystem now moves its storage, so the object stays addressable.** `ce4bf06` added the

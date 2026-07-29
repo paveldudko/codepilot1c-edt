@@ -664,6 +664,36 @@ platform-resource, поэтому `toProjectRelativePath` (`:8081`, без фи�
   отдельную секцию), но выставляет эти маркеры **другой** плагин (commit-review), а в песочном EDT он не
   установлен — исключать нечего. Проверка требует стенда с обоими плагинами.
 
+## Addendum round 7 — живая валидация переезда подсистемы на билде `0.1.7.20260729-0912`
+
+Проба на СВЕЖЕЙ подсистеме (`Subsystem.WaveR6Child`: создать → `set.parentSubsystem = Subsystem.WaveParent`):
+
+* ✅ **ложный отказ ушёл** — `update_metadata` вернул успех, никакого `EDT_TRANSACTION_FAILED`;
+* ✅ `Configuration.mdo` подсистему не числит, `WaveParent.mdo` числит (`<subsystems>WaveR6Child</subsystems>`);
+* ✅ **файл переехал**: `src/Subsystems/WaveParent/Subsystems/WaveR6Child/WaveR6Child.mdo`;
+* ✅ **объект адресуем** — `edt_metadata_details` по плоскому `Subsystem.WaveR6Child` даёт `exists:true`,
+  `parentSubsystem = Subsystem.WaveParent`. Регрессия неадресуемости закрыта;
+* ✅ down-link у родителя резолвится с цепочкой владельцев, **как в AM**:
+  `subsystems = [Subsystem, Subsystem, Subsystem.WaveParent.Subsystem.WaveR6Child]` — две безымянные записи
+  это ПРЕДСУЩЕСТВУЮЩАЯ порча (висячий `WaveChild2` + осиротевший `WaveChild`), третья — новая и правильная.
+
+### ОСТАЛОСЬ (единственное): старый каталог не убирается после переезда
+`src/Subsystems/WaveR6Child/WaveR6Child.mdo` (206 байт) **остался на верхнем уровне** — дубль определения.
+Это ровно тот единственный пункт, который автор фикса заранее назвал к доработке «если живая валидация покажет
+осиротевший `src/Subsystems/<Child>/`»; теперь это измеренный факт, а не риск. Опасность — воскрешение: при
+следующем refresh/re-import EDT увидит второе определение подсистемы на верхнем уровне.
+
+Точка вставки готова: `relocateSubsystemStorage` (`EdtMetadataService.java:10644-10691`) уже знает `currentFqn`
+и `targetFqn`, а `MetadataResourcePaths.subsystemDirectory(fqn)` считает оба пути. Убирать нужно **после**
+экспорта (когда новый `.mdo` уже на диске) и под гардом «новый файл существует» — иначе уборка снесёт
+единственную копию. Готовый образец post-commit уборки по файловой системе — `cleanupRemovedFilesystemArtifacts`
+(вызов около `:15098`), путь удаления там уже строится из storage-FQN.
+
+**Предсуществующую порчу тул починить не может и не должен пытаться:** `Subsystem.WaveChild` остаётся
+неадресуемым (его storage-FQN так и плоский, в корне его нет, down-link родителя — безымянная заглушка).
+Лечится вручную: либо вернуть строку в `Configuration.mdo`, либо перенести файл под
+`Subsystems/WaveParent/Subsystems/WaveChild/`. Оставлен как есть — эталон дефекта.
+
 ## Addendum round 6 — живая валидация round 5 на билде `0.1.7.20260729-0811`
 
 Установлен через `redeploy-1529.ps1`, оба проекта READY, индекс готов. Итог по четырём фиксам round 5:
