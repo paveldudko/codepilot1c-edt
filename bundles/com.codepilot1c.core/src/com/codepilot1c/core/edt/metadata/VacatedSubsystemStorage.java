@@ -21,8 +21,14 @@ package com.codepilot1c.core.edt.metadata;
  * <p>Kept out of the service as a decision over plain booleans because both ways of getting it wrong
  * destroy data and neither shows up in a source-level assertion: removing the old directory when the
  * export never produced the new descriptor deletes the only copy there is, and removing it
- * recursively deletes descendants that were NOT relocated along with it (a subsystem's children are
- * separate top objects, each registered under its own FQN chain).</p>
+ * recursively deletes descendants that were not relocated along with it.</p>
+ *
+ * <p>A move now re-registers the whole subtree, so each descendant arrives here as a relocation of
+ * its own and its old directory is cleaned by its own entry. The "other entries" guard is what
+ * covers the residue: the descendants that CANNOT follow their owner (an unnameable subsystem, or one
+ * BM will not hand back as a top object) keep their old registration on purpose, and their files are
+ * then the only copy of a still-live definition. It also fires while the descendants' own entries are
+ * still pending, since a parent is cleaned before the children below it.</p>
  */
 public final class VacatedSubsystemStorage {
 

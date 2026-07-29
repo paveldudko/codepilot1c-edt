@@ -183,6 +183,45 @@ public class SubsystemNestingSymmetryContractTest {
     }
 
     /**
+     * A move takes the whole subtree with it. {@code updateTopObjectFqn} re-registers the ONE object
+     * it is handed, and a subsystem's children are separate top objects with chains of their own — so
+     * moving only the subsystem the request named leaves every descendant keyed under a chain whose
+     * root is gone.
+     *
+     * <p>Live-measured 2026-07-29 on the sandbox: {@code WaveR8P} holding {@code WaveR8C} moved under
+     * {@code WaveParent}; afterwards {@code WaveR8P.subsystems} read back as a NAMELESS stub and
+     * {@code Subsystem.WaveR8C} answered "Object not found" to {@code edt_metadata_details} AND to
+     * {@code update_metadata} — an unaddressable object no tool could repair. Same class as the
+     * half-linked move above, one level down.</p>
+     *
+     * <p>What only the source can show is the ORDER: the subtree's FQNs are bare-name down-links
+     * resolved against the owner's FQN, so they stop resolving the moment the owner moves. Read the
+     * plan after the move and it is empty — the cascade would silently do nothing. What the plan
+     * CONTAINS is decided by {@link SubsystemTree#descendantRelocations} and tested by result.</p>
+     */
+    @Test
+    public void aMoveReRegistersEverySubsystemBelowTheMovedOne() {
+        String source = readSource(SERVICE_PATH);
+        String relocate = methodBody(source, "private boolean relocateSubsystemStorage("); //$NON-NLS-1$
+        int plan = relocate.indexOf("SubsystemTree.descendantRelocations("); //$NON-NLS-1$
+        int move = relocate.indexOf("transaction.updateTopObjectFqn(bmChild, targetFqn)"); //$NON-NLS-1$
+        int cascade = relocate.indexOf("relocateSubsystemDescendants(transaction, child, descendants"); //$NON-NLS-1$
+        assertTrue("the subtree must be read while its down-links still resolve — before the move", //$NON-NLS-1$
+                plan >= 0 && plan < move);
+        assertTrue("and re-registered after it, against the owner's new chain", cascade > move); //$NON-NLS-1$
+
+        String descendants = methodBody(source, "private void relocateSubsystemDescendants("); //$NON-NLS-1$
+        assertTrue("each descendant must be re-registered under the slot the plan named", //$NON-NLS-1$
+                descendants.contains("transaction.updateTopObjectFqn(bmDescendant, targetFqn)")); //$NON-NLS-1$
+        assertTrue("its new FQN must reach the export, or the .mdo stays at the old path", //$NON-NLS-1$
+                descendants.contains("reportCoEditedFqn(targetFqn, coEditedTopObjectSink)")); //$NON-NLS-1$
+        assertTrue("and its vacated path recorded, or the old file survives as a duplicate", //$NON-NLS-1$
+                descendants.contains("reportStorageRelocated(previousFqn, targetFqn, coEditedTopObjectSink)")); //$NON-NLS-1$
+        assertTrue("a taken slot must abort the move, not leave the tree half re-registered", //$NON-NLS-1$
+                descendants.contains("catch (BmFqnAlreadyInUseException e)")); //$NON-NLS-1$
+    }
+
+    /**
      * The fifth thing a move has to do, and the one the relocation alone left undone: drop the file
      * it vacated. The export writes the {@code .mdo} at the new path and leaves the old one where it
      * was, so the configuration carries the subsystem's definition twice (live 2026-07-29:

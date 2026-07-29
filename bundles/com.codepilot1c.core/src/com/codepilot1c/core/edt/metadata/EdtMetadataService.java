@@ -9088,9 +9088,10 @@ public class EdtMetadataService {
     }
 
     /**
-     * Whether an FQN's leading type token addresses a subsystem — the one kind whose canonical FQN
-     * stays flat at any depth, so the generic marker/name-pair advice would mislead. Unknown tokens
-     * answer {@code false} and keep the general message.
+     * Whether an FQN's leading type token addresses a subsystem — the one kind that answers to a
+     * flat name at any nesting depth as well as to its registered chain, so the generic
+     * marker/name-pair advice names only one of the two ways out. Unknown tokens answer
+     * {@code false} and keep the general message.
      */
     private boolean isSubsystemFqnHead(String typeToken) {
         try {
@@ -9205,11 +9206,14 @@ public class EdtMetadataService {
     /**
      * Resolves a subsystem by name at ANY nesting depth (B4).
      *
-     * <p>The canonical EDT FQN of a subsystem is flat — {@code Subsystem.PaymentCalendar} —
-     * whatever its nesting, because both subsystem collections are non-containment and EDT's
-     * name provider falls back to a two-segment name when {@code eContainingFeature()} is
-     * null. Scanning only {@code Configuration.getSubsystems()} therefore rejected the
-     * canonically correct FQN of every nested subsystem.</p>
+     * <p>This walk is what MAKES the flat form work: it is a name-based alias, not the FQN a nested
+     * subsystem is registered under — that one is the chain
+     * {@code Subsystem.<Parent>.Subsystem.<Name>} EDT's own generator builds (see
+     * {@link SubsystemTree}). An earlier round of this javadoc had it the other way round, claiming
+     * flat WAS the canonical form because EDT's name provider falls back to two segments when
+     * {@code eContainingFeature()} is null; the generator says otherwise and so does every live
+     * {@code bmGetFqn()}. Both spellings resolve, and scanning only
+     * {@code Configuration.getSubsystems()} used to reject every nested subsystem under either.</p>
      *
      * <p>Two subsystems may share a name under different parents; a flat FQN cannot tell them
      * apart, so this refuses loudly and names both parents rather than picking one.</p>
@@ -9257,11 +9261,12 @@ public class EdtMetadataService {
     }
 
     /**
-     * Accepts the nested subsystem FQN form {@code Subsystem.Parent.Subsystem.Child} as a
-     * tolerant alias (B4). The documented, canonical form is the FLAT one
-     * ({@code Subsystem.Child}) — see {@link #findSubsystemAnywhere} — but callers reading
-     * their own {@code .mdo} naturally write the nested chain, and it used to die in the
-     * containment-only loop above because {@code Subsystem.subsystems} is non-containment.
+     * Accepts the nested subsystem FQN form {@code Subsystem.Parent.Subsystem.Child} (B4) — which is
+     * the FQN a nested subsystem is REGISTERED under, so a caller reading its own {@code .mdo} or a
+     * relocation log writes it naturally. It used to die in the containment-only loop above because
+     * {@code Subsystem.subsystems} is non-containment. The flat {@code Subsystem.Child} is the other
+     * accepted spelling — a name-based alias resolved by walking the forest, see
+     * {@link #findSubsystemAnywhere}.
      *
      * <p>Deliberately narrow: only the {@code subsystems} feature of a {@code Subsystem} is
      * followed. A generic "also scan non-containment many references" rule would make
@@ -10676,6 +10681,14 @@ public class EdtMetadataService {
             reportCoEditedFqn(targetFqn, coEditedTopObjectSink);
             return true;
         }
+        // Read the whole subtree's FQNs while the down-links still resolve — see
+        // relocateSubsystemDescendants. Nothing is written until the plan is complete.
+        List<SubsystemTree.Relocation<Subsystem>> descendants = SubsystemTree.descendantRelocations(
+                targetFqn,
+                child.getSubsystems(),
+                Subsystem::getName,
+                this::subsystemStorageFqn,
+                Subsystem::getSubsystems);
         try {
             transaction.updateTopObjectFqn(bmChild, targetFqn);
         } catch (BmFqnAlreadyInUseException e) {
@@ -10695,7 +10708,75 @@ public class EdtMetadataService {
         // ...and the file at the OLD path is left behind by that same export, which is why the
         // vacated FQN has to survive the transaction — see cleanupVacatedSubsystemStorage.
         reportStorageRelocated(currentFqn, targetFqn, coEditedTopObjectSink);
+        relocateSubsystemDescendants(transaction, child, descendants, coEditedTopObjectSink);
         return true;
+    }
+
+    /**
+     * Re-registers the subsystems BELOW a relocated one, so each lands in the slot its own owner
+     * now occupies.
+     *
+     * <p>{@code updateTopObjectFqn} moves exactly the object it is handed, and a subsystem's
+     * children are separate top objects carrying FQN chains of their own — so moving only the
+     * subsystem the request named leaves every descendant registered under a chain whose root is
+     * gone. Live-measured 2026-07-29 on the sandbox: {@code WaveR8P} holding {@code WaveR8C} moved
+     * under {@code WaveParent}, and afterwards {@code WaveR8P.subsystems} read back as a NAMELESS
+     * stub while {@code Subsystem.WaveR8C} answered "Object not found" to {@code
+     * edt_metadata_details} AND to {@code update_metadata} — the object was unaddressable, and no
+     * tool could put it back. Same corruption class as the half-linked move, one level down.</p>
+     *
+     * <p>Refuses the whole move rather than half of it: a {@code BmFqnAlreadyInUseException} on a
+     * descendant aborts the transaction, so the caller gets an unmoved tree instead of one that is
+     * part-way re-registered. The alternative — log and continue — would produce exactly the
+     * unaddressable descendants this method exists to prevent.</p>
+     *
+     * @param plan the descendants' re-registrations as read BEFORE the owner's own FQN changed;
+     *        {@code subsystems} down-links are bare names resolved against the owner's FQN, so they
+     *        stop resolving the moment it moves
+     */
+    private void relocateSubsystemDescendants(
+            IBmPlatformTransaction transaction,
+            Subsystem owner,
+            List<SubsystemTree.Relocation<Subsystem>> plan,
+            Consumer<String> coEditedTopObjectSink
+    ) {
+        for (SubsystemTree.Relocation<Subsystem> relocation : plan) {
+            Subsystem descendant = relocation.node();
+            String targetFqn = relocation.targetFqn();
+            if (targetFqn == null) {
+                LOG.warn("Subsystem %s moved, but a descendant without a readable name keeps the" //$NON-NLS-1$
+                        + " registration its old owner chain gave it, as does everything below it", //$NON-NLS-1$
+                        owner.getName());
+                continue;
+            }
+            if (!(descendant instanceof IBmObject bmDescendant)) {
+                LOG.warn("Subsystem %s moved, but its descendant %s is not a BM object and keeps its" //$NON-NLS-1$
+                        + " old registration", owner.getName(), descendant.getName()); //$NON-NLS-1$
+                continue;
+            }
+            String previousFqn = relocation.previousFqn();
+            if (targetFqn.equals(previousFqn)) {
+                reportCoEditedFqn(targetFqn, coEditedTopObjectSink);
+                continue;
+            }
+            try {
+                transaction.updateTopObjectFqn(bmDescendant, targetFqn);
+            } catch (BmFqnAlreadyInUseException e) {
+                throw new MetadataOperationException(
+                        MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                        "Cannot move subsystem " + owner.getName() + ": its descendant " //$NON-NLS-1$ //$NON-NLS-2$
+                                + descendant.getName() + " would have to be re-registered as " //$NON-NLS-1$
+                                + targetFqn + ", and that slot is already taken by another BM top" //$NON-NLS-1$
+                                + " object. Rename or delete the one sitting there, then move this" //$NON-NLS-1$
+                                + " subsystem again.", //$NON-NLS-1$
+                        false,
+                        e);
+            }
+            LOG.info("Subsystem %s follows its owner: %s -> %s", //$NON-NLS-1$
+                    descendant.getName(), previousFqn, targetFqn);
+            reportCoEditedFqn(targetFqn, coEditedTopObjectSink);
+            reportStorageRelocated(previousFqn, targetFqn, coEditedTopObjectSink);
+        }
     }
 
     /** The live BM FQN of a subsystem top object, or {@code null} when BM cannot answer. */
@@ -15263,7 +15344,8 @@ public class EdtMetadataService {
     /**
      * Whether {@code directory} holds anything besides {@code descriptor} — a nested
      * {@code Subsystems/} subtree being the case that matters, because those children are separate
-     * top objects that the move did NOT re-register, so their files must survive it.
+     * top objects with cleanups of their own that have not run yet, and any of them the move could
+     * not re-register keeps its old registration, which makes the file there the live definition.
      *
      * <p>Answers "yes" when the directory cannot be listed: the conservative answer keeps the
      * cleanup on the descriptor alone.</p>

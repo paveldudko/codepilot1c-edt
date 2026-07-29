@@ -98,6 +98,52 @@ public final class SubsystemTree {
     }
 
     /**
+     * One subsystem's re-registration, forced on it by the move of an ancestor.
+     *
+     * @param node the subsystem to re-register
+     * @param previousFqn the FQN it is registered under now, or {@code null} when BM cannot answer
+     * @param targetFqn the FQN its owner's new position dictates, or {@code null} when the node has
+     *        no readable name — there is then no slot to name for it, and the caller must leave it
+     *        alone rather than move it somewhere unnameable
+     */
+    public record Relocation<T>(T node, String previousFqn, String targetFqn) {
+    }
+
+    /**
+     * The re-registrations a subsystem's move forces on the subsystems BELOW it, parents before
+     * children.
+     *
+     * <p>{@code updateTopObjectFqn} moves exactly the one object it is given, and a subsystem's
+     * children are separate top objects with FQN chains of their own — so a move that touches only
+     * the moved subsystem leaves every descendant registered under a chain whose root no longer
+     * exists. Live-measured 2026-07-29: after {@code WaveR8P} (holding {@code WaveR8C}) moved under
+     * {@code WaveParent}, the parent's own down-link read back as a NAMELESS stub and
+     * {@code Subsystem.WaveR8C} answered "Object not found" to every tool, with no way to repair it
+     * through one either.</p>
+     *
+     * <p>Every FQN here is read BEFORE any of them is written, which is the property that makes the
+     * plan usable: the {@code subsystems} down-links are bare names resolved against the owner's
+     * FQN, so they stop resolving the moment the owner moves. Descending into a node whose own
+     * target FQN is unknown would have to guess its children's chain, so that subtree is reported
+     * as one unnameable entry and left untouched instead.</p>
+     *
+     * @param ownerFqn the FQN the owner will carry AFTER its move; blank or {@code null} means the
+     *        configuration root
+     * @param currentFqnOf reads a node's live registered FQN
+     */
+    public static <T> List<Relocation<T>> descendantRelocations(
+            String ownerFqn,
+            List<? extends T> children,
+            Function<? super T, String> nameOf,
+            Function<? super T, String> currentFqnOf,
+            Function<? super T, ? extends List<? extends T>> childrenOf
+    ) {
+        List<Relocation<T>> plan = new ArrayList<>();
+        planRelocations(ownerFqn, children, nameOf, currentFqnOf, childrenOf, newIdentitySet(), plan);
+        return plan;
+    }
+
+    /**
      * A node found by name together with the names of its ancestors, root-first.
      * An empty {@code parentPath} means the node sits directly on the configuration.
      */
@@ -176,10 +222,13 @@ public final class SubsystemTree {
      * every kind that owns containment children, and a caller who passed
      * {@code Catalog.Foo.Attribute} is told exactly what is missing. For a SUBSYSTEM head it sent
      * the caller down a dead end: {@code Subsystem.Parent.Child} was rejected as an unpaired
-     * segment, which reads as "add the marker", and the paired form the caller then builds is not
-     * the canonical address either. A subsystem's canonical FQN is FLAT at any depth, because both
-     * subsystem collections are non-containment and every nested subsystem is its own top object,
-     * so the fix is to drop the parent segments — not to add a marker.</p>
+     * segment, which reads as "add the marker" — and the message then denied the very form that
+     * advice produces. {@code Subsystem.Parent.Subsystem.Child} IS the FQN a nested subsystem is
+     * registered under, and the resolver accepts it (live-confirmed 2026-07-29: {@code
+     * update_metadata} took it and answered with it). So does the flat alias. Only the unpaired form
+     * the caller wrote resolves nowhere, so the message now names BOTH ways out instead of declaring
+     * one of them nonexistent — which also stopped it contradicting {@link #describeAmbiguity}, whose
+     * escape from an ambiguous flat name is exactly that chain.</p>
      *
      * @param headIsSubsystem whether the FQN's leading type token addresses a subsystem
      */
@@ -187,10 +236,36 @@ public final class SubsystemTree {
         if (!headIsSubsystem) {
             return "Nested FQN segments must be marker/name pairs: " + fqn; //$NON-NLS-1$
         }
-        return "Subsystem FQNs are FLAT at any nesting depth — always Subsystem.<Name>, even for a" //$NON-NLS-1$
-                + " nested subsystem, because each subsystem is its own top object. No dotted form" //$NON-NLS-1$
-                + " built from the parent is the canonical address, so drop the parent segments" //$NON-NLS-1$
-                + " and pass Subsystem.<Name> for the subsystem you mean: " + fqn; //$NON-NLS-1$
+        return "A subsystem is addressed by either of two forms, and this is neither: the flat" //$NON-NLS-1$
+                + " Subsystem.<Name>, which reaches a subsystem at any nesting depth by name, or the" //$NON-NLS-1$
+                + " paired chain Subsystem.<Parent>.Subsystem.<Name>, which is the FQN a nested" //$NON-NLS-1$
+                + " subsystem is registered under. Put the missing Subsystem marker before each" //$NON-NLS-1$
+                + " nested name, or drop the parent segments and pass the flat form: " + fqn; //$NON-NLS-1$
+    }
+
+    private static <T> void planRelocations(
+            String ownerFqn,
+            List<? extends T> nodes,
+            Function<? super T, String> nameOf,
+            Function<? super T, String> currentFqnOf,
+            Function<? super T, ? extends List<? extends T>> childrenOf,
+            Set<Object> visited,
+            List<Relocation<T>> plan
+    ) {
+        if (nodes == null) {
+            return;
+        }
+        for (T node : nodes) {
+            if (node == null || !visited.add(node)) {
+                continue;
+            }
+            String targetFqn = qualifiedName(ownerFqn, nameOf.apply(node));
+            plan.add(new Relocation<>(node, currentFqnOf.apply(node), targetFqn));
+            if (targetFqn == null) {
+                continue;
+            }
+            planRelocations(targetFqn, childrenOf.apply(node), nameOf, currentFqnOf, childrenOf, visited, plan);
+        }
     }
 
     private static <T> void collect(

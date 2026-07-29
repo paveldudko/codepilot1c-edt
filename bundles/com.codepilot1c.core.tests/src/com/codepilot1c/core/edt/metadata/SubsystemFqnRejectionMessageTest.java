@@ -13,13 +13,21 @@ import org.junit.Test;
 /**
  * Unit + source-contract test for the dotted-subsystem-FQN refusal (F2).
  *
- * <p>What was broken (live 2026-07-28): NO dotted subsystem FQN resolves, yet the refusal pointed at
- * one. {@code Subsystem.<Parent>.<Child>} was rejected with "Nested FQN segments must be
- * marker/name pairs", which reads as "you forgot the marker" and sends the caller to
- * {@code Subsystem.<Parent>.Subsystem.<Child>} — a dead end that fails again, with a different code.
- * A subsystem's canonical FQN is FLAT at any depth, because both subsystem collections are
- * non-containment and every nested subsystem is its own top object, so the fix is to DROP the parent
- * segments — not to add a marker.</p>
+ * <p>What was broken (live 2026-07-28): {@code Subsystem.<Parent>.<Child>} was rejected with "Nested
+ * FQN segments must be marker/name pairs", which reads as "you forgot the marker" — while the
+ * refusal said nothing about the flat form that does resolve.</p>
+ *
+ * <p>What the first repair then got wrong: it answered with "Subsystem FQNs are FLAT at any nesting
+ * depth … no dotted form built from the parent resolves, so never pass one." Both halves are false.
+ * {@code Subsystem.<Parent>.Subsystem.<Child>} is the FQN a nested subsystem is REGISTERED under —
+ * decompiled from {@code MdTopObjectFqnGeneratorDelegate}, and live-confirmed 2026-07-29:
+ * {@code update_metadata} accepted {@code Subsystem.WaveParent.Subsystem.WaveR8P} and answered with
+ * that FQN. The flat form is a name-based ALIAS our resolvers walk the tree for, not the canonical
+ * address. The denial also contradicted {@code SubsystemTree.describeAmbiguity}, which resolves an
+ * ambiguous flat name by pointing at exactly the chain this message called nonexistent.</p>
+ *
+ * <p>So the message names BOTH working forms, and these tests pin that neither the original
+ * marker/name-pair dead end nor the over-corrected flat-only claim comes back.</p>
  *
  * <p>The general marker/name-pair rule is correct for every kind that owns containment children and
  * is deliberately left alone.</p>
@@ -32,25 +40,31 @@ public class SubsystemFqnRejectionMessageTest {
     // --- pure message semantics ---------------------------------------------
 
     @Test
-    public void aSubsystemHeadIsToldToGoFlat() {
+    public void aSubsystemHeadIsGivenBothFormsThatResolve() {
         String message = SubsystemTree.nestedFqnRejectionMessage("Subsystem.WaveParent.WaveChild", true); //$NON-NLS-1$
-        assertTrue("the flat canonical form must be named", message.contains("Subsystem.<Name>")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertTrue("and it must say the form holds at any depth", //$NON-NLS-1$
-                message.contains("FLAT at any nesting depth")); //$NON-NLS-1$
-        assertTrue("with the reason, so the caller can generalize", //$NON-NLS-1$
-                message.contains("each subsystem is its own top object")); //$NON-NLS-1$
+        assertTrue("the flat alias must be named", message.contains("Subsystem.<Name>")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("and so must the registered chain, which also resolves", //$NON-NLS-1$
+                message.contains("Subsystem.<Parent>.Subsystem.<Name>")); //$NON-NLS-1$
         assertTrue("the offending FQN must still be quoted back", //$NON-NLS-1$
                 message.contains("Subsystem.WaveParent.WaveChild")); //$NON-NLS-1$
     }
 
     @Test
-    public void aSubsystemHeadIsNeverSentToThePairedForm() {
+    public void aSubsystemHeadIsNotLeftWithTheGenericPairRule() {
         String message = SubsystemTree.nestedFqnRejectionMessage("Subsystem.WaveParent.WaveChild", true); //$NON-NLS-1$
-        // The old text's advice; following it produces a second failure, so it must be gone.
-        assertFalse("the marker/name-pair advice must not appear for a subsystem", //$NON-NLS-1$
+        // The original text: "marker/name pairs" alone told the caller nothing about the flat form.
+        assertFalse("the bare marker/name-pair advice must not be the whole answer", //$NON-NLS-1$
                 message.contains("marker/name pairs")); //$NON-NLS-1$
-        assertFalse("nor may a dotted alias be suggested", //$NON-NLS-1$
-                message.contains("Subsystem.<Parent>.Subsystem")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void theRegisteredChainIsNotDeniedAsAnAddress() {
+        String message = SubsystemTree.nestedFqnRejectionMessage("Subsystem.WaveParent.WaveChild", true); //$NON-NLS-1$
+        // The over-correction, refuted live 2026-07-29 — update_metadata takes the dotted chain.
+        assertFalse("the flat-only claim must be gone", message.contains("FLAT at any nesting depth")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("and so must the denial that any dotted form resolves", //$NON-NLS-1$
+                message.contains("no dotted form")); //$NON-NLS-1$
+        assertFalse("in either wording", message.contains("never pass one")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Test

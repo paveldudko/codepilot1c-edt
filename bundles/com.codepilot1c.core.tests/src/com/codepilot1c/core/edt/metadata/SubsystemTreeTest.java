@@ -22,7 +22,8 @@ import org.junit.Test;
  * named — never silently resolved to whichever came first in the traversal.</p>
  *
  * <p>The flat form is an ALIAS, though, not the storage FQN — the second block of tests pins the
- * real one, which is the chain {@code Subsystem.<Parent>.Subsystem.<Child>}.</p>
+ * real one, which is the chain {@code Subsystem.<Parent>.Subsystem.<Child>}. The last block pins
+ * what a move has to do to that chain for every subsystem BELOW the one being moved.</p>
  *
  * <p>The traversal is generic over a node accessor precisely so it can be exercised here:
  * EMF model classes do not resolve in the plain Maven test bundle.</p>
@@ -33,6 +34,8 @@ public class SubsystemTreeTest {
     private static final class Node {
         private final String name;
         private final List<Node> children = new ArrayList<>();
+        /** Stands in for the live {@code bmGetFqn()} — the FQN the object is REGISTERED under. */
+        private String storageFqn;
 
         Node(String name) {
             this.name = name;
@@ -44,6 +47,15 @@ public class SubsystemTreeTest {
 
         List<Node> children() {
             return children;
+        }
+
+        String storageFqn() {
+            return storageFqn;
+        }
+
+        Node at(String fqn) {
+            this.storageFqn = fqn;
+            return this;
         }
 
         Node with(Node... kids) {
@@ -108,9 +120,9 @@ public class SubsystemTreeTest {
 
     @Test
     public void nestedAndFlatFormsReachTheSameObject() {
-        // Nested alias: resolve the parent, then its child. Flat canonical form: resolve
-        // directly. Both must land on the same node, which is what makes the flat form the
-        // documented spelling and the nested chain a tolerant alias.
+        // Two spellings of one address: walk the chain parent-then-child, or resolve the flat name
+        // directly. Both must land on the same node — the chain is what the object is REGISTERED
+        // under, the flat name is the alias this walk provides on top of it.
         Node nested = new Node("PaymentCalendar"); //$NON-NLS-1$
         Node root = new Node("Finance").with(nested); //$NON-NLS-1$
         List<Node> forest = List.of(root);
@@ -258,6 +270,129 @@ public class SubsystemTreeTest {
         assertNull(SubsystemTree.qualifiedName("Subsystem.Finance", null)); //$NON-NLS-1$
         assertNull(SubsystemTree.qualifiedName("Subsystem.Finance", "  ")); //$NON-NLS-1$ //$NON-NLS-2$
         assertNull(SubsystemTree.qualifiedName(null, null));
+    }
+
+    // --- descendantRelocations ----------------------------------------------
+    //
+    // What this exists for, live-measured 2026-07-29 on the sandbox: updateTopObjectFqn moves the ONE
+    // object it is given. WaveR8P holding WaveR8C moved under WaveParent, and afterwards
+    // WaveR8P.subsystems read back as a NAMELESS stub while Subsystem.WaveR8C answered "Object not
+    // found" to edt_metadata_details AND to update_metadata — unaddressable, and unrepairable through
+    // any tool. Every descendant has to follow its owner.
+
+    private static List<SubsystemTree.Relocation<Node>> plan(String ownerFqn, Node owner) {
+        return SubsystemTree.descendantRelocations(
+                ownerFqn, owner.children(), Node::name, Node::storageFqn, Node::children);
+    }
+
+    @Test
+    public void everyDescendantIsRePointedAtTheOwnersNewChain() {
+        Node grandChild = new Node("Debts").at("Subsystem.Finance.Subsystem.Calendar.Subsystem.Debts"); //$NON-NLS-1$ //$NON-NLS-2$
+        Node child = new Node("Calendar").at("Subsystem.Finance.Subsystem.Calendar").with(grandChild); //$NON-NLS-1$ //$NON-NLS-2$
+        Node owner = new Node("Finance").at("Subsystem.Finance").with(child); //$NON-NLS-1$ //$NON-NLS-2$
+
+        List<SubsystemTree.Relocation<Node>> plan = plan("Subsystem.Group.Subsystem.Finance", owner); //$NON-NLS-1$
+
+        assertEquals(2, plan.size());
+        assertSame(child, plan.get(0).node());
+        assertEquals("Subsystem.Finance.Subsystem.Calendar", plan.get(0).previousFqn()); //$NON-NLS-1$
+        assertEquals("Subsystem.Group.Subsystem.Finance.Subsystem.Calendar", plan.get(0).targetFqn()); //$NON-NLS-1$
+        assertSame(grandChild, plan.get(1).node());
+        assertEquals("Subsystem.Finance.Subsystem.Calendar.Subsystem.Debts", plan.get(1).previousFqn()); //$NON-NLS-1$
+        assertEquals("Subsystem.Group.Subsystem.Finance.Subsystem.Calendar.Subsystem.Debts", //$NON-NLS-1$
+                plan.get(1).targetFqn());
+    }
+
+    @Test
+    public void parentsComeBeforeTheirOwnChildren() {
+        // Order is a correctness property, not cosmetics: a child's target slot is built from the
+        // chain its parent has just been re-registered under, so the parent has to be moved first.
+        Node leaf = new Node("Debts"); //$NON-NLS-1$
+        Node middle = new Node("Calendar").with(leaf); //$NON-NLS-1$
+        Node owner = new Node("Finance").with(middle); //$NON-NLS-1$
+
+        List<SubsystemTree.Relocation<Node>> plan = plan("Subsystem.Finance", owner); //$NON-NLS-1$
+
+        assertEquals(List.of("Calendar", "Debts"), //$NON-NLS-1$ //$NON-NLS-2$
+                plan.stream().map(entry -> entry.node().name()).toList());
+    }
+
+    @Test
+    public void movingToTheConfigurationRootShortensEveryChain() {
+        Node grandChild = new Node("Debts").at("Subsystem.Group.Subsystem.Finance.Subsystem.Calendar.Subsystem.Debts"); //$NON-NLS-1$ //$NON-NLS-2$
+        Node child = new Node("Calendar").at("Subsystem.Group.Subsystem.Finance.Subsystem.Calendar") //$NON-NLS-1$ //$NON-NLS-2$
+                .with(grandChild);
+        Node owner = new Node("Finance").with(child); //$NON-NLS-1$
+
+        List<SubsystemTree.Relocation<Node>> plan = plan("Subsystem.Finance", owner); //$NON-NLS-1$
+
+        assertEquals("Subsystem.Finance.Subsystem.Calendar", plan.get(0).targetFqn()); //$NON-NLS-1$
+        assertEquals("Subsystem.Finance.Subsystem.Calendar.Subsystem.Debts", plan.get(1).targetFqn()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void aDescendantAlreadyInItsSlotIsStillReported() {
+        // The planner states the facts; skipping a no-op re-registration is the caller's call, and it
+        // still has to report the FQN as co-edited so the export writes the .mdo.
+        Node child = new Node("Calendar").at("Subsystem.Finance.Subsystem.Calendar"); //$NON-NLS-1$ //$NON-NLS-2$
+        Node owner = new Node("Finance").with(child); //$NON-NLS-1$
+
+        List<SubsystemTree.Relocation<Node>> plan = plan("Subsystem.Finance", owner); //$NON-NLS-1$
+
+        assertEquals(1, plan.size());
+        assertEquals(plan.get(0).previousFqn(), plan.get(0).targetFqn());
+    }
+
+    @Test
+    public void anUnnameableDescendantIsReportedAndItsSubtreeLeftAlone() {
+        // No name means no slot, and nothing below it can be named either — its children's chains are
+        // built from the slot the unnameable node would have had. Reported rather than dropped, so
+        // the caller can say out loud that a subtree kept its old registration.
+        Node hidden = new Node("Debts").at("Subsystem.Finance.Subsystem..Subsystem.Debts"); //$NON-NLS-1$ //$NON-NLS-2$
+        Node unnamed = new Node(null).with(hidden);
+        Node named = new Node("Calendar").at("Subsystem.Finance.Subsystem.Calendar"); //$NON-NLS-1$ //$NON-NLS-2$
+        Node owner = new Node("Finance").with(unnamed, named); //$NON-NLS-1$
+
+        List<SubsystemTree.Relocation<Node>> plan = plan("Subsystem.Group.Subsystem.Finance", owner); //$NON-NLS-1$
+
+        assertEquals(2, plan.size());
+        assertSame(unnamed, plan.get(0).node());
+        assertNull("an unnameable node has no target slot", plan.get(0).targetFqn()); //$NON-NLS-1$
+        assertSame("the unnameable node's own child must not be planned", named, plan.get(1).node()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void aCyclicChildLinkCannotHangThePlanner() {
+        Node a = new Node("A"); //$NON-NLS-1$
+        Node b = new Node("B"); //$NON-NLS-1$
+        a.with(b);
+        b.with(a);
+        Node owner = new Node("Finance").with(a); //$NON-NLS-1$
+
+        List<SubsystemTree.Relocation<Node>> plan = plan("Subsystem.Finance", owner); //$NON-NLS-1$
+
+        assertEquals(List.of("A", "B"), plan.stream().map(entry -> entry.node().name()).toList()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void aChildlessOwnerPlansNothing() {
+        assertTrue(plan("Subsystem.Finance", new Node("Finance")).isEmpty()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue(SubsystemTree.descendantRelocations(
+                "Subsystem.Finance", null, Node::name, Node::storageFqn, Node::children).isEmpty()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void aDescendantWhoseLiveFqnIsUnreadableStillGetsATarget() {
+        // BM answering null must not cost the descendant its re-registration: without a target it
+        // would be the unaddressable object this whole plan exists to prevent. Only the vacated-path
+        // cleanup loses out, and that is the cosmetic half.
+        Node child = new Node("Calendar"); //$NON-NLS-1$
+        Node owner = new Node("Finance").with(child); //$NON-NLS-1$
+
+        SubsystemTree.Relocation<Node> entry = plan("Subsystem.Group.Subsystem.Finance", owner).get(0); //$NON-NLS-1$
+
+        assertNull(entry.previousFqn());
+        assertEquals("Subsystem.Group.Subsystem.Finance.Subsystem.Calendar", entry.targetFqn()); //$NON-NLS-1$
     }
 
     // --- nameChain ----------------------------------------------------------
