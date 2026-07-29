@@ -7075,7 +7075,10 @@ public class EdtMetadataService {
                 // this used to call produced a file EDT never looks at.
                 if (createEmptySpreadsheetArtifact(project, templatePath, opId) == null) {
                     // Fail loud rather than leaving a corrupt body: the metadata object stands, the
-                    // artifact does not, and the caller is told which.
+                    // artifact does not, and the caller is told which. The resource opens the file
+                    // before it can fail, so an empty leftover has to be cleared or the next read
+                    // would find a 0-byte "template".
+                    deleteEmptyLeftover(templateFile, opId);
                     LOG.warn("[%s] ensureTemplateArtifact: could not serialize an empty spreadsheet at %s", //$NON-NLS-1$
                             opId, templatePath);
                     return null;
@@ -7106,6 +7109,19 @@ public class EdtMetadataService {
         }
     }
 
+    /** Removes a zero-length artifact a failed serialization left behind; never throws. */
+    private void deleteEmptyLeftover(IFile artifact, String opId) {
+        try {
+            if (artifact.exists() && artifact.getLocation() != null
+                    && artifact.getLocation().toFile().length() == 0L) {
+                artifact.delete(true, null);
+                LOG.debug("[%s] removed the empty artifact left by a failed serialization", opId); //$NON-NLS-1$
+            }
+        } catch (Exception e) {
+            LOG.debug("[%s] could not remove the empty artifact leftover: %s", opId, e.getMessage()); //$NON-NLS-1$
+        }
+    }
+
     /**
      * Create an empty spreadsheet artifact using the XML resource EDT reads
      * ({@link MoxelResourceMxlx}, an {@code AbstractXmlResource}). It implements
@@ -7121,6 +7137,9 @@ public class EdtMetadataService {
             columns.setColumnsId(UUID.randomUUID());
             columns.setSize(100); // total width in internal units (NOT column count)
             sheet.setColumns(columns);
+            // The serializer indexes formats[0] unconditionally: without this it throws
+            // "index=0, size=0" and no artifact is produced (observed live 2026-07-29).
+            sheet.getFormats().add(MoxelFactory.eINSTANCE.createFormat());
 
             URI fileUri = URI.createPlatformResourceURI(project.getName() + "/" + templatePath, true); //$NON-NLS-1$
             MoxelResourceMxlx mxlxResource = new MoxelResourceMxlx(fileUri);

@@ -49,6 +49,16 @@ existing=[class=Subsystem impl=SubsystemImpl proxy=true name=null bmFqn=transien
   gone for the same reason. New `TemplateArtifactPath` (pure, no EDT types), 9 tests; `Import-Package` gains
   `com._1c.g5.modeling.xml[.serializer]`, which `MoxelResourceMxlx` needs.
 
+* **An empty spreadsheet artifact serializes instead of failing.** Live validation of the above produced the
+  right file name and a **0-byte** body, with `createEmptySpreadsheetArtifact failed: index=0, size=0`. One
+  probe narrowed it: `render_template` wrote a valid 1758-byte XML to the same template and
+  `inspect_template` read it back, so only the *empty* document failed — and the reason sits a few lines away,
+  where `renderTemplate` adds a default `Format` that the empty artifact never got. The serializer indexes
+  `formats[0]` unconditionally. The empty document now carries one format, and a zero-length leftover (the
+  resource opens the file before it can fail) is cleared rather than left to read back as a 0-byte template.
+  The same path failed on the previous build too — a valid spreadsheet artifact had never been produced, only
+  silently.
+
 * **A composite tool no longer swallows a key belonging to a different command.** `dcs_manage`,
   `external_manage` and `extension_manage` declare the *union* of every command's parameters, so both layers of
   `8ed8c67` waved through `dataset_name` sent with `command:"upsert_param"`: the schema declares the key, so it
