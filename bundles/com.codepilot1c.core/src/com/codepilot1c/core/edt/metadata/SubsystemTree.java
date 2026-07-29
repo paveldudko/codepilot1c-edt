@@ -12,27 +12,89 @@ import java.util.function.Function;
  *
  * <p>Subsystems are the only top-level kind that nests: {@code Configuration.subsystems}
  * and {@code Subsystem.subsystems} are both <em>non-containment</em> references, so a
- * nested subsystem has {@code eContainer() == null} and EDT's
- * {@code MdUtil.getFullyQualifiedName} therefore mints a FLAT two-segment FQN for it —
- * {@code Subsystem.PaymentCalendar} — and gives it its own {@code .mdo}. Every nested
- * subsystem is a top object in its own right.</p>
+ * nested subsystem has {@code eContainer() == null} and gets its own {@code .mdo}. Every
+ * nested subsystem is a top object in its own right.</p>
  *
  * <p>Consequence: a lookup that only scans {@code Configuration.getSubsystems()} sees the
  * first level and reports {@code exists:false} for everything below it, even though the
- * canonical FQN of a nested subsystem is exactly the flat form the caller passed. This
- * class supplies the recursion, and — because flat FQNs cannot distinguish two subsystems
+ * flat form {@code Subsystem.PaymentCalendar} is the address callers naturally write. This
+ * class supplies the recursion, and — because flat names cannot distinguish two subsystems
  * that share a name under different parents — it reports <em>all</em> hits so the caller
  * can fail loud instead of silently picking one.</p>
  *
- * <p>Kept free of EMF/BM types on purpose: the traversal is the part worth unit-testing,
- * and EMF model classes do not resolve in the plain Maven test bundle.</p>
+ * <p><strong>The flat form is an alias, not the storage FQN.</strong> Earlier rounds of this
+ * class claimed a subsystem's canonical FQN is flat at any depth. It is not. Decompiled from
+ * {@code MdTopObjectFqnGeneratorDelegate.generateNamedExternalPropertyFqnInternal} (EDT
+ * 2025.2.3): a subsystem owned by {@code Configuration.subsystems} is registered as
+ * {@code Subsystem.<Name>}, while one owned by {@code Subsystem.subsystems} is registered as
+ * {@code <ownerFqn>.Subsystem.<Name>} — a dotted chain that grows with the nesting. The chain is
+ * what {@code QualifiedNameFilePathConverter} turns into
+ * {@code src/Subsystems/<A>/Subsystems/<B>/<B>.mdo} (its {@code handleCommonResource} recurses on
+ * exactly the {@code Subsystem} marker), and it is what the live {@code bmGetFqn()} of a nested
+ * subsystem in an EDT-authored configuration reads back as. {@link #qualifiedName} is that rule;
+ * the tree walk above is what keeps the flat alias working on top of it.</p>
+ *
+ * <p>Kept free of EMF/BM types on purpose: the traversal and the FQN shape are the parts worth
+ * unit-testing, and EMF model classes do not resolve in the plain Maven test bundle.</p>
  */
 public final class SubsystemTree {
 
     /** Parent label used for a subsystem that sits directly on the configuration. */
     public static final String CONFIGURATION_ROOT = "Configuration (top level)"; //$NON-NLS-1$
 
+    /** The marker segment that introduces a subsystem inside a qualified name. */
+    public static final String SUBSYSTEM_SEGMENT = "Subsystem"; //$NON-NLS-1$
+
     private SubsystemTree() {
+    }
+
+    /**
+     * The BM top-object FQN a subsystem named {@code name} must carry while it is owned by
+     * {@code ownerFqn}.
+     *
+     * <p>{@code ownerFqn} is the FQN of the owning <em>subsystem</em>; a blank or {@code null}
+     * owner means the configuration root, which is the only owner that does not contribute a
+     * segment. Mirrors EDT's own generator (see the class javadoc), so a re-parent can move the
+     * storage to the slot the new owner's {@code .mdo} reference will resolve against.</p>
+     *
+     * @return the FQN, or {@code null} when {@code name} is absent — an unnamed subsystem has no
+     *         addressable slot and must be left where it is rather than moved somewhere unnameable
+     */
+    public static String qualifiedName(String ownerFqn, String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        String leaf = SUBSYSTEM_SEGMENT + "." + name.trim(); //$NON-NLS-1$
+        if (ownerFqn == null || ownerFqn.isBlank()) {
+            return leaf;
+        }
+        return ownerFqn.trim() + "." + leaf; //$NON-NLS-1$
+    }
+
+    /**
+     * The subsystem names encoded in a subsystem FQN, outermost first: {@code Subsystem.A} yields
+     * {@code [A]} and {@code Subsystem.A.Subsystem.B} yields {@code [A, B]}.
+     *
+     * <p>Empty for anything that is not a well-formed subsystem chain — an odd segment count, a
+     * marker that is not {@code Subsystem}, a blank name. Strict on purpose: the callers use the
+     * chain to name files, and a half-understood FQN must yield no path rather than a wrong one.</p>
+     */
+    public static List<String> nameChain(String fqn) {
+        if (fqn == null || fqn.isBlank()) {
+            return List.of();
+        }
+        String[] parts = fqn.trim().split("\\."); //$NON-NLS-1$
+        if (parts.length < 2 || parts.length % 2 != 0) {
+            return List.of();
+        }
+        List<String> names = new ArrayList<>(parts.length / 2);
+        for (int i = 0; i < parts.length; i += 2) {
+            if (!SUBSYSTEM_SEGMENT.equalsIgnoreCase(parts[i]) || parts[i + 1].isBlank()) {
+                return List.of();
+            }
+            names.add(parts[i + 1]);
+        }
+        return List.copyOf(names);
     }
 
     /**

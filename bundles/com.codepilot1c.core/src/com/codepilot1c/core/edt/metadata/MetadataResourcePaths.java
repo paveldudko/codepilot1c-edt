@@ -7,6 +7,7 @@
  */
 package com.codepilot1c.core.edt.metadata;
 
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -28,8 +29,51 @@ public final class MetadataResourcePaths {
     private static final String SRC_PREFIX = "src/"; //$NON-NLS-1$
     private static final String MDO_SUFFIX = ".mdo"; //$NON-NLS-1$
     private static final String FORM_SUFFIX = ".form"; //$NON-NLS-1$
+    private static final String SUBSYSTEMS_FOLDER = "Subsystems"; //$NON-NLS-1$
 
     private MetadataResourcePaths() {
+    }
+
+    /**
+     * The project-relative directory EDT stores the subsystem addressed by {@code subsystemFqn} in:
+     * {@code src/Subsystems/A} for {@code Subsystem.A} and
+     * {@code src/Subsystems/A/Subsystems/B} for {@code Subsystem.A.Subsystem.B}.
+     *
+     * <p>The nesting is NOT flattened, which is the whole point: a subsystem's storage follows its
+     * FQN chain (see {@link SubsystemTree#nameChain}), so the generic
+     * {@code src/<Plural>/<name>} rule names the wrong directory for every nested one — it would
+     * point at a top-level sibling that does not exist. Derived from EDT's own
+     * {@code QualifiedNameFilePathConverter.handleCommonResource}, which recurses on the
+     * {@code Subsystem} marker and appends {@code Subsystems/} per level.</p>
+     *
+     * @return the directory, or {@code null} when {@code subsystemFqn} is not a subsystem chain
+     */
+    public static String subsystemDirectory(String subsystemFqn) {
+        List<String> chain = SubsystemTree.nameChain(subsystemFqn);
+        if (chain.isEmpty()) {
+            return null;
+        }
+        StringBuilder path = new StringBuilder(SRC_PREFIX);
+        for (int i = 0; i < chain.size(); i++) {
+            if (i > 0) {
+                path.append('/');
+            }
+            path.append(SUBSYSTEMS_FOLDER).append('/').append(chain.get(i));
+        }
+        return path.toString();
+    }
+
+    /**
+     * The project-relative {@code .mdo} file of the subsystem addressed by {@code subsystemFqn},
+     * or {@code null} when the FQN is not a subsystem chain.
+     */
+    public static String subsystemMdoFile(String subsystemFqn) {
+        String directory = subsystemDirectory(subsystemFqn);
+        if (directory == null) {
+            return null;
+        }
+        List<String> chain = SubsystemTree.nameChain(subsystemFqn);
+        return directory + "/" + chain.get(chain.size() - 1) + MDO_SUFFIX; //$NON-NLS-1$
     }
 
     /**

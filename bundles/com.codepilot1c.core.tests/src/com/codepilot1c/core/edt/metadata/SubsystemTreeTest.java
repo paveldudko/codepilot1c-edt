@@ -2,6 +2,7 @@ package com.codepilot1c.core.edt.metadata;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
@@ -13,13 +14,15 @@ import org.junit.Test;
 /**
  * Tests for {@link SubsystemTree} (BF-12936 / B4).
  *
- * <p>Subsystem FQNs are flat at every depth ({@code Subsystem.PaymentCalendar}), because both
- * subsystem collections are non-containment and a nested subsystem therefore has no containing
- * feature. Two consequences are pinned here: the flat name must resolve at any depth (the old
- * lookup only scanned {@code Configuration.getSubsystems()} and rejected the canonical FQN of
- * every nested subsystem), and a name shared by two subsystems under different parents must be
- * reported as ambiguous with both parents named — never silently resolved to whichever came
- * first in the traversal.</p>
+ * <p>The flat form {@code Subsystem.PaymentCalendar} addresses a subsystem at every depth, because
+ * both subsystem collections are non-containment and the lookup therefore walks the forest. Two
+ * consequences are pinned here: the flat name must resolve at any depth (the old lookup only
+ * scanned {@code Configuration.getSubsystems()} and rejected every nested subsystem), and a name
+ * shared by two subsystems under different parents must be reported as ambiguous with both parents
+ * named — never silently resolved to whichever came first in the traversal.</p>
+ *
+ * <p>The flat form is an ALIAS, though, not the storage FQN — the second block of tests pins the
+ * real one, which is the chain {@code Subsystem.<Parent>.Subsystem.<Child>}.</p>
  *
  * <p>The traversal is generic over a node accessor precisely so it can be exercised here:
  * EMF model classes do not resolve in the plain Maven test bundle.</p>
@@ -214,5 +217,76 @@ public class SubsystemTreeTest {
 
         assertEquals(List.of("First"), hits.get(0).parentPath()); //$NON-NLS-1$
         assertEquals(List.of("Second"), hits.get(1).parentPath()); //$NON-NLS-1$
+    }
+
+    // --- storage FQN ---------------------------------------------------------
+    //
+    // Ground truth, decompiled from EDT 2025.2.3
+    // (MdTopObjectFqnGeneratorDelegate.generateNamedExternalPropertyFqnInternal): a subsystem owned
+    // by Configuration.subsystems is registered as QualifiedName.create("Subsystem", name); one
+    // owned by Subsystem.subsystems is registered as ownerFqn.append("Subsystem").append(name).
+    // Confirmed live: edt_metadata_details on Subsystem.Accounting in an EDT-authored configuration
+    // renders its children as Subsystem.Accounting.Subsystem.<Child>, which is bmGetFqn().
+
+    @Test
+    public void aRootSubsystemIsStoredUnderTheFlatFqn() {
+        assertEquals("Subsystem.Finance", SubsystemTree.qualifiedName(null, "Finance")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("Subsystem.Finance", SubsystemTree.qualifiedName("", "Finance")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertEquals("Subsystem.Finance", SubsystemTree.qualifiedName("  ", " Finance ")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+    }
+
+    @Test
+    public void aNestedSubsystemIsStoredUnderTheOwnerChain() {
+        // The regression this guards: re-parenting used to leave the child at Subsystem.Finance,
+        // so the parent's bare-name <subsystems>PaymentCalendar</subsystems> resolved to nothing.
+        assertEquals("Subsystem.Finance.Subsystem.PaymentCalendar", //$NON-NLS-1$
+                SubsystemTree.qualifiedName("Subsystem.Finance", "PaymentCalendar")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void theOwnerChainGrowsWithEveryLevel() {
+        String level1 = SubsystemTree.qualifiedName(null, "Finance"); //$NON-NLS-1$
+        String level2 = SubsystemTree.qualifiedName(level1, "PaymentCalendar"); //$NON-NLS-1$
+        String level3 = SubsystemTree.qualifiedName(level2, "Debts"); //$NON-NLS-1$
+
+        assertEquals("Subsystem.Finance.Subsystem.PaymentCalendar.Subsystem.Debts", level3); //$NON-NLS-1$
+    }
+
+    @Test
+    public void anUnnamedSubsystemHasNoSlotAtAll() {
+        // Callers must then leave the object where it is rather than move it somewhere unnameable.
+        assertNull(SubsystemTree.qualifiedName("Subsystem.Finance", null)); //$NON-NLS-1$
+        assertNull(SubsystemTree.qualifiedName("Subsystem.Finance", "  ")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertNull(SubsystemTree.qualifiedName(null, null));
+    }
+
+    // --- nameChain ----------------------------------------------------------
+
+    @Test
+    public void nameChainReadsTheNamesOutermostFirst() {
+        assertEquals(List.of("Finance"), SubsystemTree.nameChain("Subsystem.Finance")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals(List.of("Finance", "PaymentCalendar"), //$NON-NLS-1$ //$NON-NLS-2$
+                SubsystemTree.nameChain("Subsystem.Finance.Subsystem.PaymentCalendar")); //$NON-NLS-1$
+        assertEquals(List.of("Finance", "PaymentCalendar", "Debts"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                SubsystemTree.nameChain("Subsystem.Finance.Subsystem.PaymentCalendar.Subsystem.Debts")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void nameChainRoundTripsWithQualifiedName() {
+        String fqn = SubsystemTree.qualifiedName(
+                SubsystemTree.qualifiedName(null, "Finance"), "PaymentCalendar"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertEquals(List.of("Finance", "PaymentCalendar"), SubsystemTree.nameChain(fqn)); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void nameChainRefusesAnythingThatIsNotASubsystemChain() {
+        // Strict on purpose: the chain names files, so a half-understood FQN must yield no path.
+        assertTrue(SubsystemTree.nameChain("Catalog.Products").isEmpty()); //$NON-NLS-1$
+        assertTrue(SubsystemTree.nameChain("Subsystem.Finance.PaymentCalendar").isEmpty()); //$NON-NLS-1$
+        assertTrue(SubsystemTree.nameChain("Subsystem.Finance.Form.ListForm").isEmpty()); //$NON-NLS-1$
+        assertTrue(SubsystemTree.nameChain("Subsystem").isEmpty()); //$NON-NLS-1$
+        assertTrue(SubsystemTree.nameChain(null).isEmpty());
+        assertTrue(SubsystemTree.nameChain("   ").isEmpty()); //$NON-NLS-1$
     }
 }

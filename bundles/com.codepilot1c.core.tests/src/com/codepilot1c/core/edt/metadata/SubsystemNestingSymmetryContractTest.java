@@ -92,7 +92,7 @@ public class SubsystemNestingSymmetryContractTest {
     public void unsettingEitherSideClearsBoth() {
         String body = methodBody(readSource(SERVICE_PATH), "private void unsetFeatureValue("); //$NON-NLS-1$
         assertTrue("unset must route through the symmetric writer, not eUnset one side", //$NON-NLS-1$
-                body.contains("applySubsystemNesting(configuration, subsystem, reference, null, coEditedTopObjectSink)")); //$NON-NLS-1$
+                body.contains("configuration, subsystem, reference, null, transaction, coEditedTopObjectSink)")); //$NON-NLS-1$
     }
 
     // --- idempotency --------------------------------------------------------
@@ -135,18 +135,105 @@ public class SubsystemNestingSymmetryContractTest {
     public void gainingOrLosingAParentUpdatesTheConfigurationRoot() {
         String source = readSource(SERVICE_PATH);
         String reparent = methodBody(source, "private void reparentSubsystem("); //$NON-NLS-1$
-        assertTrue("re-parenting must settle root membership, in both directions", //$NON-NLS-1$
-                reparent.contains("setConfigurationRootMembership(configuration, child, newParent == null)")); //$NON-NLS-1$
+        assertTrue("gaining a parent must take the subsystem off the root", //$NON-NLS-1$
+                reparent.contains("detachRootAndRelocate(configuration, child, newParent, transaction")); //$NON-NLS-1$
+        assertTrue("and losing one must put it back", //$NON-NLS-1$
+                reparent.contains("setConfigurationRootMembership(configuration, child, true)")); //$NON-NLS-1$
 
         String children = methodBody(source, "private void applySubsystemChildren("); //$NON-NLS-1$
         assertTrue("a child dropped from the list becomes a root again", //$NON-NLS-1$
                 children.contains("setConfigurationRootMembership(configuration, dropped, true)")); //$NON-NLS-1$
         assertTrue("and a child added to the list stops being one", //$NON-NLS-1$
-                children.contains("setConfigurationRootMembership(configuration, child, false)")); //$NON-NLS-1$
+                children.contains("detachRootAndRelocate(configuration, child, parent, transaction")); //$NON-NLS-1$
 
         String remove = methodBody(source, "private void removeSubsystemLinks("); //$NON-NLS-1$
         assertTrue("deleting a subsystem must unlink it from whatever parent lists it, not just the root", //$NON-NLS-1$
-                remove.contains("removeByName(subsystem.getSubsystems(), name)")); //$NON-NLS-1$
+                remove.contains("removeSubsystemByIdentity(subsystem.getSubsystems(), name)")); //$NON-NLS-1$
+    }
+
+    /**
+     * The FOURTH side, and the one {@code ce4bf06} left out: a re-parented subsystem's own STORAGE
+     * has to move too.
+     *
+     * <p>Decompiled from EDT 2025.2.3 ({@code MdRefactoringService.SubsystemMoveOperation}): the move
+     * calls {@code updateTopObjectFqn} with the FQN of the new owner's slot before it touches the
+     * owner's list, and EDT routes the whole thing through
+     * {@code IRefactoringService.initiateRename} with the same name — a move IS an FQN rename. Drop
+     * that step and the child stays registered as {@code Subsystem.<Name>} while its parent's
+     * {@code .mdo} refers to it by bare name, which resolves against
+     * {@code <parentFqn>.Subsystem.<Name>}: the down-link becomes a nameless stub, no name-based
+     * lookup matches, and {@code update_metadata} failed post-verify on a mutation whose files were
+     * right.</p>
+     */
+    @Test
+    public void reParentingRelocatesTheSubsystemStorage() {
+        String source = readSource(SERVICE_PATH);
+        String relocate = methodBody(source, "private boolean relocateSubsystemStorage("); //$NON-NLS-1$
+        assertTrue("the BM re-registration is the whole point", //$NON-NLS-1$
+                relocate.contains("transaction.updateTopObjectFqn(bmChild, targetFqn)")); //$NON-NLS-1$
+        assertTrue("the target slot must come from the shared FQN rule, not a local string build", //$NON-NLS-1$
+                relocate.contains("SubsystemTree.qualifiedName(ownerFqn, child.getName())")); //$NON-NLS-1$
+        assertTrue("a slot already taken must be refused with an actionable message, not swallowed", //$NON-NLS-1$
+                relocate.contains("catch (BmFqnAlreadyInUseException e)")); //$NON-NLS-1$
+
+        // Idempotency: an object already in the right slot must not be re-registered.
+        int compare = relocate.indexOf("if (targetFqn.equals(currentFqn))"); //$NON-NLS-1$
+        int update = relocate.indexOf("transaction.updateTopObjectFqn("); //$NON-NLS-1$
+        assertTrue("the current FQN must be compared before any update", compare >= 0 && compare < update); //$NON-NLS-1$
+    }
+
+    /**
+     * The root entry is the last thing keeping a subsystem addressable, so it may only be dropped
+     * once the storage has really moved — and must come back when it has not. Double registration is
+     * cosmetically wrong; no registration that resolves is a lost object.
+     */
+    @Test
+    public void theRootEntryIsOnlyGivenUpAgainstASuccessfulRelocation() {
+        String body = methodBody(readSource(SERVICE_PATH), "private boolean detachRootAndRelocate("); //$NON-NLS-1$
+        int drop = body.indexOf("setConfigurationRootMembership(configuration, child, false)"); //$NON-NLS-1$
+        int relocate = body.indexOf("relocateSubsystemStorage(transaction, child, newParent"); //$NON-NLS-1$
+        assertTrue("EDT's own move detaches from the old owner before re-keying the FQN", //$NON-NLS-1$
+                drop >= 0 && drop < relocate);
+        assertTrue("a failed relocation must restore the root entry", //$NON-NLS-1$
+                body.contains("setConfigurationRootMembership(configuration, child, true)")); //$NON-NLS-1$
+        assertTrue("and say so, because the result is a double registration on purpose", //$NON-NLS-1$
+                body.contains("stays registered at the configuration root")); //$NON-NLS-1$
+    }
+
+    /**
+     * Deleting a subsystem edits its parents' {@code .mdo} files, which are separate top objects.
+     * Sweeping BM alone left the dangling {@code <subsystems>} line on disk, because the only export
+     * target was the object that had just ceased to exist.
+     */
+    @Test
+    public void deleteExportsEveryParentItUnlinkedFrom() {
+        String source = readSource(SERVICE_PATH);
+        String delete = methodBody(source, "public MetadataOperationResult deleteMetadata("); //$NON-NLS-1$
+        assertTrue("delete must collect co-edited FQNs like update does", //$NON-NLS-1$
+                delete.contains("Set<String> coEditedFqns = new LinkedHashSet<>();")); //$NON-NLS-1$
+        assertTrue("and hand the sink to the unlinker", //$NON-NLS-1$
+                delete.contains("removeMetadataObject(txConfiguration, targetFqn, target, coEditedSink)")); //$NON-NLS-1$
+        assertTrue("and export them in the same batch", //$NON-NLS-1$
+                delete.contains("forceExportTopLevelObjects(project, topLevelFqn, coEditedFqns, opId);")); //$NON-NLS-1$
+        assertTrue("the storage FQN must be captured while the object is still linked", //$NON-NLS-1$
+                delete.contains("storageFqnHolder[0] = topObjectStorageFqn(target);")); //$NON-NLS-1$
+        assertTrue("and drive the filesystem cleanup, which the request's flat FQN cannot locate", //$NON-NLS-1$
+                delete.contains("cleanupRemovedFilesystemArtifacts(project, targetFqn, storageFqnHolder[0], opId)")); //$NON-NLS-1$
+
+        String unlink = methodBody(source, "private void removeSubsystemLinks("); //$NON-NLS-1$
+        assertTrue("every parent that loses a line must be reported", //$NON-NLS-1$
+                unlink.contains("reportCoEditedSubsystem(subsystem, coEditedTopObjectSink)")); //$NON-NLS-1$
+    }
+
+    /**
+     * One unresolvable target used to sink the whole export batch. After a relocation the old FQN IS
+     * unresolvable, so the per-target retry is what keeps the co-edited far side reaching disk.
+     */
+    @Test
+    public void theExportBatchFallsBackPerTargetNotJustToConfiguration() {
+        String body = methodBody(readSource(SERVICE_PATH), "private void forceExportTopLevelObjects("); //$NON-NLS-1$
+        assertTrue(body.contains("for (String target : targets) {")); //$NON-NLS-1$
+        assertTrue(body.contains("exported |= modelManager.forceExport(dtProject, target);")); //$NON-NLS-1$
     }
 
     // --- the far side reaches disk ------------------------------------------
@@ -174,18 +261,57 @@ public class SubsystemNestingSymmetryContractTest {
     }
 
     @Test
-    public void theReportedFqnIsFlat() {
+    public void theReportedFqnIsTheOneTheObjectIsRegisteredUnder() {
         String body = methodBody(readSource(SERVICE_PATH), "private void reportCoEditedSubsystem("); //$NON-NLS-1$
-        // A nested subsystem is its own top object under the flat FQN; anything dotted would not
-        // name an export target at all.
-        assertTrue(body.contains("MetadataKind.SUBSYSTEM.getFqnPrefix() + \".\" + subsystem.getName()")); //$NON-NLS-1$
+        // An export target is looked up in the BM FQN registry, and a NESTED subsystem is registered
+        // under its owner chain — not under the flat form our resolvers accept. Reporting the flat
+        // form for a nested parent named no top object, so its .mdo was never written.
+        int registered = body.indexOf("subsystemStorageFqn(subsystem)"); //$NON-NLS-1$
+        int flatFallback = body.indexOf("MetadataKind.SUBSYSTEM.getFqnPrefix()"); //$NON-NLS-1$
+        assertTrue("the registered FQN must be preferred", registered >= 0); //$NON-NLS-1$
+        assertTrue("the flat form stays only as the fallback for when BM cannot answer", //$NON-NLS-1$
+                flatFallback > registered);
     }
 
     @Test
     public void createMetadataAlsoExportsTheParentItLinkedInto() {
         String body = methodBody(readSource(SERVICE_PATH), "public CreateMetadataOutcome createMetadataDetailed("); //$NON-NLS-1$
         assertTrue("a created subsystem given parentSubsystem rewrites the parent's .mdo too", //$NON-NLS-1$
-                body.contains("forceExportTopLevelObjects(project, fqn, coEditedFqns, opId);")); //$NON-NLS-1$
+                body.contains("forceExportTopLevelObjects(project, storageFqn, coEditedFqns, opId);")); //$NON-NLS-1$
+    }
+
+    /**
+     * create_metadata with a {@code parentSubsystem} nests the object during the write, which moves
+     * its FQN — so everything after the write has to follow it there.
+     *
+     * <p>Two traps, both hit only once nesting really works. The post-write BM lookups use the FQN
+     * built from the request, which after a relocation resolves to nothing; and the relink sweeps the
+     * object out of every collection and re-adds it at the ROOT, which would undo the nesting the same
+     * write just established. (The relink was harmless only for as long as the sweep matched by name
+     * and silently missed the parent's proxy entries.)</p>
+     */
+    @Test
+    public void aCreatedNestedSubsystemIsNotRerootedAfterwards() {
+        String source = readSource(SERVICE_PATH);
+        String create = methodBody(source, "public CreateMetadataOutcome createMetadataDetailed("); //$NON-NLS-1$
+        assertTrue("the FQN the object ended up registered under must be captured", //$NON-NLS-1$
+                create.contains("storageFqnHolder[0] = topObjectStorageFqn(txObject);")); //$NON-NLS-1$
+        assertTrue("and used for the BM post-verify", //$NON-NLS-1$
+                create.contains("verifyTopLevelPersisted(project, storageFqn, opId);")); //$NON-NLS-1$
+        assertTrue("the root-entry check only applies to an object that IS at the root", //$NON-NLS-1$
+                create.contains("if (storageFqn.equals(fqn)) {")); //$NON-NLS-1$
+
+        String relink = methodBody(source, "private void rebindTopLevelIntoConfiguration(\n            IProject project,\n" //$NON-NLS-1$
+                + "            MetadataKind kind,\n            String objectName,\n            String fqn,\n" //$NON-NLS-1$
+                + "            String storageFqn,"); //$NON-NLS-1$
+        assertTrue("the relink must look the object up by the FQN it is registered under", //$NON-NLS-1$
+                relink.contains("transaction.getTopObjectByFqn(namespace, storageFqn)")); //$NON-NLS-1$
+        assertTrue("and leave a nested subsystem alone instead of re-rooting it", //$NON-NLS-1$
+                relink.contains("if (isNestedSubsystem(txObject)) {")); //$NON-NLS-1$
+        int guard = relink.indexOf("isNestedSubsystem(txObject)"); //$NON-NLS-1$
+        int sweep = relink.indexOf("removeTopLevelObjectLinks(txConfiguration, kind, objectName)"); //$NON-NLS-1$
+        assertTrue("the guard must come BEFORE the sweep, which is the destructive half", //$NON-NLS-1$
+                guard >= 0 && sweep > guard);
     }
 
     // --- Helpers ------------------------------------------------------------

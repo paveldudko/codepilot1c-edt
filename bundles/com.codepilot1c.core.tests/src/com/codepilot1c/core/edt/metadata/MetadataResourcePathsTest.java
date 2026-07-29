@@ -83,4 +83,55 @@ public class MetadataResourcePathsTest {
         assertFalse("a directory that merely contains .mdo in its name is not a file", //$NON-NLS-1$
                 MetadataResourcePaths.isUsableMetadataResourcePath("src/Catalogs/Catalog.mdo/nested")); //$NON-NLS-1$
     }
+
+    // --- subsystem storage paths --------------------------------------------
+    //
+    // Measured on an EDT-authored configuration (Accounting management, 2026-07-29): 34 top-level
+    // directories under src/Subsystems, and 99 of the 132 subsystem .mdo files sitting at
+    // src/Subsystems/<Parent>/Subsystems/<Child>/<Child>.mdo. Same rule EDT's own
+    // QualifiedNameFilePathConverter.handleCommonResource implements by recursing on the Subsystem
+    // marker.
+
+    @Test
+    public void aRootSubsystemLivesDirectlyUnderSubsystems() {
+        assertEquals("src/Subsystems/Finance", //$NON-NLS-1$
+                MetadataResourcePaths.subsystemDirectory("Subsystem.Finance")); //$NON-NLS-1$
+        assertEquals("src/Subsystems/Finance/Finance.mdo", //$NON-NLS-1$
+                MetadataResourcePaths.subsystemMdoFile("Subsystem.Finance")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void aNestedSubsystemLivesUnderItsParentNotBesideIt() {
+        // The regression this guards: the delete cleanup derived src/Subsystems/<Name> from the
+        // request's flat FQN, which for a nested subsystem names a top-level sibling that does not
+        // exist — so the real directory survived the delete and came back on the next refresh.
+        assertEquals("src/Subsystems/Finance/Subsystems/PaymentCalendar", //$NON-NLS-1$
+                MetadataResourcePaths.subsystemDirectory("Subsystem.Finance.Subsystem.PaymentCalendar")); //$NON-NLS-1$
+        assertEquals("src/Subsystems/Finance/Subsystems/PaymentCalendar/PaymentCalendar.mdo", //$NON-NLS-1$
+                MetadataResourcePaths.subsystemMdoFile("Subsystem.Finance.Subsystem.PaymentCalendar")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void everyNestingLevelAddsItsOwnSubsystemsFolder() {
+        assertEquals("src/Subsystems/A/Subsystems/B/Subsystems/C/C.mdo", //$NON-NLS-1$
+                MetadataResourcePaths.subsystemMdoFile("Subsystem.A.Subsystem.B.Subsystem.C")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void aNonSubsystemFqnYieldsNoSubsystemPath() {
+        // The caller must then fall back to its own kind→folder mapping rather than build nonsense.
+        assertNull(MetadataResourcePaths.subsystemDirectory("Catalog.Products")); //$NON-NLS-1$
+        assertNull(MetadataResourcePaths.subsystemMdoFile("Catalog.Products")); //$NON-NLS-1$
+        assertNull(MetadataResourcePaths.subsystemDirectory("Subsystem.Finance.Form.ListForm")); //$NON-NLS-1$
+        assertNull(MetadataResourcePaths.subsystemDirectory(null));
+        assertNull(MetadataResourcePaths.subsystemMdoFile("   ")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void theSubsystemPathIsUsableAsAMetadataResourcePath() {
+        // Whatever this produces has to survive the guard the rest of the class defines, or the
+        // workspace lookup would reject the path this very class handed it.
+        assertTrue(MetadataResourcePaths.isUsableMetadataResourcePath(
+                MetadataResourcePaths.subsystemMdoFile("Subsystem.Finance.Subsystem.PaymentCalendar"))); //$NON-NLS-1$
+    }
 }

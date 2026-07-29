@@ -30,8 +30,12 @@ package com.codepilot1c.core.edt.metadata;
  */
 final class SubsystemIdentity {
 
-    /** The metadata-kind element that must precede the name in a subsystem URI chain. */
-    private static final String SUBSYSTEM_SEGMENT = "Subsystem"; //$NON-NLS-1$
+    /**
+     * The metadata-kind element that must precede the name in a subsystem URI chain — the same marker
+     * {@link SubsystemTree#qualifiedName} builds the FQN chain out of, which is no coincidence: the
+     * URI observed here IS that chain.
+     */
+    private static final String SUBSYSTEM_SEGMENT = SubsystemTree.SUBSYSTEM_SEGMENT;
 
     private SubsystemIdentity() {
         // utility

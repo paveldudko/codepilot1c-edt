@@ -373,6 +373,9 @@ public class EdtMetadataService {
             }
         };
 
+        // Where the object ended up REGISTERED, which is not the requested FQN when the write also
+        // relocated it (a subsystem given a parentSubsystem).
+        String[] storageFqnHolder = {null};
         Boolean adoptedFlag = executeWrite(project, transaction -> {
             LOG.debug("[%s] Transaction started for createMetadata", opId); //$NON-NLS-1$
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
@@ -422,13 +425,25 @@ public class EdtMetadataService {
             applyReportVariantsStorageDefault(txConfiguration, txObject, request.kind());
             LOG.debug("[%s] Eager linked object into Configuration collections", opId); //$NON-NLS-1$
             LOG.debug("[%s] Transaction steps completed for %s", opId, fqn); //$NON-NLS-1$
+            // A subsystem created with parentSubsystem was relocated by applySubsystemNesting, so the
+            // FQN it is registered under is no longer the one built from the request.
+            storageFqnHolder[0] = topObjectStorageFqn(txObject);
             return Boolean.FALSE;
         });
         boolean adopted = Boolean.TRUE.equals(adoptedFlag);
-        rebindTopLevelIntoConfiguration(project, request.kind(), request.name(), fqn, opId);
-        forceExportTopLevelObjects(project, fqn, coEditedFqns, opId);
-        verifyTopLevelPersisted(project, fqn, opId);
-        verifyConfigurationEntryPersisted(project, request.kind(), fqn, opId);
+        String storageFqn = storageFqnHolder[0] != null ? storageFqnHolder[0] : fqn;
+        rebindTopLevelIntoConfiguration(project, request.kind(), request.name(), fqn, storageFqn, opId);
+        forceExportTopLevelObjects(project, storageFqn, coEditedFqns, opId);
+        verifyTopLevelPersisted(project, storageFqn, opId);
+        if (storageFqn.equals(fqn)) {
+            verifyConfigurationEntryPersisted(project, request.kind(), fqn, opId);
+        } else {
+            // Nested: the configuration root must NOT list it — its parent's .mdo does. Polling
+            // Configuration.mdo for an entry that is supposed to be absent would burn the whole
+            // serialization timeout and then warn about a correct state.
+            LOG.debug("[%s] Skip Configuration entry check: %s is listed by its parent, not the root", //$NON-NLS-1$
+                    opId, storageFqn);
+        }
         eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] createMetadata SUCCESS in %s fqn=%s adopted=%s", opId, // $NON-NLS-1$
@@ -6903,6 +6918,20 @@ public class EdtMetadataService {
         String targetFqn = request.targetFqn();
         ensureNoIncomingReferences(project, configuration, targetFqn, request.force());
         EolGuard eolGuard = beginEolGuard(project, targetFqn, opId);
+        // Unlinking a subsystem rewrites the .mdo of every parent that listed it, and those are
+        // other top objects — they need their own export target and EOL snapshot, exactly as in
+        // update_metadata. Sweeping BM alone left the dangling <subsystems> line on disk.
+        Set<String> coEditedFqns = new LinkedHashSet<>();
+        Consumer<String> coEditedSink = coEditedFqn -> {
+            if (coEditedFqn != null && !coEditedFqn.equalsIgnoreCase(targetFqn)
+                    && coEditedFqns.add(coEditedFqn)) {
+                eolGuard.addCoEditedFqn(coEditedFqn);
+            }
+        };
+        // Where the object was actually STORED, captured before it is unlinked: a nested subsystem
+        // lives at src/Subsystems/<Parent>/Subsystems/<Name>, which the FQN in the request cannot
+        // name (see cleanupRemovedFilesystemArtifacts).
+        String[] storageFqnHolder = {null};
         executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
             if (txConfiguration == null) {
@@ -6921,14 +6950,15 @@ public class EdtMetadataService {
                         MetadataOperationCode.METADATA_DELETE_CONFLICT,
                         "Metadata object has nested children. Use recursive=true: " + targetFqn, false); //$NON-NLS-1$
             }
-            removeMetadataObject(txConfiguration, targetFqn, target);
+            storageFqnHolder[0] = topObjectStorageFqn(target);
+            removeMetadataObject(txConfiguration, targetFqn, target, coEditedSink);
             return null;
         });
 
         String topLevelFqn = extractTopLevelFqn(targetFqn);
-        forceExportTopLevelObject(project, topLevelFqn, opId);
+        forceExportTopLevelObjects(project, topLevelFqn, coEditedFqns, opId);
         verifyObjectRemoved(project, targetFqn, opId);
-        cleanupRemovedFilesystemArtifacts(project, targetFqn, opId);
+        cleanupRemovedFilesystemArtifacts(project, targetFqn, storageFqnHolder[0], opId);
         eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] deleteMetadata SUCCESS in %s target=%s", opId, // $NON-NLS-1$
@@ -9870,7 +9900,7 @@ public class EdtMetadataService {
                 }
                 continue;
             }
-            unsetFeatureValue(configuration, target, key, coEditedTopObjectSink);
+            unsetFeatureValue(configuration, target, key, transaction, coEditedTopObjectSink);
         }
 
         // Merge any synthetic child ops from auto-redirected set keys
@@ -10432,7 +10462,8 @@ public class EdtMetadataService {
             // Subsystem nesting is stored on BOTH sides and EMF maintains neither for us — see
             // applySubsystemNesting.
             if (target instanceof Subsystem subsystem && isSubsystemNestingFeature(reference)) {
-                applySubsystemNesting(configuration, subsystem, reference, value, coEditedTopObjectSink);
+                applySubsystemNesting(
+                        configuration, subsystem, reference, value, transaction, coEditedTopObjectSink);
                 return;
             }
             applyReferenceValue(configuration, target, reference, value, transaction);
@@ -10487,14 +10518,15 @@ public class EdtMetadataService {
             Subsystem target,
             EReference reference,
             Object value,
+            IBmPlatformTransaction transaction,
             Consumer<String> coEditedTopObjectSink
     ) {
         if ("parentsubsystem".equals(normalizeToken(reference.getName()))) { //$NON-NLS-1$
             Subsystem newParent = resolveSubsystemValue(configuration, reference, value);
-            reparentSubsystem(configuration, target, newParent, coEditedTopObjectSink);
+            reparentSubsystem(configuration, target, newParent, transaction, coEditedTopObjectSink);
             return;
         }
-        applySubsystemChildren(configuration, target, reference, value, coEditedTopObjectSink);
+        applySubsystemChildren(configuration, target, reference, value, transaction, coEditedTopObjectSink);
     }
 
     /**
@@ -10522,11 +10554,25 @@ public class EdtMetadataService {
         return subsystem;
     }
 
-    /** Moves {@code child} under {@code newParent} (or to the configuration root when null). */
+    /**
+     * Moves {@code child} under {@code newParent} (or to the configuration root when null),
+     * relocating its storage to the new owner's slot first.
+     *
+     * <p>Order and steps mirror EDT's own {@code MdRefactoringService.SubsystemMoveOperation}
+     * (decompiled, EDT 2025.2.3): detach from the current owner, {@code updateTopObjectFqn} to the
+     * slot the new owner offers, then join the new owner's list and point back at it. EDT itself
+     * routes that operation through {@code IRefactoringService.initiateRename} with the SAME name —
+     * a move is a rename of the FQN and nothing else — which is why the relocation cannot be
+     * skipped: the parent's {@code .mdo} refers to its children by BARE NAME, and that reference is
+     * resolved against {@code <parentFqn>.Subsystem.<name>}. Leave the child registered under its
+     * old flat FQN and the parent's own down-link dangles into a nameless stub, which no name-based
+     * lookup can match — the object then exists on disk and in BM while no tool can address it.</p>
+     */
     private void reparentSubsystem(
             Configuration configuration,
             Subsystem child,
             Subsystem newParent,
+            IBmPlatformTransaction transaction,
             Consumer<String> coEditedTopObjectSink
     ) {
         Subsystem oldParent = child.getParentSubsystem();
@@ -10535,6 +10581,7 @@ public class EdtMetadataService {
                 reportCoEditedSubsystem(oldParent, coEditedTopObjectSink);
             }
         }
+        detachRootAndRelocate(configuration, child, newParent, transaction, coEditedTopObjectSink);
         if (!sameSubsystem(oldParent, newParent)) {
             child.setParentSubsystem(newParent);
         }
@@ -10543,7 +10590,122 @@ public class EdtMetadataService {
         if (newParent != null && addSubsystemChild(newParent, child)) {
             reportCoEditedSubsystem(newParent, coEditedTopObjectSink);
         }
-        setConfigurationRootMembership(configuration, child, newParent == null);
+        if (newParent == null) {
+            setConfigurationRootMembership(configuration, child, true);
+        }
+    }
+
+    /**
+     * Takes {@code child} off the configuration root and relocates its storage into
+     * {@code newParent}'s slot, in that order — the order EDT's own move uses.
+     *
+     * <p>The root entry is put BACK when the relocation does not happen, because it is then the only
+     * thing that still makes the subsystem addressable: a child whose FQN says "top level" cannot be
+     * reached through a parent's bare-name reference. Being listed both at the root and under a
+     * parent is cosmetically wrong; being listed nowhere that resolves is a lost object.</p>
+     *
+     * @return whether the storage now sits in {@code newParent}'s slot
+     */
+    private boolean detachRootAndRelocate(
+            Configuration configuration,
+            Subsystem child,
+            Subsystem newParent,
+            IBmPlatformTransaction transaction,
+            Consumer<String> coEditedTopObjectSink
+    ) {
+        boolean droppedFromRoot = newParent != null
+                && setConfigurationRootMembership(configuration, child, false);
+        boolean relocated = relocateSubsystemStorage(transaction, child, newParent, coEditedTopObjectSink);
+        if (newParent != null && !relocated && droppedFromRoot) {
+            setConfigurationRootMembership(configuration, child, true);
+            LOG.warn("Subsystem %s stays registered at the configuration root: its storage could not" //$NON-NLS-1$
+                    + " be relocated under %s, and the root entry is what keeps it addressable", //$NON-NLS-1$
+                    child.getName(), newParent.getName());
+        }
+        return relocated;
+    }
+
+    /**
+     * Re-registers {@code child}'s top object under the FQN its new owner's slot dictates, so the
+     * owner's bare-name reference resolves and the {@code .mdo} lands at the matching path.
+     *
+     * <p>{@code newParent == null} means the configuration root, whose slot is the flat
+     * {@code Subsystem.<Name>}; a subsystem owner contributes
+     * {@code <ownerFqn>.Subsystem.<Name>} — see {@link SubsystemTree#qualifiedName}. The owner's own
+     * FQN is read live off BM rather than recomputed, so nesting of any depth works.</p>
+     *
+     * <p>Idempotent: a child already registered in the right slot is left alone, which is what makes
+     * re-running the same request a no-op instead of a churn.</p>
+     *
+     * @return {@code true} when the storage now sits in the new owner's slot (including when it
+     *         already did); {@code false} when the move could not be performed, in which case the
+     *         caller must keep whatever registration still makes the object reachable
+     */
+    private boolean relocateSubsystemStorage(
+            IBmPlatformTransaction transaction,
+            Subsystem child,
+            Subsystem newParent,
+            Consumer<String> coEditedTopObjectSink
+    ) {
+        if (child == null) {
+            return false;
+        }
+        if (transaction == null || !(child instanceof IBmObject bmChild)) {
+            LOG.warn("Subsystem %s: cannot relocate its storage (no BM transaction/object), so it" //$NON-NLS-1$
+                    + " stays registered where it is", child.getName()); //$NON-NLS-1$
+            return false;
+        }
+        String ownerFqn = newParent == null ? null : subsystemStorageFqn(newParent);
+        if (newParent != null && (ownerFqn == null || ownerFqn.isBlank())) {
+            LOG.warn("Subsystem %s: the new parent has no readable BM FQN, so the child's storage" //$NON-NLS-1$
+                    + " cannot be relocated", child.getName()); //$NON-NLS-1$
+            return false;
+        }
+        String targetFqn = SubsystemTree.qualifiedName(ownerFqn, child.getName());
+        if (targetFqn == null) {
+            LOG.warn("Subsystem without a readable name cannot be relocated; storage left as is"); //$NON-NLS-1$
+            return false;
+        }
+        String currentFqn = subsystemStorageFqn(child);
+        if (targetFqn.equals(currentFqn)) {
+            reportCoEditedFqn(targetFqn, coEditedTopObjectSink);
+            return true;
+        }
+        try {
+            transaction.updateTopObjectFqn(bmChild, targetFqn);
+        } catch (BmFqnAlreadyInUseException e) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                    "Cannot move subsystem " + child.getName() + ": the target slot " + targetFqn //$NON-NLS-1$ //$NON-NLS-2$
+                            + " is already registered as a BM top object. Another subsystem with" //$NON-NLS-1$
+                            + " that name already sits under the requested parent — rename one of" //$NON-NLS-1$
+                            + " them, or delete the stale one, before moving this one.", //$NON-NLS-1$
+                    false,
+                    e);
+        }
+        LOG.info("Subsystem %s storage relocated: %s -> %s", child.getName(), currentFqn, targetFqn); //$NON-NLS-1$
+        // The relocated .mdo is written at the NEW path, so the new FQN — not the flat one the
+        // request carried — is what the export batch has to target.
+        reportCoEditedFqn(targetFqn, coEditedTopObjectSink);
+        return true;
+    }
+
+    /** The live BM FQN of a subsystem top object, or {@code null} when BM cannot answer. */
+    private String subsystemStorageFqn(Subsystem subsystem) {
+        return topObjectStorageFqn(subsystem);
+    }
+
+    /**
+     * The FQN a top object is REGISTERED under, or {@code null} when BM cannot answer. Differs from
+     * the FQN a request carries whenever the two are not the same string — a nested subsystem being
+     * the case that matters.
+     */
+    private String topObjectStorageFqn(EObject object) {
+        if (!(object instanceof IBmObject bmObject)) {
+            return null;
+        }
+        String fqn = BmObjectHelper.safeTopFqn(bmObject);
+        return fqn.isBlank() ? null : fqn;
     }
 
     /**
@@ -10600,12 +10762,20 @@ public class EdtMetadataService {
         return false;
     }
 
-    /** Replaces {@code parent.subsystems} and re-points every affected child's parent slot. */
+    /**
+     * Replaces {@code parent.subsystems}, re-points every affected child's parent slot and moves
+     * each child's storage into (or out of) the parent's slot.
+     *
+     * <p>Membership through this side of the link is the same move as through
+     * {@link #reparentSubsystem}, so it needs the same relocation: a child listed here but still
+     * registered under the flat root FQN leaves the parent's bare-name reference dangling.</p>
+     */
     private void applySubsystemChildren(
             Configuration configuration,
             Subsystem parent,
             EReference reference,
             Object value,
+            IBmPlatformTransaction transaction,
             Consumer<String> coEditedTopObjectSink
     ) {
         List<Subsystem> requested = new ArrayList<>();
@@ -10622,6 +10792,7 @@ public class EdtMetadataService {
             }
             if (sameSubsystem(dropped.getParentSubsystem(), parent)) {
                 dropped.setParentSubsystem(null);
+                relocateSubsystemStorage(transaction, dropped, null, coEditedTopObjectSink);
                 setConfigurationRootMembership(configuration, dropped, true);
                 reportCoEditedSubsystem(dropped, coEditedTopObjectSink);
             }
@@ -10634,11 +10805,11 @@ public class EdtMetadataService {
                     reportCoEditedSubsystem(previous, coEditedTopObjectSink);
                 }
             }
+            detachRootAndRelocate(configuration, child, parent, transaction, coEditedTopObjectSink);
             if (!sameSubsystem(previous, parent)) {
                 child.setParentSubsystem(parent);
                 reportCoEditedSubsystem(child, coEditedTopObjectSink);
             }
-            setConfigurationRootMembership(configuration, child, false);
         }
 
         if (!sameSubsystemList(current, requested)) {
@@ -10759,12 +10930,31 @@ public class EdtMetadataService {
         return true;
     }
 
-    /** Reports the flat FQN of a co-edited subsystem to the export/EOL sink. */
+    /**
+     * Reports the FQN of a co-edited subsystem to the export/EOL sink.
+     *
+     * <p>Prefers the FQN the object is actually REGISTERED under, because that is what names an
+     * export target. The flat {@code Subsystem.<Name>} form addresses a nested subsystem for our
+     * own resolvers (which walk the tree) but is not a BM FQN for one, so exporting it would find
+     * no top object and the nested parent's {@code .mdo} would never be written. The flat form
+     * stays as the fallback for the case where BM cannot answer at all.</p>
+     */
     private void reportCoEditedSubsystem(Subsystem subsystem, Consumer<String> coEditedTopObjectSink) {
-        if (coEditedTopObjectSink == null || subsystem == null || subsystem.getName() == null) {
+        if (coEditedTopObjectSink == null || subsystem == null) {
             return;
         }
-        String fqn = MetadataKind.SUBSYSTEM.getFqnPrefix() + "." + subsystem.getName(); //$NON-NLS-1$
+        String fqn = subsystemStorageFqn(subsystem);
+        if (fqn == null && subsystem.getName() != null) {
+            fqn = MetadataKind.SUBSYSTEM.getFqnPrefix() + "." + subsystem.getName(); //$NON-NLS-1$
+        }
+        reportCoEditedFqn(fqn, coEditedTopObjectSink);
+    }
+
+    /** Reports one co-edited top-object FQN to the export/EOL sink. */
+    private void reportCoEditedFqn(String fqn, Consumer<String> coEditedTopObjectSink) {
+        if (coEditedTopObjectSink == null || fqn == null || fqn.isBlank()) {
+            return;
+        }
         LOG.debug("applySubsystemNesting: co-edited top object %s", fqn); //$NON-NLS-1$
         coEditedTopObjectSink.accept(fqn);
     }
@@ -12597,6 +12787,7 @@ public class EdtMetadataService {
             Configuration configuration,
             MdObject target,
             String fieldName,
+            IBmPlatformTransaction transaction,
             Consumer<String> coEditedTopObjectSink
     ) {
         if ("uuid".equalsIgnoreCase(fieldName)) { //$NON-NLS-1$
@@ -12622,7 +12813,8 @@ public class EdtMetadataService {
         if (feature instanceof EReference reference
                 && target instanceof Subsystem subsystem
                 && isSubsystemNestingFeature(reference)) {
-            applySubsystemNesting(configuration, subsystem, reference, null, coEditedTopObjectSink);
+            applySubsystemNesting(
+                    configuration, subsystem, reference, null, transaction, coEditedTopObjectSink);
             return;
         }
         if (feature instanceof EReference && feature.isMany()) {
@@ -13521,9 +13713,18 @@ public class EdtMetadataService {
     }
 
     private void removeMetadataObject(Configuration configuration, String fqn, MdObject target) {
+        removeMetadataObject(configuration, fqn, target, null);
+    }
+
+    private void removeMetadataObject(
+            Configuration configuration,
+            String fqn,
+            MdObject target,
+            Consumer<String> coEditedTopObjectSink
+    ) {
         if (isTopLevelFqn(fqn)) {
             MetadataKind kind = metadataKindByFqn(fqn);
-            removeTopLevelObjectLinks(configuration, kind, target.getName());
+            removeTopLevelObjectLinks(configuration, kind, target.getName(), coEditedTopObjectSink);
             return;
         }
         EObject container = target.eContainer();
@@ -14284,6 +14485,25 @@ public class EdtMetadataService {
             String fqn,
             String opId
     ) {
+        rebindTopLevelIntoConfiguration(project, kind, objectName, fqn, fqn, opId);
+    }
+
+    /**
+     * Re-registers a freshly created top object in the configuration's typed collection.
+     *
+     * @param storageFqn the FQN the object is REGISTERED under, which differs from {@code fqn} when
+     *        the create also nested a subsystem. Two things follow: the BM lookup has to use it, and
+     *        an object that is already linked through an owner other than the configuration root must
+     *        NOT be swept and re-added — that would drop the nesting the same write just established
+     */
+    private void rebindTopLevelIntoConfiguration(
+            IProject project,
+            MetadataKind kind,
+            String objectName,
+            String fqn,
+            String storageFqn,
+            String opId
+    ) {
         IConfigurationProvider configurationProvider = gateway.getConfigurationProvider();
         Configuration configuration = configurationProvider.getConfiguration(project);
         if (configuration == null) {
@@ -14301,11 +14521,16 @@ public class EdtMetadataService {
             }
 
             IBmNamespace namespace = gateway.getBmModelManager().getBmNamespace(project);
-            Object top = transaction.getTopObjectByFqn(namespace, fqn);
+            Object top = transaction.getTopObjectByFqn(namespace, storageFqn);
             if (!(top instanceof MdObject txObject)) {
                 throw new MetadataOperationException(
                     MetadataOperationCode.EDT_TRANSACTION_FAILED,
-                    "Cannot resolve top object by FQN during relink: " + fqn, true); //$NON-NLS-1$
+                    "Cannot resolve top object by FQN during relink: " + storageFqn, true); //$NON-NLS-1$
+            }
+            if (isNestedSubsystem(txObject)) {
+                LOG.debug("[%s] Skip root relink for nested subsystem %s: its parent holds the link", //$NON-NLS-1$
+                        opId, storageFqn);
+                return null;
             }
             removeTopLevelObjectLinks(txConfiguration, kind, objectName);
             addTopLevelObject(txConfiguration, kind, txObject);
@@ -14322,6 +14547,11 @@ public class EdtMetadataService {
                 "Top-level object exists in BM but cannot be linked into Configuration: " + fqn, true); //$NON-NLS-1$
         }
         LOG.info("[%s] Top-level object (re)linked into Configuration: %s", opId, fqn); //$NON-NLS-1$
+    }
+
+    /** Whether {@code object} is a subsystem owned by another subsystem rather than by the root. */
+    private boolean isNestedSubsystem(MdObject object) {
+        return object instanceof Subsystem subsystem && subsystem.getParentSubsystem() != null;
     }
 
     private void verifyConfigurationEntryPersisted(IProject project, MetadataKind kind, String fqn, String opId) {
@@ -14401,17 +14631,15 @@ public class EdtMetadataService {
             LOG.warn("[%s] forceExport(List) failed for %s: %s", opId, targets, e.getMessage()); //$NON-NLS-1$
         }
         if (!exported) {
-            try {
-                exported = modelManager.forceExport(dtProject, fqn);
-            } catch (RuntimeException e) {
-                LOG.warn("[%s] forceExport(String) failed for %s: %s", opId, fqn, e.getMessage()); //$NON-NLS-1$
-            }
-        }
-        if (!exported) {
-            try {
-                exported = modelManager.forceExport(dtProject, "Configuration"); //$NON-NLS-1$
-            } catch (RuntimeException e) {
-                LOG.warn("[%s] forceExport(String) failed for Configuration: %s", opId, e.getMessage()); //$NON-NLS-1$
+            // Per target, not just the first one and then Configuration: an operation that RELOCATES
+            // a top object leaves its old FQN unresolvable, and one unknown entry used to sink the
+            // whole batch — including the co-edited far side, whose .mdo then never reached disk.
+            for (String target : targets) {
+                try {
+                    exported |= modelManager.forceExport(dtProject, target);
+                } catch (RuntimeException e) {
+                    LOG.warn("[%s] forceExport(String) failed for %s: %s", opId, target, e.getMessage()); //$NON-NLS-1$
+                }
             }
         }
         if (!exported) {
@@ -14837,6 +15065,21 @@ public class EdtMetadataService {
     }
 
     private void cleanupRemovedFilesystemArtifacts(IProject project, String fqn, String opId) {
+        cleanupRemovedFilesystemArtifacts(project, fqn, null, opId);
+    }
+
+    /**
+     * Deletes the source artifacts of a removed top object.
+     *
+     * @param storageFqn the FQN the object was REGISTERED under, captured before the unlink, or
+     *        {@code null} when unknown. It is what decides the path for a nested subsystem: its
+     *        directory follows its FQN chain
+     *        ({@code src/Subsystems/<Parent>/Subsystems/<Name>}), so the flat
+     *        {@code src/<Plural>/<Name>} rule derived from the request's FQN names a top-level
+     *        sibling that does not exist — and the real directory would be left behind, to be
+     *        re-imported as a resurrected subsystem on the next refresh.
+     */
+    private void cleanupRemovedFilesystemArtifacts(IProject project, String fqn, String storageFqn, String opId) {
         if (project == null || !project.exists()) {
             return;
         }
@@ -14851,15 +15094,23 @@ public class EdtMetadataService {
         }
 
         String folderPath;
-        try {
-            folderPath = "src/" + mapTopFolder(topKind) + "/" + topName; //$NON-NLS-1$ //$NON-NLS-2$
-        } catch (MetadataOperationException e) {
-            LOG.warn("[%s] Skip filesystem cleanup for unsupported top kind=%s fqn=%s", opId, topKind, fqn); //$NON-NLS-1$
-            return;
+        String mdoPath;
+        String nestedFolderPath = MetadataResourcePaths.subsystemDirectory(storageFqn);
+        if (nestedFolderPath != null) {
+            folderPath = nestedFolderPath;
+            mdoPath = MetadataResourcePaths.subsystemMdoFile(storageFqn);
+        } else {
+            try {
+                folderPath = "src/" + mapTopFolder(topKind) + "/" + topName; //$NON-NLS-1$ //$NON-NLS-2$
+            } catch (MetadataOperationException e) {
+                LOG.warn("[%s] Skip filesystem cleanup for unsupported top kind=%s fqn=%s", opId, topKind, fqn); //$NON-NLS-1$
+                return;
+            }
+            mdoPath = folderPath + "/" + topName + ".mdo"; //$NON-NLS-1$ //$NON-NLS-2$
         }
 
         IFolder folder = project.getFolder(folderPath);
-        IFile mdoFile = project.getFile(folderPath + "/" + topName + ".mdo"); //$NON-NLS-1$ //$NON-NLS-2$
+        IFile mdoFile = project.getFile(mdoPath);
         try {
             if (folder.exists()) {
                 folder.delete(true, null);
@@ -15006,6 +15257,15 @@ public class EdtMetadataService {
     }
 
     private void removeTopLevelObjectLinks(Configuration configuration, MetadataKind kind, String name) {
+        removeTopLevelObjectLinks(configuration, kind, name, null);
+    }
+
+    private void removeTopLevelObjectLinks(
+            Configuration configuration,
+            MetadataKind kind,
+            String name,
+            Consumer<String> coEditedTopObjectSink
+    ) {
         removeByName(configuration.getContent(), name);
         switch (kind) {
             case CATALOG -> removeByName(configuration.getCatalogs(), name);
@@ -15030,7 +15290,7 @@ public class EdtMetadataService {
             case XDTO_PACKAGE -> removeByName(configuration.getXDTOPackages(), name);
             case WS_REFERENCE -> removeByName(configuration.getWsReferences(), name);
             case ROLE -> removeByName(configuration.getRoles(), name);
-            case SUBSYSTEM -> removeSubsystemLinks(configuration, name);
+            case SUBSYSTEM -> removeSubsystemLinks(configuration, name, coEditedTopObjectSink);
             case EXCHANGE_PLAN -> removeByName(configuration.getExchangePlans(), name);
             case CHART_OF_ACCOUNTS -> removeByName(configuration.getChartsOfAccounts(), name);
             case CHART_OF_CHARACTERISTIC_TYPES -> removeByName(configuration.getChartsOfCharacteristicTypes(), name);
@@ -15067,13 +15327,46 @@ public class EdtMetadataService {
      * there, so deleting one left a dangling {@code <subsystems>} line in its parent's {@code .mdo}.
      * Now that {@link #setConfigurationRootMembership} keeps nested subsystems off the root, it would
      * not be enough for the ones this plugin nests either.</p>
+     *
+     * <p>Matching goes through {@link SubsystemIdentity} rather than {@code getName()}: an entry in a
+     * parent's collection can be an unresolved proxy whose name reads back {@code null} while its URI
+     * still encodes it, and a name-only test silently skips exactly those — the entries that most
+     * need sweeping. Every parent that loses a line is reported, because its {@code .mdo} is a
+     * separate top object and reaches disk only as its own export target.</p>
      */
-    private void removeSubsystemLinks(Configuration configuration, String name) {
-        removeByName(configuration.getSubsystems(), name);
+    private void removeSubsystemLinks(
+            Configuration configuration,
+            String name,
+            Consumer<String> coEditedTopObjectSink
+    ) {
+        removeSubsystemByIdentity(configuration.getSubsystems(), name);
         for (Subsystem subsystem : SubsystemTree.<Subsystem>flatten(
                 configuration.getSubsystems(), Subsystem::getSubsystems)) {
-            removeByName(subsystem.getSubsystems(), name);
+            if (removeSubsystemByIdentity(subsystem.getSubsystems(), name)) {
+                reportCoEditedSubsystem(subsystem, coEditedTopObjectSink);
+            }
         }
+    }
+
+    /**
+     * Removes every entry of {@code subsystems} that denotes the subsystem named {@code name},
+     * comparing identities so an unresolved proxy is matched by its URI. Returns whether the list
+     * changed.
+     */
+    private boolean removeSubsystemByIdentity(List<Subsystem> subsystems, String name) {
+        if (subsystems == null || name == null || name.isBlank()) {
+            return false;
+        }
+        String wanted = SubsystemIdentity.of(name, null);
+        boolean changed = false;
+        for (int i = 0; i < subsystems.size(); i++) {
+            if (SubsystemIdentity.same(subsystemIdentity(subsystems.get(i)), wanted)) {
+                subsystems.remove(i);
+                i--;
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     private void removeByName(List<? extends MdObject> objects, String name) {
