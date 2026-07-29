@@ -1,4 +1,5 @@
 package com.codepilot1c.core.tools.metadata;
+import com.codepilot1c.core.tools.CompositeCommandKeyGuard;
 import com.codepilot1c.core.tools.SchemaKeyGuard;
 import com.codepilot1c.core.tools.ToolResult;
 import com.codepilot1c.core.tools.ToolParameters;
@@ -87,6 +88,10 @@ public class EdtValidateRequestTool extends AbstractTool {
                 if (refusal != null) {
                     return refusal;
                 }
+                ToolResult foreignKeyRefusal = refuseForeignCommandPayloadKeys(operation, payloadMap);
+                if (foreignKeyRefusal != null) {
+                    return foreignKeyRefusal;
+                }
 
                 ValidationRequest request = new ValidationRequest(project, operation, (Map<String, Object>) payloadMap);
                 ValidationResult result = service.validateAndIssueToken(request);
@@ -145,6 +150,44 @@ public class EdtValidateRequestTool extends AbstractTool {
         String message = SchemaKeyGuard.refusalMessage(
                 requestedOperation,
                 report.unknownKeys(),
+                SchemaKeyGuard.forDisplay(report.acceptedKeys(), Set.of("validation_token"))); //$NON-NLS-1$
+        return ToolResult.failure(errorJson("KNOWLEDGE_REQUIRED", message, false)); //$NON-NLS-1$
+    }
+
+    /**
+     * Refuses a payload that carries a key belonging to a DIFFERENT command of the same composite tool.
+     *
+     * <p>The gap {@link SchemaKeyGuard} cannot see: {@code dcs_manage}, {@code external_manage} and
+     * {@code extension_manage} advertise the UNION of every command's parameters, so
+     * {@code dataset_name} passed with {@code command:"upsert_param"} is a declared key — and still
+     * read by nobody. That is the same silent drop plus success report the top-level guard exists to
+     * end, so it is refused here too, before the token.</p>
+     *
+     * <p>Fail-open in every direction (see {@link CompositeCommandKeyGuard}): a non-composite
+     * operation, an unresolvable command, or an untagged schema all pass through untouched, and an
+     * untagged key is common to every command and can never be refused.</p>
+     *
+     * @return the refusal, or {@code null} when every key belongs to the dispatched command
+     */
+    private ToolResult refuseForeignCommandPayloadKeys(ValidationOperation operation, Map<?, ?> payload) {
+        if (ValidationPayloadKeyContract.isExempt(operation)) {
+            return null;
+        }
+        String toolName = ValidationPayloadKeyContract.compositeToolName(operation);
+        if (toolName == null) {
+            return null;
+        }
+        CompositeCommandKeyGuard.Report report = CompositeCommandKeyGuard.inspect(
+                ValidationPayloadKeyContract.targetToolSchema(operation),
+                ValidationPayloadKeyContract.compositeCommand(operation, payload),
+                payload.keySet());
+        if (report.isClean()) {
+            return null;
+        }
+        String message = CompositeCommandKeyGuard.refusalMessage(
+                toolName,
+                report.command(),
+                report.foreignKeys(),
                 SchemaKeyGuard.forDisplay(report.acceptedKeys(), Set.of("validation_token"))); //$NON-NLS-1$
         return ToolResult.failure(errorJson("KNOWLEDGE_REQUIRED", message, false)); //$NON-NLS-1$
     }

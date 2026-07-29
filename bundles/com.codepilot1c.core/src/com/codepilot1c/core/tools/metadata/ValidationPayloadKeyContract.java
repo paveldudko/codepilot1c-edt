@@ -60,6 +60,18 @@ public final class ValidationPayloadKeyContract {
             new EnumMap<>(ValidationOperation.class);
 
     /**
+     * The {@code payload.command} each composite operation dispatches to — the mirror image of the
+     * {@code resolve*ManageCommand} switches in {@link ValidationOperation}.
+     *
+     * <p>Needed because {@code edt_validate_request} accepts the resolved per-command operation name
+     * ({@code dcs_upsert_parameter}) as well as the composite one, and in that spelling the payload
+     * need not repeat {@code command} at all. Without this table a per-command key check would simply
+     * fail open on exactly the calls that skip {@code command}.</p>
+     */
+    private static final Map<ValidationOperation, String> COMPOSITE_COMMANDS =
+            new EnumMap<>(ValidationOperation.class);
+
+    /**
      * Extra top-level spellings {@code MetadataRequestValidationService} accepts that the target
      * tool's schema does not advertise. Each entry cites the code that reads it.
      */
@@ -90,6 +102,16 @@ public final class ValidationPayloadKeyContract {
         COMPOSITE_TOOL_NAMES.put(ValidationOperation.DCS_UPSERT_QUERY_DATASET, "dcs_manage"); //$NON-NLS-1$
         COMPOSITE_TOOL_NAMES.put(ValidationOperation.DCS_UPSERT_PARAMETER, "dcs_manage"); //$NON-NLS-1$
         COMPOSITE_TOOL_NAMES.put(ValidationOperation.DCS_UPSERT_CALCULATED_FIELD, "dcs_manage"); //$NON-NLS-1$
+
+        COMPOSITE_COMMANDS.put(ValidationOperation.EXTERNAL_CREATE_REPORT, "create_report"); //$NON-NLS-1$
+        COMPOSITE_COMMANDS.put(ValidationOperation.EXTERNAL_CREATE_PROCESSING, "create_processing"); //$NON-NLS-1$
+        COMPOSITE_COMMANDS.put(ValidationOperation.EXTENSION_CREATE_PROJECT, "create"); //$NON-NLS-1$
+        COMPOSITE_COMMANDS.put(ValidationOperation.EXTENSION_ADOPT_OBJECT, "adopt"); //$NON-NLS-1$
+        COMPOSITE_COMMANDS.put(ValidationOperation.EXTENSION_SET_PROPERTY_STATE, "set_state"); //$NON-NLS-1$
+        COMPOSITE_COMMANDS.put(ValidationOperation.DCS_CREATE_MAIN_SCHEMA, "create_schema"); //$NON-NLS-1$
+        COMPOSITE_COMMANDS.put(ValidationOperation.DCS_UPSERT_QUERY_DATASET, "upsert_dataset"); //$NON-NLS-1$
+        COMPOSITE_COMMANDS.put(ValidationOperation.DCS_UPSERT_PARAMETER, "upsert_param"); //$NON-NLS-1$
+        COMPOSITE_COMMANDS.put(ValidationOperation.DCS_UPSERT_CALCULATED_FIELD, "upsert_field"); //$NON-NLS-1$
 
         // normalizePayload CREATE_METADATA: firstValue(payload, "adopt_existing", "adoptExisting", "adopt")
         EXTRA_ACCEPTED_KEYS.put(ValidationOperation.CREATE_METADATA,
@@ -129,6 +151,32 @@ public final class ValidationPayloadKeyContract {
         }
         String composite = COMPOSITE_TOOL_NAMES.get(operation);
         return composite != null ? composite : operation.getToolName();
+    }
+
+    /**
+     * The composite router for a composite operation, or {@code null} when the operation goes straight
+     * to its own tool and per-command key checking does not apply.
+     */
+    public static String compositeToolName(ValidationOperation operation) {
+        return operation == null ? null : COMPOSITE_TOOL_NAMES.get(operation);
+    }
+
+    /**
+     * The {@code command} the composite tool will dispatch: the payload's own value when it carries
+     * one, otherwise the one implied by the resolved operation name. {@code null} for a non-composite
+     * operation, which leaves the per-command guard fail-open.
+     */
+    public static String compositeCommand(ValidationOperation operation, Map<?, ?> payload) {
+        if (compositeToolName(operation) == null) {
+            return null;
+        }
+        Object declared = payload == null ? null : payload.get("command"); //$NON-NLS-1$
+        if (declared != null && !String.valueOf(declared).isBlank()) {
+            // What the tool really dispatches on wins over what the operation name implies; if the two
+            // disagree the token will fail to consume later anyway.
+            return String.valueOf(declared);
+        }
+        return COMPOSITE_COMMANDS.get(operation);
     }
 
     public static Set<String> extraAcceptedKeys(ValidationOperation operation) {

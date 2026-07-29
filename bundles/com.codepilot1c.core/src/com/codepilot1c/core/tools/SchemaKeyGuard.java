@@ -386,7 +386,8 @@ public final class SchemaKeyGuard {
         return sb.toString();
     }
 
-    private static void appendAccepted(StringBuilder sb, String label, Collection<String> acceptedKeys) {
+    /** Shared by {@link CompositeCommandKeyGuard} so both guards spell "accepted keys" identically. */
+    static void appendAccepted(StringBuilder sb, String label, Collection<String> acceptedKeys) {
         if (acceptedKeys == null || acceptedKeys.isEmpty()) {
             return;
         }

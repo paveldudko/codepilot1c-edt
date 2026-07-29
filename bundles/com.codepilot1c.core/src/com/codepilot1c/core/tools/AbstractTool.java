@@ -196,6 +196,11 @@ public abstract class AbstractTool implements ITool {
      * project — both without a word. Advisory ONLY: it never fails a call and never changes
      * behaviour, so a tool whose schema under-declares a pass-through key loses nothing but the
      * accuracy of this note.</p>
+     *
+     * <p>Two kinds of dropped key are covered: one the schema does not declare at all, and — for a
+     * composite tool — one it declares for a DIFFERENT {@code command} than the call dispatched. The
+     * second matters most for the read commands ({@code dcs_manage command=list_nodes} with
+     * {@code dataset_name}), which need no validation token and therefore never meet the L2 refusal.</p>
      */
     private ToolResult withUnknownParameterAdvisory(ToolResult result, Map<String, Object> parameters) {
         try {
@@ -203,12 +208,10 @@ public abstract class AbstractTool implements ITool {
                     || ADVISORY_EXEMPT_TOOLS.contains(name)) {
                 return result;
             }
-            SchemaKeyGuard.Report report = SchemaKeyGuard.inspect(getParameterSchema(), parameters.keySet());
-            if (report.isClean()) {
+            String advisory = unknownParameterAdvisory(parameters) + foreignCommandParameterAdvisory(parameters);
+            if (advisory.isEmpty()) {
                 return result;
             }
-            String advisory = SchemaKeyGuard.advisoryLine(name, report.unknownKeys(),
-                    SchemaKeyGuard.forDisplay(report.acceptedKeys(), null));
             if (!result.isSuccess()) {
                 String error = result.getErrorMessage() == null ? "" : result.getErrorMessage(); //$NON-NLS-1$
                 return ToolResult.failure(error + advisory);
@@ -221,6 +224,38 @@ public abstract class AbstractTool implements ITool {
             // An advisory must never be the reason a call fails.
             return result;
         }
+    }
+
+    /** The note for a key this tool's schema does not declare at all, or {@code ""} when there is none. */
+    private String unknownParameterAdvisory(Map<String, Object> parameters) {
+        SchemaKeyGuard.Report report = SchemaKeyGuard.inspect(getParameterSchema(), parameters.keySet());
+        if (report.isClean()) {
+            return ""; //$NON-NLS-1$
+        }
+        return SchemaKeyGuard.advisoryLine(name, report.unknownKeys(),
+                SchemaKeyGuard.forDisplay(report.acceptedKeys(), null));
+    }
+
+    /**
+     * The note for a key this tool declares for another {@code command} than the one just dispatched,
+     * or {@code ""} when there is none.
+     *
+     * <p>Generic on purpose: it fires for any tool whose schema declares a {@code command} enum and
+     * tags its per-command properties {@code (command) …}, which today is exactly
+     * {@code dcs_manage} / {@code external_manage} / {@code extension_manage}. Everything else — the
+     * {@code additionalProperties:true} dispatchers included — is unenforceable and stays silent.</p>
+     */
+    private String foreignCommandParameterAdvisory(Map<String, Object> parameters) {
+        Object command = parameters.get("command"); //$NON-NLS-1$
+        CompositeCommandKeyGuard.Report report = CompositeCommandKeyGuard.inspect(
+                getParameterSchema(),
+                command == null ? null : String.valueOf(command),
+                parameters.keySet());
+        if (report.isClean()) {
+            return ""; //$NON-NLS-1$
+        }
+        return CompositeCommandKeyGuard.advisoryLine(name, report.command(), report.foreignKeys(),
+                SchemaKeyGuard.forDisplay(report.acceptedKeys(), null));
     }
 
     /**
