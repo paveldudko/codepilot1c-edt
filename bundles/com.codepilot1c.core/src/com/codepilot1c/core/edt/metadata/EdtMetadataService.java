@@ -367,11 +367,11 @@ public class EdtMetadataService {
         // A created subsystem given parentSubsystem also rewrites the parent's .mdo — see
         // applySubsystemNesting.
         Set<String> coEditedFqns = new LinkedHashSet<>();
-        Consumer<String> coEditedSink = coEditedFqn -> {
+        CoEditedSink coEditedSink = new CoEditedSink(coEditedFqn -> {
             if (coEditedFqn != null && !coEditedFqn.equalsIgnoreCase(fqn) && coEditedFqns.add(coEditedFqn)) {
                 eolGuard.addCoEditedFqn(coEditedFqn);
             }
-        };
+        });
 
         // Where the object ended up REGISTERED, which is not the requested FQN when the write also
         // relocated it (a subsystem given a parentSubsystem).
@@ -444,6 +444,8 @@ public class EdtMetadataService {
             LOG.debug("[%s] Skip Configuration entry check: %s is listed by its parent, not the root", //$NON-NLS-1$
                     opId, storageFqn);
         }
+        // An ADOPTED orphan already had a .mdo on disk, so nesting it during creation vacates a path.
+        cleanupVacatedSubsystemStorage(project, coEditedSink.relocations(), opId);
         eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] createMetadata SUCCESS in %s fqn=%s adopted=%s", opId, // $NON-NLS-1$
@@ -6344,12 +6346,12 @@ public class EdtMetadataService {
         // Two-sided links (subsystem nesting) mutate a second top object; collect those FQNs so
         // both the export batch and the EOL guard cover the far side too.
         Set<String> coEditedFqns = new LinkedHashSet<>();
-        Consumer<String> coEditedSink = coEditedFqn -> {
+        CoEditedSink coEditedSink = new CoEditedSink(coEditedFqn -> {
             if (coEditedFqn != null && !coEditedFqn.equalsIgnoreCase(request.targetFqn())
                     && coEditedFqns.add(coEditedFqn)) {
                 eolGuard.addCoEditedFqn(coEditedFqn);
             }
-        };
+        });
 
         String targetFqn = executeWrite(project, transaction -> {
             Configuration txConfiguration = transaction.toTransactionObject(configuration);
@@ -6373,6 +6375,7 @@ public class EdtMetadataService {
         String topLevelFqn = extractTopLevelFqn(targetFqn);
         forceExportTopLevelObjects(project, topLevelFqn, coEditedFqns, opId);
         verifyObjectPersisted(project, targetFqn, opId);
+        cleanupVacatedSubsystemStorage(project, coEditedSink.relocations(), opId);
         eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] updateMetadata SUCCESS in %s target=%s", opId, // $NON-NLS-1$
@@ -6922,12 +6925,12 @@ public class EdtMetadataService {
         // other top objects — they need their own export target and EOL snapshot, exactly as in
         // update_metadata. Sweeping BM alone left the dangling <subsystems> line on disk.
         Set<String> coEditedFqns = new LinkedHashSet<>();
-        Consumer<String> coEditedSink = coEditedFqn -> {
+        CoEditedSink coEditedSink = new CoEditedSink(coEditedFqn -> {
             if (coEditedFqn != null && !coEditedFqn.equalsIgnoreCase(targetFqn)
                     && coEditedFqns.add(coEditedFqn)) {
                 eolGuard.addCoEditedFqn(coEditedFqn);
             }
-        };
+        });
         // Where the object was actually STORED, captured before it is unlinked: a nested subsystem
         // lives at src/Subsystems/<Parent>/Subsystems/<Name>, which the FQN in the request cannot
         // name (see cleanupRemovedFilesystemArtifacts).
@@ -6959,6 +6962,8 @@ public class EdtMetadataService {
         forceExportTopLevelObjects(project, topLevelFqn, coEditedFqns, opId);
         verifyObjectRemoved(project, targetFqn, opId);
         cleanupRemovedFilesystemArtifacts(project, targetFqn, storageFqnHolder[0], opId);
+        // Deleting a parent sends its children back to the root, which relocates their storage too.
+        cleanupVacatedSubsystemStorage(project, coEditedSink.relocations(), opId);
         eolGuard.restore();
         refreshProjectSafely(project);
         LOG.info("[%s] deleteMetadata SUCCESS in %s target=%s", opId, // $NON-NLS-1$
@@ -10687,6 +10692,9 @@ public class EdtMetadataService {
         // The relocated .mdo is written at the NEW path, so the new FQN — not the flat one the
         // request carried — is what the export batch has to target.
         reportCoEditedFqn(targetFqn, coEditedTopObjectSink);
+        // ...and the file at the OLD path is left behind by that same export, which is why the
+        // vacated FQN has to survive the transaction — see cleanupVacatedSubsystemStorage.
+        reportStorageRelocated(currentFqn, targetFqn, coEditedTopObjectSink);
         return true;
     }
 
@@ -10948,6 +10956,69 @@ public class EdtMetadataService {
             fqn = MetadataKind.SUBSYSTEM.getFqnPrefix() + "." + subsystem.getName(); //$NON-NLS-1$
         }
         reportCoEditedFqn(fqn, coEditedTopObjectSink);
+    }
+
+    /**
+     * The export/EOL sink of one metadata write, plus the second channel a RELOCATION needs.
+     *
+     * <p>The co-edited channel behaves exactly as the plain {@link Consumer} it wraps. The
+     * relocation channel carries what no other post-commit step can reconstruct: the FQN a top
+     * object was registered under BEFORE the write moved it. The export writes the {@code .mdo} at
+     * the new path and leaves the old file untouched, so without this the vacated descriptor stays
+     * on disk as a second definition of the same object.</p>
+     *
+     * <p>It rides the same sink because the whole write chain — fifteen methods that know nothing
+     * about the mutation being applied — carries exactly one, and a second parameter would have to
+     * be threaded through every one of them. A flow that passes a plain lambda instead simply does
+     * not carry the channel; {@link #reportStorageRelocated} says so in the log rather than
+     * dropping the relocation silently.</p>
+     */
+    private static final class CoEditedSink implements Consumer<String> {
+
+        private final Consumer<String> coEdited;
+        /** previous storage FQN -> the FQN the object is registered under now. */
+        private final Map<String, String> relocations = new LinkedHashMap<>();
+
+        private CoEditedSink(Consumer<String> coEdited) {
+            this.coEdited = coEdited;
+        }
+
+        @Override
+        public void accept(String coEditedFqn) {
+            coEdited.accept(coEditedFqn);
+        }
+
+        private void storageRelocated(String previousFqn, String currentFqn) {
+            if (previousFqn == null || previousFqn.isBlank() || currentFqn == null || currentFqn.isBlank()
+                    || previousFqn.equals(currentFqn)) {
+                return;
+            }
+            relocations.put(previousFqn, currentFqn);
+        }
+
+        private Map<String, String> relocations() {
+            return relocations;
+        }
+    }
+
+    /**
+     * Records a completed storage relocation for the post-export cleanup.
+     *
+     * <p>Reported after {@code updateTopObjectFqn} has succeeded, so a refused or skipped move
+     * leaves nothing to clean up.</p>
+     */
+    private void reportStorageRelocated(
+            String previousFqn,
+            String currentFqn,
+            Consumer<String> coEditedTopObjectSink
+    ) {
+        if (coEditedTopObjectSink instanceof CoEditedSink sink) {
+            sink.storageRelocated(previousFqn, currentFqn);
+            return;
+        }
+        LOG.warn("Storage relocated %s -> %s through a sink with no relocation channel: the vacated" //$NON-NLS-1$
+                + " descriptor will be left on disk as a duplicate definition", //$NON-NLS-1$
+                previousFqn, currentFqn);
     }
 
     /** Reports one co-edited top-object FQN to the export/EOL sink. */
@@ -15130,6 +15201,101 @@ public class EdtMetadataService {
             throw new MetadataOperationException(
                     MetadataOperationCode.EDT_TRANSACTION_FAILED,
                     "Metadata descriptor artifacts still exist after delete: " + folderPath, true); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Removes the descriptor a relocated top object left at its old path, once the export has put
+     * the new one on disk.
+     *
+     * <p>Must run AFTER the export: the guard that keeps this from destroying data is "the new
+     * descriptor exists", and only the export creates it. Live-measured 2026-07-29 — a subsystem
+     * moved under a parent kept its old {@code src/Subsystems/<Name>/<Name>.mdo}, a second
+     * definition that the next refresh or re-import reads as a second, top-level subsystem.</p>
+     *
+     * <p>Never fails the operation. The move itself succeeded and the object is addressable at its
+     * new FQN; reporting a failure would tell the caller a correct write went wrong, and the retry
+     * would be an idempotent no-op that leaves the same file behind. A leftover is therefore logged,
+     * loudly, and nothing else.</p>
+     *
+     * @param relocations previous storage FQN -> current storage FQN, as collected by
+     *        {@link CoEditedSink} during the write
+     */
+    private void cleanupVacatedSubsystemStorage(IProject project, Map<String, String> relocations, String opId) {
+        if (project == null || !project.exists() || relocations == null || relocations.isEmpty()) {
+            return;
+        }
+        boolean removedAnything = false;
+        for (Map.Entry<String, String> relocation : relocations.entrySet()) {
+            String previousFqn = relocation.getKey();
+            String currentFqn = relocation.getValue();
+            String previousDirectoryPath = MetadataResourcePaths.subsystemDirectory(previousFqn);
+            String previousDescriptorPath = MetadataResourcePaths.subsystemMdoFile(previousFqn);
+            if (previousDirectoryPath == null || previousDescriptorPath == null) {
+                continue;
+            }
+            String currentDescriptorPath = MetadataResourcePaths.subsystemMdoFile(currentFqn);
+            IFolder previousDirectory = project.getFolder(previousDirectoryPath);
+            IFile previousDescriptor = project.getFile(previousDescriptorPath);
+            VacatedSubsystemStorage.Cleanup cleanup = VacatedSubsystemStorage.decide(
+                    previousFqn,
+                    currentFqn,
+                    previousDescriptor.exists(),
+                    currentDescriptorPath != null && project.getFile(currentDescriptorPath).exists(),
+                    hasEntriesBesides(previousDirectory, previousDescriptor, opId));
+            switch (cleanup) {
+                case NOTHING_LEFT -> LOG.debug("[%s] Nothing left at the vacated path %s", //$NON-NLS-1$
+                        opId, previousDescriptorPath);
+                case KEEP_ONLY_COPY -> LOG.warn("[%s] %s moved to %s, but the new descriptor is not on" //$NON-NLS-1$
+                        + " disk — keeping %s, which is now the only copy of the definition", //$NON-NLS-1$
+                        opId, previousFqn, currentFqn, previousDescriptorPath);
+                case REMOVE_DESCRIPTOR_ONLY ->
+                    removedAnything |= deleteVacatedResource(previousDescriptor, previousFqn, opId);
+                case REMOVE_DIRECTORY ->
+                    removedAnything |= deleteVacatedResource(previousDirectory, previousFqn, opId);
+            }
+        }
+        if (removedAnything) {
+            refreshProjectSafely(project);
+        }
+    }
+
+    /**
+     * Whether {@code directory} holds anything besides {@code descriptor} — a nested
+     * {@code Subsystems/} subtree being the case that matters, because those children are separate
+     * top objects that the move did NOT re-register, so their files must survive it.
+     *
+     * <p>Answers "yes" when the directory cannot be listed: the conservative answer keeps the
+     * cleanup on the descriptor alone.</p>
+     */
+    private boolean hasEntriesBesides(IFolder directory, IFile descriptor, String opId) {
+        if (!directory.exists()) {
+            return false;
+        }
+        try {
+            for (IResource member : directory.members()) {
+                if (!member.equals(descriptor)) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (CoreException e) {
+            LOG.warn("[%s] Cannot list %s (%s); removing the vacated descriptor only", //$NON-NLS-1$
+                    opId, directory.getFullPath(), e.getMessage());
+            return true;
+        }
+    }
+
+    /** @return whether {@code resource} is gone now */
+    private boolean deleteVacatedResource(IResource resource, String previousFqn, String opId) {
+        try {
+            resource.delete(true, null);
+            LOG.info("[%s] Removed the storage %s vacated: %s", opId, previousFqn, resource.getFullPath()); //$NON-NLS-1$
+            return true;
+        } catch (CoreException e) {
+            LOG.warn("[%s] Cannot remove %s vacated by %s (%s): it stays on disk as a duplicate" //$NON-NLS-1$
+                    + " definition", opId, resource.getFullPath(), previousFqn, e.getMessage()); //$NON-NLS-1$
+            return false;
         }
     }
 

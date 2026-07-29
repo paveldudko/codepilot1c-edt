@@ -183,6 +183,38 @@ public class SubsystemNestingSymmetryContractTest {
     }
 
     /**
+     * The fifth thing a move has to do, and the one the relocation alone left undone: drop the file
+     * it vacated. The export writes the {@code .mdo} at the new path and leaves the old one where it
+     * was, so the configuration carries the subsystem's definition twice (live 2026-07-29:
+     * {@code src/Subsystems/WaveR6Child/WaveR6Child.mdo} survived a move under {@code WaveParent}).
+     *
+     * <p>Only the ORDER is pinned here — what may be deleted is decided by
+     * {@link VacatedSubsystemStorage} and tested by result. The order is the safety property no unit
+     * test can see: the cleanup's guard is "the new descriptor exists", and only the export creates
+     * it, so running the cleanup before the export would delete the only copy.</p>
+     */
+    @Test
+    public void theVacatedStorageIsCleanedUpAfterTheExportNotBefore() {
+        String source = readSource(SERVICE_PATH);
+        String relocate = methodBody(source, "private boolean relocateSubsystemStorage("); //$NON-NLS-1$
+        assertTrue("the vacated FQN has to survive the transaction, and only the sink leaves it", //$NON-NLS-1$
+                relocate.contains("reportStorageRelocated(currentFqn, targetFqn, coEditedTopObjectSink)")); //$NON-NLS-1$
+
+        for (String flow : new String[] {
+                "public MetadataOperationResult updateMetadata(", //$NON-NLS-1$
+                "public MetadataOperationResult deleteMetadata(", //$NON-NLS-1$
+                "public CreateMetadataOutcome createMetadataDetailed(" }) { //$NON-NLS-1$
+            String body = methodBody(source, flow);
+            int export = body.indexOf("forceExportTopLevelObjects(project,"); //$NON-NLS-1$
+            int cleanup = body.indexOf("cleanupVacatedSubsystemStorage(project, coEditedSink.relocations(), opId)"); //$NON-NLS-1$
+            assertTrue("every flow that can relocate storage must clean up after it: " + flow, //$NON-NLS-1$
+                    cleanup >= 0);
+            assertTrue("and only once the export has written the new descriptor: " + flow, //$NON-NLS-1$
+                    export >= 0 && cleanup > export);
+        }
+    }
+
+    /**
      * The root entry is the last thing keeping a subsystem addressable, so it may only be dropped
      * once the storage has really moved — and must come back when it has not. Double registration is
      * cosmetically wrong; no registration that resolves is a lost object.
