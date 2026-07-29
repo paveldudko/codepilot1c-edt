@@ -9,6 +9,56 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Round-10 (2026-07-29) — the cascaded subtree also learns who its new owner is
+
+* **A cascaded descendant's up-link now follows its owner too** (`fcc6c7b`). Round-9's cascade re-keyed every
+  descendant's FQN, which made them addressable again, but each descendant's own `.mdo` carries
+  `<parentSubsystem>` — the owner's STORAGE FQN, not a bare name — held as a proxy resolved against the chain
+  the owner had BEFORE the move. Measured live on build `0.1.7.20260729-1206`, on the very build that fixed the
+  re-keying: `WaveR9C.mdo` still read `<parentSubsystem>Subsystem.WaveR9P</parentSubsystem>` while the owner had
+  become `Subsystem.WaveParent.Subsystem.WaveR9P`, and EDT rendered the up-link as a nameless stub.
+  `SubsystemTree.Relocation` now carries the live object that will own each node, so the cascade hands
+  `setParentSubsystem` the real parent rather than a recomputed string — the serializer writes whatever the
+  reference resolves to. **Both** branches re-point, including the one where the FQN was already right: a
+  descendant keyed correctly and pointed wrongly is exactly what an earlier cascade left behind, so that branch
+  is how such a tree heals on a re-run. A failing up-link write is logged, not thrown — the re-registration has
+  already made the object addressable, and aborting there would trade a wrong pointer for the unaddressable
+  descendant the cascade exists to prevent.
+* **The pointer decision stopped being made by leaf name** (`fcc6c7b`). Manual repair was a silent no-op:
+  `reparentSubsystem` compared the dangling proxy against the live parent through the name-based identity, both
+  read `waver9p`, the answer was "unchanged", and the write was skipped while `update_metadata` reported SUCCESS
+  with the file untouched — another instance of "success = nothing happened". The decision now uses a CHAIN
+  comparison (`SubsystemIdentity.chainOf` / `sameChain`: the live BM FQN where readable, the proxy URI where not).
+  Membership tests keep the name-based identity unchanged, which is correct for them — inside one parent's
+  collection the entries are proxies with nothing but a name to match on. The two rules are separately named on
+  purpose: conflating them is what caused this. An unreadable chain matches nothing, so the caller writes the
+  pointer — the repairing direction.
+* **The subtree is walked even when the owner is already in its slot** (`27349cc`). The first live probe of the
+  fix above changed nothing: `relocateSubsystemStorage` returned early on "owner already registered in the
+  target slot", and did so BEFORE the descendant plan was built — so the whole subtree pass was gated on the
+  OWNER's own FQN changing, which is false by definition in the case that needs healing. The healing branch was
+  unreachable one level up; the plugin log said so plainly, reporting only the owner as co-edited. The plan is
+  now built before that branch can return, and the branch runs the pass instead of returning bare. The pass is
+  idempotent on FQNs, so a re-run costs one walk and writes only what is wrong.
+* Tests by result: the stale-flat-vs-nested-live pair that fooled the name identity is now a regression test,
+  alongside FQN→URI fallback, case-insensitivity, absence of prefix matching, and the unreadable-chain case.
+  Source-contract additions pin only what no unit test can see — that BOTH branches re-point, that the gate is
+  the chain comparison, and (after the live probe) that the subtree pass is not gated on the owner moving. The
+  source-contract test that "both branches re-point" was green throughout while the method was unreachable:
+  asserting the presence of text in a source file cannot see dead code.
+* **Live-validated** on build `0.1.7.20260729-2109`, project `TestConfiguration`, reading the `.mdo` files
+  rather than the tool's answer — the defect was precisely that the tool lied. Healing: `WaveR9C` went from
+  `Subsystem.WaveR9P` to `Subsystem.WaveParent.Subsystem.WaveR9P` and `WaveR9G` from
+  `Subsystem.WaveR9P.Subsystem.WaveR9C` to the full three-link chain. Forward: a fresh `WaveR10P > WaveR10C >
+  WaveR10G` moved under `WaveParent` landed all three files at the nested path with every up-link carrying the
+  full chain. The grandchild carrying the complete chain is what confirms the recursion hands down live owners
+  rather than stale proxies. Both grandchildren still resolve by flat alias.
+* **Owner decisions recorded** (`issues/2026-07-28-bus-drain-recon.md`): `queryText` auto-generated and always
+  echoed in the summary; `mainTable` in, as its own commit; `fields`/`calculatedFields`/`parameters`/
+  `listSettings` out of scope **with an honest refusal** rather than a silent drop; `set_attribute_props` to be
+  added; `add_button` for object/common commands refused for now; `infobase_connection` credentials may be
+  reused for the inline probe provided the summary says so.
+
 ### Round-9 (2026-07-29) — a move now takes the whole subtree, and a refuted rule stops being repeated
 
 * **A moved subsystem re-registers every subsystem below it** (`00e8d16`). `updateTopObjectFqn` re-keys the ONE
@@ -31,7 +81,7 @@ commit hash in parentheses where useful.
   **Live-validated** on build `0.1.7.20260729-1206`, three levels deep on fresh objects: `WaveR9P > WaveR9C >
   WaveR9G` moved under `WaveParent`, all three addressable, all three `.mdo` at the nested paths, both
   down-links full chains, the old directory gone.
-* **Known remaining, measured on that same run:** a cascaded descendant's own `<parentSubsystem>` still holds its
+* **Known remaining, measured on that same run — closed in Round-10 above:** a cascaded descendant's own `<parentSubsystem>` still holds its
   parent's OLD FQN, so EDT renders the up-link as a nameless stub. Re-issuing `set.parentSubsystem` does **not**
   repair it — `reparentSubsystem` reads the dangling proxy as the current parent, `sameSubsystem` answers
   "unchanged", and the write is skipped while the tool reports success. The parent-side down-link is correct, so
