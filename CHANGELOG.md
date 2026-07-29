@@ -11,6 +11,33 @@ commit hash in parentheses where useful.
 
 ### Round-5 (2026-07-29) — the parameter round-trip, answered by a zero-build probe
 
+* **`dcs_manage create_main_schema` can now repair the state it gets reported in.** The persistence fix
+  (`7b175ca`) left an idempotency guard that answered "already done" whenever a template typed
+  `DataCompositionSchema` existed under the requested name — without checking that its `template` reference
+  resolves to anything. That dangling shape is exactly the wreckage the original bug leaves behind: the
+  `<templates>` entry sits in `Report.mdo` and `Templates/X/Template.dcs` does not exist. Since the default
+  name is always `MainDataCompositionSchema`, every affected user's *second* call hit the guard and got a
+  no-op, after which the on-disk probe honestly reported the file missing forever — the only escape was
+  `force_replace=true`, which also wipes content. A no-op now requires a schema that actually resolves.
+  Second defect from the same commit: `resetSchemaContent` ran on every reuse of a pre-existing top-object,
+  including calls that never asked for `force_replace` — replace wipes, repair preserves. Also
+  `schemaRebound` now counts as a mutation, without which the force-export was skipped for a repair on a
+  `DataProcessor` owner. The whole create/reuse/repair/refuse decision moves into a pure `MutationPlan`
+  (no EDT types), 18 new behavioural tests including two exhaustive sweeps of all 48 input combinations for
+  the invariants the defect broke. The fix rests on one live-unverified assumption — that a dangling
+  `BasicTemplate.template` reads back as absent rather than as an unresolved proxy — so the log line carries
+  `plan=` and `sameNameSchemaBound=` for a single diagnostic round to settle it.
+
+* **`get_diagnostics`'s origin rules became testable.** The review-marker exclusion itself shipped earlier
+  (`fc9861f`), but the filter and the counters lived as private methods of the UI bundle's collector, which no
+  test runtime in this build can reach (`com.codepilot1c.ui.tests` is a pom with no sources, no MANIFEST, and
+  is not in the reactor) — so they were pinned by grepping the source, the anti-pattern that let two other
+  assertions rot unnoticed this same round. Both rules move into a pure `DiagnosticOriginSelection` in
+  `core/diagnostics`; the collector delegates and holds no copy. 15 behavioural tests, including the case a
+  "filter early, count what is left" fix would miss: with `origin=all` review overlays come back into the
+  answer and must still stay out of the counters. The `origin` schema description is trimmed to
+  input-decision guidance per the tool-description convention.
+
 * **Nesting a subsystem takes it off the configuration root, and un-nesting puts it back.** F1 fixed two
   sides of subsystem nesting; there is a third. Ground truth from Accounting management (live 2026-07-29):
   `Configuration.mdo` holds exactly 34 `<subsystems>Subsystem.X</subsystems>` entries — one per top-level
