@@ -206,8 +206,11 @@ public class EdtDcsService {
         String ownerFqn = request.normalizedOwnerFqn();
         String requestedName = request.effectiveTemplateName();
         String ownerTopLevelFqn = ownerTopLevelFqn(ownerFqn);
-        LOG.info("[dcs][%s] createMainSchema START project=%s owner=%s template=%s force=%s", //$NON-NLS-1$
+        // templateSource is the honest half of template=: the default name and a caller who typed
+        // exactly that name produce the same value, and only the source tells them apart afterwards.
+        LOG.info("[dcs][%s] createMainSchema START project=%s owner=%s template=%s templateSource=%s force=%s", //$NON-NLS-1$
                 opId, request.normalizedProjectName(), ownerFqn, requestedName,
+                request.hasExplicitTemplateName() ? "caller" : "default", //$NON-NLS-1$ //$NON-NLS-2$
                 Boolean.valueOf(request.shouldForceReplace()));
 
         // Snapshot EOL BEFORE the mutation: the BM serializer rewrites .mdo/.dcs as CRLF regardless
@@ -316,12 +319,19 @@ public class EdtDcsService {
         Template target = sameName;
         if (target == null && request.shouldForceReplace()) {
             // force_replace means REPLACE: rebind the DCS template the owner already has instead of
-            // appending a second one. The template_name default is materialized by the validation
-            // service, so "the caller asked for a different name" is not recoverable here.
+            // appending a second one. The name that lands is then the EXISTING one, not the requested
+            // one — dropping a name the caller typed is worth a warning, dropping the default nobody
+            // asked for is routine. The request keeps that difference (the validated payload carries
+            // template_name only when it was explicit), so the log can be honest about which it was.
             target = findDcsTemplate(templates.templates(), existing.schema());
             if (target != null) {
-                LOG.info("[dcs][%s] force_replace reuses existing DCS template '%s' instead of creating '%s'", //$NON-NLS-1$
-                        opId, safe(target.getName()), requestedName);
+                if (request.hasExplicitTemplateName()) {
+                    LOG.warn("[dcs][%s] force_replace reuses existing DCS template '%s' and IGNORES the explicitly requested '%s'", //$NON-NLS-1$
+                            opId, safe(target.getName()), requestedName);
+                } else {
+                    LOG.info("[dcs][%s] force_replace reuses existing DCS template '%s' instead of creating the default '%s'", //$NON-NLS-1$
+                            opId, safe(target.getName()), requestedName);
+                }
             }
         }
         if (target == null) {

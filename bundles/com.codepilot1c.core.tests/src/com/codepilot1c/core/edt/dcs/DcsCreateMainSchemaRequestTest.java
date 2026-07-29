@@ -31,6 +31,22 @@ public class DcsCreateMainSchemaRequestTest {
     }
 
     @Test
+    public void explicitnessOfTheTemplateNameIsAnswerable() {
+        // The whole point: the same effective name, two different provenances.
+        assertTrue(request(DcsSchemaSupport.DEFAULT_TEMPLATE_NAME).hasExplicitTemplateName());
+        assertFalse(request(null).hasExplicitTemplateName());
+        assertEquals(request(DcsSchemaSupport.DEFAULT_TEMPLATE_NAME).effectiveTemplateName(),
+                request(null).effectiveTemplateName());
+    }
+
+    @Test
+    public void blankTemplateNamesCountAsAbsentNotExplicit() {
+        assertFalse(request("").hasExplicitTemplateName()); //$NON-NLS-1$
+        assertFalse(request("   ").hasExplicitTemplateName()); //$NON-NLS-1$
+        assertTrue(request("  MySchema  ").hasExplicitTemplateName()); //$NON-NLS-1$
+    }
+
+    @Test
     public void forceReplaceIsFalseUnlessExplicitlyTrue() {
         assertFalse(new DcsCreateMainSchemaRequest("p", "Report.Sales", null, null).shouldForceReplace()); //$NON-NLS-1$ //$NON-NLS-2$
         assertFalse(new DcsCreateMainSchemaRequest("p", "Report.Sales", null, Boolean.FALSE) //$NON-NLS-1$ //$NON-NLS-2$

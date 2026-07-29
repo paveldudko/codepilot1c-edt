@@ -34,6 +34,8 @@ public class DcsMainSchemaPersistenceContractTest {
             "bundles/com.codepilot1c.core/src/com/codepilot1c/core/edt/dcs/DcsExportSupport.java"; //$NON-NLS-1$
     private static final String TOOL_PATH =
             "bundles/com.codepilot1c.core/src/com/codepilot1c/core/tools/dcs/DcsManageTool.java"; //$NON-NLS-1$
+    private static final String VALIDATION_PATH =
+            "bundles/com.codepilot1c.core/src/com/codepilot1c/core/edt/validation/MetadataRequestValidationService.java"; //$NON-NLS-1$
 
     // --- the attach itself ---------------------------------------------------
 
@@ -247,6 +249,38 @@ public class DcsMainSchemaPersistenceContractTest {
         String export = readSource(EXPORT_PATH);
         assertTrue("the export target list must be logged", //$NON-NLS-1$
                 export.contains("forceExport targets=%s")); //$NON-NLS-1$
+    }
+
+    // --- template_name provenance -------------------------------------------
+
+    @Test
+    public void theStartLineSaysWhereTheTemplateNameCameFrom() throws Exception {
+        String source = readSource(SERVICE_PATH);
+        // template=MainDataCompositionSchema alone cannot tell an explicit request from the default.
+        assertTrue("the START line must log the provenance of the template name", //$NON-NLS-1$
+                source.contains("templateSource=%s")); //$NON-NLS-1$
+        assertTrue("the provenance must be derived from the request, not guessed", //$NON-NLS-1$
+                source.contains("request.hasExplicitTemplateName() ? \"caller\" : \"default\"")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void forceReplaceWarnsOnlyWhenAnExplicitNameIsIgnored() throws Exception {
+        String source = readSource(SERVICE_PATH);
+        assertTrue("dropping a caller-supplied name must be a warning", //$NON-NLS-1$
+                source.contains("IGNORES the explicitly requested")); //$NON-NLS-1$
+        assertTrue("dropping the default is routine, not a warning", //$NON-NLS-1$
+                source.contains("instead of creating the default")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void theValidatedPayloadDoesNotMaterializeTheDefaultName() throws Exception {
+        String source = readSource(VALIDATION_PATH);
+        int guard = source.indexOf("if (request.hasExplicitTemplateName()) {"); //$NON-NLS-1$
+        int put = source.indexOf("payload.put(\"template_name\", request.effectiveTemplateName())"); //$NON-NLS-1$
+        assertTrue("the payload must be guarded by an explicitness check", guard > 0); //$NON-NLS-1$
+        assertTrue("template_name must be written only inside that guard", put > guard); //$NON-NLS-1$
+        assertEquals("exactly one template_name write, otherwise the guard can be bypassed", //$NON-NLS-1$
+                1, countOccurrences(source, "payload.put(\"template_name\"")); //$NON-NLS-1$
     }
 
     // --- tool contract -------------------------------------------------------

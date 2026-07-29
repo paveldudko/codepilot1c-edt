@@ -24,10 +24,13 @@ import java.util.Locale;
 public final class DcsSchemaSupport {
 
     /**
-     * Template name used when the caller passes none. Note that
-     * {@code MetadataRequestValidationService.normalizeDcsCreateMainSchemaPayload} materializes
-     * this default INTO the validated payload, so by the time the service sees the request the
-     * name is always non-blank — "was it explicit?" cannot be recovered downstream.
+     * Template name used when the caller passes none. It is resolved ONLY at the point of use, by
+     * {@link DcsCreateMainSchemaRequest#effectiveTemplateName()}:
+     * {@code MetadataRequestValidationService.normalizeDcsCreateMainSchemaPayload} deliberately does
+     * NOT materialize it into the validated payload, which carries {@code template_name} only when
+     * the caller passed one. That absence is what keeps "explicitly asked for
+     * {@code MainDataCompositionSchema}" distinguishable from "asked for nothing" downstream — see
+     * {@link DcsCreateMainSchemaRequest#hasExplicitTemplateName()}.
      */
     public static final String DEFAULT_TEMPLATE_NAME = "MainDataCompositionSchema"; //$NON-NLS-1$
 

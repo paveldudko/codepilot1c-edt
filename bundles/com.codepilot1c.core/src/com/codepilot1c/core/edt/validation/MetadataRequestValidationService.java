@@ -17,6 +17,7 @@ import com.codepilot1c.core.edt.forms.UpdateFormModelRequest;
 import com.codepilot1c.core.edt.external.ExternalCreateProcessingRequest;
 import com.codepilot1c.core.edt.external.ExternalCreateReportRequest;
 import com.codepilot1c.core.edt.dcs.DcsCreateMainSchemaRequest;
+import com.codepilot1c.core.edt.dcs.DcsSchemaSupport;
 import com.codepilot1c.core.edt.dcs.DcsUpsertCalculatedFieldRequest;
 import com.codepilot1c.core.edt.dcs.DcsUpsertParameterRequest;
 import com.codepilot1c.core.edt.dcs.DcsUpsertQueryDatasetRequest;
@@ -445,6 +446,22 @@ public class MetadataRequestValidationService {
         return payload;
     }
 
+    /**
+     * Normalizes {@code dcs_manage command=create_schema} / {@code dcs_create_main_schema}.
+     *
+     * <p>{@code template_name} lands in the payload ONLY when the caller passed one. The
+     * {@code MainDataCompositionSchema} default is deliberately NOT materialized here: this payload
+     * is what the token carries and what the mutation reads back, so a materialized default would
+     * erase the difference between "the caller explicitly asked for
+     * {@code MainDataCompositionSchema}" and "the caller passed nothing" — in the log, in the
+     * {@code force_replace} branch and in the {@code edt_validate_request} echo alike. Absence of
+     * the key IS the signal, so no extra flag can go missing from an older token and be
+     * misread as "defaulted".</p>
+     *
+     * <p>No validate/apply divergence follows: the default is resolved by
+     * {@link DcsCreateMainSchemaRequest#effectiveTemplateName()}, the same code path on both sides,
+     * and the validation echo spells the resolved name out as a check line.</p>
+     */
     public Map<String, Object> normalizeDcsCreateMainSchemaPayload(
             String projectName,
             String ownerFqn,
@@ -461,7 +478,9 @@ public class MetadataRequestValidationService {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("project", request.normalizedProjectName()); //$NON-NLS-1$
         payload.put("owner_fqn", request.normalizedOwnerFqn()); //$NON-NLS-1$
-        payload.put("template_name", request.effectiveTemplateName()); //$NON-NLS-1$
+        if (request.hasExplicitTemplateName()) {
+            payload.put("template_name", request.effectiveTemplateName()); //$NON-NLS-1$
+        }
         payload.put("force_replace", Boolean.valueOf(request.shouldForceReplace())); //$NON-NLS-1$
         return payload;
     }
@@ -1136,6 +1155,13 @@ public class MetadataRequestValidationService {
                         asOptionalString(request.payload().get("template_name")), //$NON-NLS-1$
                         asOptionalBoolean(request.payload().get("force_replace"))); //$NON-NLS-1$
                 checks.add("Операция dcs_create_main_schema валидирована по обязательным полям."); //$NON-NLS-1$
+                // The echoed payload omits template_name when the caller passed none (that omission
+                // is what keeps the explicit choice distinguishable), so state the name that will be
+                // applied — otherwise reading the echo requires knowing the default by heart.
+                checks.add(payload.containsKey("template_name") //$NON-NLS-1$
+                        ? "template_name задан явно: " + payload.get("template_name") + "." //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                        : "template_name не передан — будет применено имя по умолчанию " //$NON-NLS-1$
+                                + DcsSchemaSupport.DEFAULT_TEMPLATE_NAME + "."); //$NON-NLS-1$
                 yield payload;
             }
             case DCS_UPSERT_QUERY_DATASET -> {
