@@ -9,6 +9,44 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Round-2 live validation of build `0.1.7.20260729-0028` — two entries above are overstated
+
+Validated on a real EDT after installing the wave. **Confirmed working:** `ExchangePlan.content` in both
+shapes, with an unresolvable entry refused loudly (a missing `<autoRecord>` element on disk is EMF omitting
+the EClass default, i.e. `Deny` — the explicit `Allow` is what gets written); `thisNode` refused with the
+honest not-plugin-managed reason; the dotted-subsystem-FQN refusal now naming the flat form; the DCS
+`templateSource=caller|default` distinction visible in the log with an identical effective name; and
+composite `type` written whole **through `update_metadata`** — `["String(100)", "Boolean"]` produced two
+`<types>` with `<length>100</length>`.
+
+Two claims made above do not hold, and are corrected here rather than left standing:
+
+* **Composite types are still collapsed on the `add_metadata_child` CREATE path.** `type: ["String",
+  "Boolean"]` writes a single `<types>String</types>` with the default `<length>150</length>`. Narrowed by
+  live probing: the requested type does arrive (no `Auto-assign default type` line is logged, so
+  `requestedType` was non-null and the default branch never ran), and the shared builder is proven correct
+  by the `update_metadata` result above — so the list is lost between `normalizeTypeSpecList(properties)`
+  and `setAttributeType` on that path. The `150` is separately explained by the map-carrier gap already
+  documented above: an inline `String(100)` is parsed only when the carrier is itself a string. Needs a
+  behavioural test on the splitter with the exact create-path shape (`{name, type: [...]}`), not another
+  source-contract assertion.
+* **Two-sided subsystem nesting is not idempotent.** Two identical `set.parentSubsystem` calls leave
+  `<subsystems>WaveChild2</subsystems>` twice in the parent. Root cause observed, not guessed: reading the
+  parent live renders its collection as `subsystems | [Subsystem, Subsystem]` — the EClass name, which is
+  the inspector's fallback when the `name` feature is empty. The stored entries are unresolved references
+  with no readable name, so the name-based identity the fix relies on can never match them and every call
+  appends. Identity for that collection must not go through `getName()`.
+
+Also corrected: the F2 note claimed the marker/name pair alias resolves on a properly two-sided tree. Live,
+with the parent listing the child on disk, `Subsystem.<Parent>.Subsystem.<Child>` still answers
+`METADATA_NOT_FOUND`. The flat form remains the only address that resolves — which is what the tool schemas
+say, and they were right before being softened on that claim.
+
+**Method note for the next round:** all three of these shipped with green source-contract tests. Those
+assert that text is present in the source, so they cannot see behaviour, and they passed while the feature
+did not work. Where the logic is pure, test the result (as `TypeValueSplitterTest` does); where it is not,
+validate live before claiming it works.
+
 ### Subsystem nesting is written on both sides (2026-07-29) — F1
 
 Live check on an EDT-authored configuration (132 `.mdo`: 98 with `<parentSubsystem>`, 22 with

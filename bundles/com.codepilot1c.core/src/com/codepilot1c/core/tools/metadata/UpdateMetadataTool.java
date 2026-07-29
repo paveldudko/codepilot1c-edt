@@ -36,7 +36,7 @@ public class UpdateMetadataTool extends AbstractTool {
                 },
                 "target_fqn": {
                   "type": "string",
-                  "description": "FQN already existing metadata object to change. Do not use for new object creation. Subsystem FQNs are FLAT at any nesting depth — always Subsystem.<Name>, even for a nested subsystem, because each subsystem is its own top object; the flat form is the only one guaranteed to resolve, so do not build a dotted form from the parent."
+                  "description": "FQN already existing metadata object to change. Do not use for new object creation. Subsystem FQNs are FLAT at any nesting depth — always Subsystem.<Name>, even for a nested subsystem, because each subsystem is its own top object; no dotted form built from the parent resolves, so never pass one."
                 },
                 "changes": {
                   "type": "object",
