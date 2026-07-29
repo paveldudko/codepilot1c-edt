@@ -50,7 +50,62 @@ public final class DcsSchemaSupport {
         OCCUPIED_OTHER_TYPE
     }
 
+    /** What the mutation has to do, given the name slot and what the owner already carries. */
+    public enum MutationPlan {
+        /** The name is held by a template of another type and {@code force_replace} was not passed. */
+        REFUSE_NAME_OCCUPIED,
+        /** A data composition schema is already there AND resolves — nothing to do. */
+        NO_OP,
+        /** Reuse the template that already carries the requested name (repair or replace). */
+        REBIND_SAME_NAME,
+        /** Reuse the DCS template the owner already has under ANOTHER name. */
+        REBIND_OWNER_TEMPLATE,
+        /** Create a new template and attach a fresh schema to it. */
+        CREATE
+    }
+
     private DcsSchemaSupport() {
+    }
+
+    /**
+     * Decides what {@code create_schema} must do. The load-bearing case is
+     * {@link NameSlotState#REUSABLE_DCS} with {@code sameNameSchemaBound == false}: a template typed
+     * {@code DataCompositionSchema} whose {@code template} reference resolves to nothing is exactly
+     * the state the defect left behind — the {@code <templates>} entry is in the owner's {@code .mdo}
+     * and {@code Templates/&lt;name&gt;/Template.dcs} is absent, because the schema was never
+     * attached as a top-object. Reading that as "already done" is why the tool could not repair
+     * itself: it returned a no-op, the on-disk probe reported the artifact missing, and the only way
+     * out was {@code force_replace=true} — which additionally wipes content. So an unbound DCS
+     * template is a REPAIR, not an idempotent hit.
+     *
+     * @param slot              verdict for the requested name, see {@link #classifyNameSlot}
+     * @param sameNameSchemaBound whether the same-named template's schema reference really resolves
+     * @param ownerSchemaBound  whether ANY template of the owner carries a resolvable schema
+     * @param ownerHasDcsTemplate whether the owner has a template typed as a DCS at all
+     * @param forceReplace      the caller's {@code force_replace}
+     */
+    public static MutationPlan planMutation(
+            NameSlotState slot,
+            boolean sameNameSchemaBound,
+            boolean ownerSchemaBound,
+            boolean ownerHasDcsTemplate,
+            boolean forceReplace
+    ) {
+        if (forceReplace) {
+            // REPLACE, never append: reuse the same-named template when there is one, else the DCS
+            // template the owner already has — a second <templates> entry is what the defect made.
+            if (slot != NameSlotState.FREE) {
+                return MutationPlan.REBIND_SAME_NAME;
+            }
+            return ownerHasDcsTemplate ? MutationPlan.REBIND_OWNER_TEMPLATE : MutationPlan.CREATE;
+        }
+        return switch (slot) {
+            case OCCUPIED_OTHER_TYPE -> MutationPlan.REFUSE_NAME_OCCUPIED;
+            case REUSABLE_DCS -> sameNameSchemaBound ? MutationPlan.NO_OP : MutationPlan.REBIND_SAME_NAME;
+            // A DCS template under ANOTHER name is left alone: the caller asked for this name, and
+            // silently repairing someone else's template is a bigger surprise than a second one.
+            case FREE -> ownerSchemaBound ? MutationPlan.NO_OP : MutationPlan.CREATE;
+        };
     }
 
     /**

@@ -195,6 +195,13 @@ public class EdtDcsService {
      * namespace → defensive {@code getTopObjectByFqn} reuse → {@code attachTopObject} → re-read the
      * attached object from the transaction → write THAT into the reference → seed the default
      * {@code dataSource}.</p>
+     *
+     * <p>A template already typed {@code DataCompositionSchema} is NOT proof that the schema is
+     * there: the defect left exactly that entry in the owner's {@code .mdo} with no attached
+     * top-object and no file. Such a template is repaired (its reference re-pointed at an attached
+     * schema) rather than reported as an idempotent hit — see
+     * {@link DcsSchemaSupport#planMutation}. The repair keeps existing content; only
+     * {@code force_replace} resets it.</p>
      */
     public DcsCreateMainSchemaResult createMainSchema(DcsCreateMainSchemaRequest request) {
         request.validate();
@@ -287,51 +294,60 @@ public class EdtDcsService {
                 sameName != null && sameName.getTemplateType() == TemplateType.DATA_COMPOSITION_SCHEMA,
                 requestedName);
         SchemaResolution existing = resolveSchema(owner);
-        LOG.info("[dcs][%s] name-slot=%s existingSchema=%s source=%s templates=%d", //$NON-NLS-1$
-                opId, slot, Boolean.valueOf(existing.schema() != null), existing.source(),
+        Template ownerDcsTemplate = findDcsTemplate(templates.templates(), existing.schema());
+        // Whether the SAME-NAMED template's schema reference really resolves. A DCS-typed template
+        // whose reference resolves to nothing is the reported broken state, not an idempotent hit.
+        boolean sameNameSchemaBound = extractSchema(sameName) != null;
+        DcsSchemaSupport.MutationPlan plan = DcsSchemaSupport.planMutation(
+                slot,
+                sameNameSchemaBound,
+                existing.schema() != null,
+                ownerDcsTemplate != null,
+                request.shouldForceReplace());
+        LOG.info("[dcs][%s] name-slot=%s plan=%s sameNameSchemaBound=%s existingSchema=%s source=%s templates=%d", //$NON-NLS-1$
+                opId, slot, plan, Boolean.valueOf(sameNameSchemaBound),
+                Boolean.valueOf(existing.schema() != null), existing.source(),
                 Integer.valueOf(templates.templates().size()));
 
-        if (!request.shouldForceReplace()) {
-            if (slot == DcsSchemaSupport.NameSlotState.OCCUPIED_OTHER_TYPE) {
-                throw new MetadataOperationException(
-                        MetadataOperationCode.METADATA_ALREADY_EXISTS,
-                        "Template " + safe(sameName.getName()) + " already exists on " + ownerFqn //$NON-NLS-1$
-                                + " with templateType=" + templateTypeName(sameName) //$NON-NLS-1$
-                                + ". Pass force_replace=true to convert it into a data composition " //$NON-NLS-1$
-                                + "schema, or choose another template_name.", //$NON-NLS-1$
-                        false);
-            }
-            if (slot == DcsSchemaSupport.NameSlotState.REUSABLE_DCS || existing.schema() != null) {
-                // Idempotent no-op: report the template that already carries the schema.
-                Template bound = slot == DcsSchemaSupport.NameSlotState.REUSABLE_DCS
-                        ? sameName
-                        : findDcsTemplate(templates.templates(), existing.schema());
-                state.templateName = bound != null ? safe(bound.getName())
-                        : findTemplateName(existing.schema(), templates.templates());
-                state.schemaSource = existing.schema() != null ? existing.source() : "templates"; //$NON-NLS-1$
-                // Best-effort FQN so the disk-state repair below can target the schema fragment.
-                state.externalFqn = externalSchemaFqnQuietly(bound, opId);
-                return;
-            }
+        if (plan == DcsSchemaSupport.MutationPlan.REFUSE_NAME_OCCUPIED) {
+            throw new MetadataOperationException(
+                    MetadataOperationCode.METADATA_ALREADY_EXISTS,
+                    "Template " + safe(sameName.getName()) + " already exists on " + ownerFqn //$NON-NLS-1$
+                            + " with templateType=" + templateTypeName(sameName) //$NON-NLS-1$
+                            + ". Pass force_replace=true to convert it into a data composition " //$NON-NLS-1$
+                            + "schema, or choose another template_name.", //$NON-NLS-1$
+                    false);
+        }
+        if (plan == DcsSchemaSupport.MutationPlan.NO_OP) {
+            // Idempotent no-op: report the template that already carries the schema. Reached ONLY
+            // when a schema actually resolves — an unbound DCS template falls through to the repair.
+            Template bound = sameNameSchemaBound ? sameName : ownerDcsTemplate;
+            state.templateName = bound != null ? safe(bound.getName())
+                    : findTemplateName(existing.schema(), templates.templates());
+            state.schemaSource = existing.schema() != null ? existing.source() : "templates"; //$NON-NLS-1$
+            // Best-effort FQN so the disk-state repair below can target the schema fragment.
+            state.externalFqn = externalSchemaFqnQuietly(bound, opId);
+            return;
         }
 
         // ----- mutating path -----
-        Template target = sameName;
-        if (target == null && request.shouldForceReplace()) {
+        Template target = switch (plan) {
+            case REBIND_SAME_NAME -> sameName;
+            case REBIND_OWNER_TEMPLATE -> ownerDcsTemplate;
+            default -> null;
+        };
+        if (target != null && !DcsSchemaSupport.nameMatches(target.getName(), requestedName)) {
             // force_replace means REPLACE: rebind the DCS template the owner already has instead of
             // appending a second one. The name that lands is then the EXISTING one, not the requested
             // one — dropping a name the caller typed is worth a warning, dropping the default nobody
             // asked for is routine. The request keeps that difference (the validated payload carries
             // template_name only when it was explicit), so the log can be honest about which it was.
-            target = findDcsTemplate(templates.templates(), existing.schema());
-            if (target != null) {
-                if (request.hasExplicitTemplateName()) {
-                    LOG.warn("[dcs][%s] force_replace reuses existing DCS template '%s' and IGNORES the explicitly requested '%s'", //$NON-NLS-1$
-                            opId, safe(target.getName()), requestedName);
-                } else {
-                    LOG.info("[dcs][%s] force_replace reuses existing DCS template '%s' instead of creating the default '%s'", //$NON-NLS-1$
-                            opId, safe(target.getName()), requestedName);
-                }
+            if (request.hasExplicitTemplateName()) {
+                LOG.warn("[dcs][%s] force_replace reuses existing DCS template '%s' and IGNORES the explicitly requested '%s'", //$NON-NLS-1$
+                        opId, safe(target.getName()), requestedName);
+            } else {
+                LOG.info("[dcs][%s] force_replace reuses existing DCS template '%s' instead of creating the default '%s'", //$NON-NLS-1$
+                        opId, safe(target.getName()), requestedName);
             }
         }
         if (target == null) {
@@ -361,9 +377,13 @@ public class EdtDcsService {
         DataCompositionSchema schema;
         if (preexisting instanceof DataCompositionSchema existingSchema) {
             // Defensive reuse: attaching twice under the same FQN raises BmNameAlreadyInUse.
-            // force_replace resets the content so the result is a schema, not a merge.
             schema = existingSchema;
-            resetSchemaContent(schema);
+            if (request.shouldForceReplace()) {
+                // force_replace resets the content so the result is a schema, not a merge. Only
+                // then: a REPAIR (re-pointing a dangling reference at the schema that is already
+                // attached) must not silently delete data sets nobody asked to drop.
+                resetSchemaContent(schema);
+            }
         } else {
             if (preexisting instanceof IBmObject stale) {
                 // The name slot is held by a top-object of another type (e.g. the spreadsheet
@@ -394,6 +414,10 @@ public class EdtDcsService {
         // Write ONLY the object re-read from the transaction into the reference — assigning the
         // pre-attach instance commits to "Failed to persist reference value".
         target.setTemplate(schema);
+        // The reference was (re-)written, which is a change even when neither the template nor the
+        // schema is new: repairing a dangling reference on a DataProcessor sets no other flag, and
+        // without this the export below would be skipped for it.
+        state.schemaRebound = true;
         boolean dataSourceAdded = ensureDefaultDataSource(schema);
         LOG.info("[dcs][%s] schema attached=%s dataSourceSeeded=%s dataSources=%d", //$NON-NLS-1$
                 opId, Boolean.valueOf(state.schemaCreated), Boolean.valueOf(dataSourceAdded),
@@ -1137,9 +1161,11 @@ public class EdtDcsService {
         private boolean schemaCreated;
         private boolean templateCreated;
         private boolean mainBindingUpdated;
+        /** The {@code BasicTemplate.template} reference was written — true for every repair too. */
+        private boolean schemaRebound;
 
         boolean mutated() {
-            return schemaCreated || templateCreated || mainBindingUpdated;
+            return schemaCreated || templateCreated || mainBindingUpdated || schemaRebound;
         }
     }
 
