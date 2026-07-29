@@ -212,7 +212,7 @@ public class SubsystemNestingSymmetryContractTest {
         String relocate = methodBody(source, "private boolean relocateSubsystemStorage("); //$NON-NLS-1$
         int plan = relocate.indexOf("SubsystemTree.descendantRelocations("); //$NON-NLS-1$
         int move = relocate.indexOf("transaction.updateTopObjectFqn(bmChild, targetFqn)"); //$NON-NLS-1$
-        int cascade = relocate.indexOf("relocateSubsystemDescendants(transaction, child, descendants"); //$NON-NLS-1$
+        int cascade = relocate.lastIndexOf("relocateSubsystemDescendants(transaction, child, descendants"); //$NON-NLS-1$
         assertTrue("the subtree must be read while its down-links still resolve — before the move", //$NON-NLS-1$
                 plan >= 0 && plan < move);
         assertTrue("and re-registered after it, against the owner's new chain", cascade > move); //$NON-NLS-1$
@@ -258,6 +258,32 @@ public class SubsystemNestingSymmetryContractTest {
                 repoint.contains("descendant.setParentSubsystem(parent);")); //$NON-NLS-1$
         assertTrue("and a failure here must not abort a move that already made the object addressable", //$NON-NLS-1$
                 repoint.contains("catch (RuntimeException e)")); //$NON-NLS-1$
+    }
+
+    /**
+     * The healing branch is worthless if the subtree pass never runs.
+     *
+     * <p>Live-measured 2026-07-29, on the build that added that branch: re-moving {@code WaveR9P} under
+     * the parent it already had reported SUCCESS and changed nothing — {@code WaveR9C.mdo} kept
+     * {@code Subsystem.WaveR9P} and {@code WaveR9G.mdo} kept {@code Subsystem.WaveR9P.Subsystem.WaveR9C},
+     * both a prefix short. The plugin log named the cause: only the owner was reported co-edited, so the
+     * subtree had never been walked. {@code relocateSubsystemStorage} returned early on
+     * "owner already in its slot" — one level ABOVE the branch meant to do the healing.</p>
+     *
+     * <p>So the pass must not be gated on the owner's own FQN changing, and the plan must be built
+     * before that early return can be taken. This is the one thing no unit test sees: both call sites
+     * are inside a method that needs a BM transaction.</p>
+     */
+    @Test
+    public void theSubtreePassIsNotGatedOnTheOwnersOwnFqnChanging() {
+        String relocate = methodBody(readSource(SERVICE_PATH), "private boolean relocateSubsystemStorage("); //$NON-NLS-1$
+        int plan = relocate.indexOf("SubsystemTree.descendantRelocations("); //$NON-NLS-1$
+        int alreadyInSlot = relocate.indexOf("if (targetFqn.equals(currentFqn)) {"); //$NON-NLS-1$
+        assertTrue("the plan must be built before the already-in-slot branch can return", //$NON-NLS-1$
+                plan >= 0 && alreadyInSlot > plan);
+        assertEquals("the subtree pass must run in BOTH branches: gating it on the owner moving is what" //$NON-NLS-1$
+                + " made a healing re-run a silent no-op", //$NON-NLS-1$
+                2, countOccurrences(relocate, "relocateSubsystemDescendants(transaction, child, descendants")); //$NON-NLS-1$
     }
 
     /**

@@ -10680,10 +10680,6 @@ public class EdtMetadataService {
             return false;
         }
         String currentFqn = subsystemStorageFqn(child);
-        if (targetFqn.equals(currentFqn)) {
-            reportCoEditedFqn(targetFqn, coEditedTopObjectSink);
-            return true;
-        }
         // Read the whole subtree's FQNs while the down-links still resolve — see
         // relocateSubsystemDescendants. Nothing is written until the plan is complete.
         List<SubsystemTree.Relocation<Subsystem>> descendants = SubsystemTree.descendantRelocations(
@@ -10692,6 +10688,17 @@ public class EdtMetadataService {
                 Subsystem::getName,
                 this::subsystemStorageFqn,
                 Subsystem::getSubsystems);
+        if (targetFqn.equals(currentFqn)) {
+            reportCoEditedFqn(targetFqn, coEditedTopObjectSink);
+            // The subtree still has to be walked. This branch is not "nothing to do": an owner
+            // sitting in its slot with descendants whose up-links still name the chain it had
+            // BEFORE an earlier move is exactly what a pre-fix cascade left behind, and re-running
+            // the move is the only way to heal it. Measured live 2026-07-29: gating the descendant
+            // pass on the owner's own FQN changing made that re-run a silent no-op, because the
+            // healing branch inside the pass was unreachable one level up.
+            relocateSubsystemDescendants(transaction, child, descendants, coEditedTopObjectSink);
+            return true;
+        }
         try {
             transaction.updateTopObjectFqn(bmChild, targetFqn);
         } catch (BmFqnAlreadyInUseException e) {
