@@ -11,6 +11,17 @@ commit hash in parentheses where useful.
 
 ### Round-11 (2026-07-29) — `update_infobase` stops calling a deferred schema an update (BF-12843)
 
+* **Live-validation status, partly closed 2026-07-30** on a real 1.51 GB file infobase (stack-1, build
+  `0.1.7.20260729-2134`). **Confirmed:** `schema_applied` is present on every outcome — verified on four
+  distinct paths (async acceptance `false`, in-job error `false`, synchronous refusal `false`, exclusive apply
+  `true`) — and an exclusive apply reports `schema_applied:true` with `status:"updated"`. **Not exercised, and
+  not exercisable on that stand:** the >660s blocking wait (the update now takes 3–4s there — the 13-minute
+  window was that copy's FIRST full-schema update and is spent, and a short job cannot distinguish "ceiling
+  raised" from "still 600, silently clamped"), the EQUAL-skip pair (the infobase never converges to EQUAL there,
+  so `skip_if_current` correctly proceeds instead of skipping), and the dynamic-apply path (the exclusive lock
+  was taken instantly both times). Validating the rest needs a fresh copy of a large infobase with an unapplied
+  schema, not a dedicated stand.
+
 * **The inline probe may borrow the connection string's login, and says when it did** (`1345a04`). Owner-approved
   2026-07-29 on the condition that a borrowed credential is never silent. `web_publication` ran its inline check
   unauthenticated whenever `probe_user` was absent, so a 1C HTTP/web service with mandatory auth answered 401 and
