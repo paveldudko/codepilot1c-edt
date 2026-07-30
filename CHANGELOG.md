@@ -11,6 +11,15 @@ commit hash in parentheses where useful.
 
 ### Round-11 (2026-07-29) — `update_infobase` stops calling a deferred schema an update (BF-12843)
 
+* **The non-convergence advisory stopped blaming a dynamic apply** (`6e29ddb`). Raised by the orchestrator off
+  the live run, and truer than it looked: `equality_state_after_warning` fires only when `dynamic_only` was NOT
+  set — the apply DID take the exclusive lock — yet it advised "apply one EXCLUSIVE update", which the caller had
+  already done, and read as "your update was probably dynamic". That false lead cost a round on 2026-07-30 and
+  nearly caused a correct feedback note to be rewritten. The warning now states what the branch knows: the apply
+  was exclusive, another one will not converge anything, `schema_applied` is true, and it is EDT's comparison that
+  has not converged — plus that anything gating on `work_ready`/EQUAL will spin forever there. The read side
+  (`get_infobase_sync_state`) keeps both hypotheses, since it cannot see the flag, but now names `dynamic_only`
+  as the field that decides between them instead of guessing at the likelier one.
 * **Live-validation status, partly closed 2026-07-30** on a real 1.51 GB file infobase (stack-1, build
   `0.1.7.20260729-2134`). **Confirmed:** `schema_applied` is present on every outcome — verified on four
   distinct paths (async acceptance `false`, in-job error `false`, synchronous refusal `false`, exclusive apply
