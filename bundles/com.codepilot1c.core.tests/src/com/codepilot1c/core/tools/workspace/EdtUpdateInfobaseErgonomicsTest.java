@@ -216,6 +216,37 @@ public class EdtUpdateInfobaseErgonomicsTest {
     }
 
     /**
+     * The non-convergence warning must not offer the hypothesis its own branch has already excluded.
+     *
+     * <p>It fires only when {@code dynamic_only} was NOT set — i.e. the apply DID take the exclusive lock —
+     * so telling the caller to "apply one EXCLUSIVE update" was advice they had already followed, and it read
+     * as "your update was probably dynamic". Live 2026-07-30 that false lead cost a round: two exclusive
+     * applies of 4s and 3s, both {@code schema_applied:true}, equality still NOT_EQUAL, and a consumer was
+     * about to rewrite a correct note because of this text.</p>
+     */
+    @Test
+    public void theNonConvergenceWarningDoesNotBlameADynamicApply() {
+        com.google.gson.JsonObject result = new com.google.gson.JsonObject();
+        EdtUpdateInfobaseTool.annotatePostUpdateEquality(result, "NOT_EQUAL", true, false); //$NON-NLS-1$
+        String warning = result.get("equality_state_after_warning").getAsString(); //$NON-NLS-1$
+        assertTrue("it must state that this apply was exclusive — the branch guarantees it", //$NON-NLS-1$
+                warning.contains("was EXCLUSIVE (dynamic_only is not set)")); //$NON-NLS-1$
+        assertTrue("and point at the field that actually answers the question", //$NON-NLS-1$
+                warning.contains("Gate on schema_applied")); //$NON-NLS-1$
+        assertFalse("advising another exclusive update is advice already followed", //$NON-NLS-1$
+                warning.contains("Apply one EXCLUSIVE update")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void aDynamicApplyGetsNoNonConvergenceWarningAtAll() {
+        // It carries its own richer dynamic_only warning; two warnings would compete.
+        com.google.gson.JsonObject result = new com.google.gson.JsonObject();
+        EdtUpdateInfobaseTool.annotatePostUpdateEquality(result, "NOT_EQUAL", true, true); //$NON-NLS-1$
+        assertFalse(result.has("equality_state_after_warning")); //$NON-NLS-1$
+        assertEquals("NOT_EQUAL", result.get("equality_state_after").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
      * The one outcome where the two fields legitimately disagree, and the reason {@code schema_applied}
      * cannot be read off {@code updated}: an EQUAL-skip applies nothing while the schema IS live.
      */

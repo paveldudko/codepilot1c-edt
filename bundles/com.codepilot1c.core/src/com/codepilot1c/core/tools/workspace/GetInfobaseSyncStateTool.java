@@ -181,11 +181,13 @@ public class GetInfobaseSyncStateTool extends AbstractTool {
                     "project differs from the infobase — run update_infobase (incremental) before tests. " //$NON-NLS-1$
                             + "IF update_infobase ALREADY returned updated:true and this still reports " //$NON-NLS-1$
                             + "NOT_EQUAL, do NOT loop re-running the same update — it will not converge. That " //$NON-NLS-1$
-                            + "is a known non-convergence mode: the update most likely applied DYNAMICALLY " //$NON-NLS-1$
-                            + "(main<->DB config still diverged until an EXCLUSIVE update) or EDT's in-memory " //$NON-NLS-1$
-                            + "equality state has not refreshed. Remediation: run one EXCLUSIVE update " //$NON-NLS-1$
-                            + "(update_infobase with no other client/Designer session holding the IB), or " //$NON-NLS-1$
-                            + "treat work_ready as advisory for a change with no schema impact. NB: EDT exposes " //$NON-NLS-1$
+                            + "is a known non-convergence mode, and the update's own payload says WHICH one: " //$NON-NLS-1$
+                            + "if it carried dynamic_only=true the restructure was deferred and one EXCLUSIVE " //$NON-NLS-1$
+                            + "update (no other client/Designer session holding the IB) is the fix; if it did " //$NON-NLS-1$
+                            + "NOT — schema_applied=true with no dynamic_only — the apply was already " //$NON-NLS-1$
+                            + "exclusive, another one changes nothing, and it is EDT's equality comparison " //$NON-NLS-1$
+                            + "that has not converged. Do not guess between the two: read dynamic_only. In the " //$NON-NLS-1$
+                            + "second case gate on schema_applied and treat work_ready as advisory. NB: EDT exposes " //$NON-NLS-1$
                             + "only this coarse equality state — no object-level list of WHAT differs is " //$NON-NLS-1$
                             + "available without a full Designer comparison."); //$NON-NLS-1$
         }

@@ -913,11 +913,21 @@ public class EdtUpdateInfobaseTool extends AbstractTool {
         }
         result.addProperty("equality_state_after", after); //$NON-NLS-1$
         if (applied && !dynamicOnly && !EQUALITY_EQUAL.equals(after)) {
+            // This branch only runs when dynamic_only was NOT set, i.e. the apply DID take the exclusive
+            // lock — so advising "apply one exclusive update" was advice the caller had already followed,
+            // and it read as "your update was probably dynamic". Live 2026-07-30 that false lead cost a
+            // round: two exclusive applies of 4s and 3s, both schema_applied:true, equality still
+            // NOT_EQUAL, and a consumer was about to rewrite a correct note because of this text. Say what
+            // this branch actually knows instead.
             result.addProperty("equality_state_after_warning", //$NON-NLS-1$
-                    "The update reported success yet the infobase still differs from the project. Do NOT " //$NON-NLS-1$
-                            + "re-run the same update expecting convergence — it will not converge. Apply " //$NON-NLS-1$
-                            + "one EXCLUSIVE update with no other client/Designer session holding the " //$NON-NLS-1$
-                            + "infobase, or treat this as advisory for a change with no schema impact."); //$NON-NLS-1$
+                    "The update reported success yet the infobase still differs from the project. This " //$NON-NLS-1$
+                            + "apply was EXCLUSIVE (dynamic_only is not set), so re-running it — or " //$NON-NLS-1$
+                            + "running another exclusive one — will NOT converge the state; do not loop. " //$NON-NLS-1$
+                            + "Gate on schema_applied, which is true here: the schema is applied and it is " //$NON-NLS-1$
+                            + "EDT's equality comparison that has not converged, a known reporting mode " //$NON-NLS-1$
+                            + "distinct from a deferred restructure. A restructure that finished in seconds " //$NON-NLS-1$
+                            + "on a large infobase is further evidence there was nothing to restructure. " //$NON-NLS-1$
+                            + "Anything gating on work_ready/EQUAL will spin forever on this infobase."); //$NON-NLS-1$
         }
     }
 
