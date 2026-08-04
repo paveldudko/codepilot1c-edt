@@ -2,6 +2,7 @@ package com.codepilot1c.core.edt.publication;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.file.Files;
@@ -39,6 +40,7 @@ import com._1c.g5.v8.dt.platform.services.model.PublicationType;
 import com._1c.g5.v8.dt.platform.services.model.RuntimeInstallation;
 import com._1c.g5.v8.dt.platform.services.model.WebServer;
 import com._1c.g5.v8.dt.platform.services.model.WebServices;
+import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.ILaunchableRuntimeComponent;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponent;
 import com._1c.g5.v8.dt.platform.services.core.runtimes.execution.IRuntimeComponentManager;
 import com.codepilot1c.core.edt.runtime.EdtRuntimeGateway;
@@ -62,7 +64,13 @@ import com.codepilot1c.core.logging.VibeLogger;
  *   <li>{@code IWebServerPublishDelegate.publish(..., Path webExtension)} takes the wsap module
  *       path from the caller; {@link #publish} resolves it from a pinned platform version when
  *       requested, mirroring the {@code runtime_version} pin (b8ad7c7) so a pre-release platform
- *       install can never silently hijack the publication's wsap module.</li>
+ *       install can never silently hijack the publication's wsap module. The delegate writes that
+ *       path verbatim, so it must be the module FILE, never the platform's {@code bin} directory
+ *       (see {@link #webExtensionModule}).</li>
+ *   <li>{@code PublicationManager} answers {@code getAll}/{@code get} from a per-server EMF Resource
+ *       filled once via {@code computeIfAbsent} and invalidated only by its own publish/remove — a
+ *       cache, not a view of the conf. Since publishing here goes straight to the delegate, all
+ *       reads go to the delegate too (see {@link #publicationsInConf}).</li>
  * </ul>
  */
 public class EdtWebPublicationService {
@@ -71,6 +79,9 @@ public class EdtWebPublicationService {
 
     private static final String RUNTIME_TYPE_ENTERPRISE_PLATFORM =
             "com._1c.g5.v8.dt.platform.services.core.runtimeType.EnterprisePlatform"; //$NON-NLS-1$
+    /** Every {@code IWebServerTypes.IIS_*} id shares this prefix; they all use one wsap module. */
+    private static final String IIS_TYPE_ID_PREFIX =
+            "com._1c.g5.v8.dt.platform.services.core.webServerType.IIS."; //$NON-NLS-1$
     private static final long PROCESS_STOP_TIMEOUT_MS = 10_000L;
 
     /** Outcome of a {@link #restartServer} call. */
@@ -221,10 +232,32 @@ public class EdtWebPublicationService {
     public List<Publication> listPublications(String serverName) {
         WebServer server = requireServer(serverName);
         try {
-            return gateway.getPublicationManager().getAll(server);
+            return publicationsInConf(server);
         } catch (WebServerAccessException e) {
             throw accessFailed("list publications", serverName, e); //$NON-NLS-1$
         }
+    }
+
+    /**
+     * The publications the web server's conf actually declares, re-parsed on every call.
+     *
+     * <p>Deliberately NOT {@code IPublicationManager.getAll}: that one serves a per-{@code WebServer}
+     * EMF Resource built once through {@code computeIfAbsent} and dropped only from the manager's own
+     * {@code firePublishedEvent}/{@code firePublicationRemovedEvent} (decompile of services.core 21.0
+     * {@code PublicationManager}). {@link #publish} must drive the delegate directly — the manager
+     * hands the delegate a null web-extension Path — so those events never fire, and the existence
+     * check {@code publish} takes beforehand froze an EMPTY snapshot: every later get/list/remove
+     * answered PUBLICATION_NOT_FOUND for an alias Apache had been serving for hours (feedback
+     * 2026-08-04 …remove-get-list-lose-track-of-successfully-published-alias). The delegate reads the
+     * conf itself, so it cannot drift from the file.</p>
+     */
+    private List<Publication> publicationsInConf(WebServer server) throws WebServerAccessException {
+        IWebServerPublishDelegate delegate =
+                gateway.getWebServerPublishDelegateRegistry().getDelegate(server.getTypeId());
+        if (delegate == null) {
+            return gateway.getPublicationManager().getAll(server);
+        }
+        return new ArrayList<>(delegate.getAll(server));
     }
 
     public Publication getPublication(String serverName, String name) {
@@ -237,33 +270,39 @@ public class EdtWebPublicationService {
     }
 
     /**
-     * Resolves a publication by name tolerating a trailing slash on either side. EDT stores the
-     * Apache publication name with a trailing slash (e.g. {@code agent-current/}, the form
-     * {@code list} returns), but the schema documents the bare alias — so a direct
-     * {@code manager.get(server, "agent-current")} misses it. The fast exact match is tried first;
-     * on a miss we scan {@code getAll} comparing slash-stripped names. Returns {@code null} when no
-     * publication matches.
+     * Resolves a publication by name tolerating a leading or trailing slash on either side. EDT
+     * stores the Apache publication name with a trailing slash (e.g. {@code agent-current/}, the form
+     * {@code list} returns) while the schema documents the bare alias, and the conf's own
+     * {@code Alias "/agent-current"} carries a leading one — so every comparison here is on the
+     * slash-stripped form. Returns {@code null} when no publication matches.
      */
     private Publication findPublication(WebServer server, String name) throws WebServerAccessException {
-        IPublicationManager manager = gateway.getPublicationManager();
-        Publication exact = manager.get(server, name);
-        if (exact != null) {
-            return exact;
-        }
-        String wanted = stripTrailingSlash(name);
-        for (Publication candidate : manager.getAll(server)) {
-            if (wanted.equals(stripTrailingSlash(candidate.getName()))) {
+        String wanted = stripSlashes(name);
+        for (Publication candidate : publicationsInConf(server)) {
+            if (wanted.equals(stripSlashes(candidate.getName()))) {
                 return candidate;
             }
         }
         return null;
     }
 
+    /**
+     * The published URL, computed from the conf. Goes through the delegate rather than
+     * {@code IPublicationManager.getPublicationUrl}, whose {@code publicationUris} cache is only
+     * cleared by the manager's own publish/remove/restart — which {@link #publish} bypasses (see
+     * {@link #publicationsInConf}) — and whose cache key even compares its own publication name to
+     * itself instead of the other key's ({@code PublicationManager.PublicationKey.equals}).
+     */
     public Optional<URL> getPublicationUrl(String serverName, String name) {
         WebServer server = requireServer(serverName);
         try {
+            IWebServerPublishDelegate delegate =
+                    gateway.getWebServerPublishDelegateRegistry().getDelegate(server.getTypeId());
+            if (delegate != null) {
+                return Optional.ofNullable(delegate.getPublicationUrl(server, name));
+            }
             return Optional.ofNullable(gateway.getPublicationManager().getPublicationUrl(server, name));
-        } catch (WebServerAccessException e) {
+        } catch (RuntimeException e) {
             LOG.warn("Could not compute publication URL for '%s' on '%s': %s", name, serverName, e.getMessage()); //$NON-NLS-1$
             return Optional.empty();
         }
@@ -381,8 +420,39 @@ public class EdtWebPublicationService {
                     "publish '" + name + "' on '" + serverName + "' failed inside the EDT publish delegate: " //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
                             + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()), e);
         }
+        refreshManagerSnapshot(server, publication);
         LOG.info("Published '%s' on '%s' (location=%s)", name, serverName, effectiveLocation); //$NON-NLS-1$
         return publication;
+    }
+
+    /**
+     * Best-effort: tell {@code PublicationManager} to drop its cached publication snapshot for this
+     * server after we published straight through the delegate. Our own reads no longer depend on it
+     * ({@link #publicationsInConf}), but EDT's publication editors and anything else on
+     * {@code IPublicationManager} would otherwise keep serving the pre-publish snapshot for the rest
+     * of the EDT session. {@code firePublishedEvent} is the manager's own invalidation hook — public
+     * on the implementation, absent from {@code IPublicationManager}, hence reflection; a miss (other
+     * EDT version, renamed hook) is logged and ignored, never a failed publish.
+     */
+    private void refreshManagerSnapshot(WebServer server, Publication publication) {
+        IPublicationManager manager = gateway.getPublicationManager();
+        try {
+            Method hook = manager.getClass().getMethod("firePublishedEvent", WebServer.class, Publication.class); //$NON-NLS-1$
+            // The hook notifies publication editors synchronously on the calling thread -> UI hop.
+            onUiThread(() -> {
+                try {
+                    hook.invoke(manager, server, publication);
+                } catch (ReflectiveOperationException e) {
+                    throw new IllegalStateException(e);
+                }
+                return Boolean.TRUE;
+            });
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            LOG.warn("Published '%s', but could not refresh EDT's cached publication list (%s). " //$NON-NLS-1$
+                    + "The EDT publication editor may still show the pre-publish state; the tool's own " //$NON-NLS-1$
+                    + "list/get read the conf directly and are unaffected.", //$NON-NLS-1$
+                    publication.getName(), e.toString());
+        }
     }
 
     /**
@@ -701,12 +771,91 @@ public class EdtWebPublicationService {
                         "Platform " + versionMask + " is installed without the web-server extension component (" //$NON-NLS-1$ //$NON-NLS-2$
                                 + componentTypeId + "). Install 'Web server extension modules' for that version."); //$NON-NLS-1$
             }
-            return new ResolvedWebExtension(installation, Paths.get(component.getLocation()));
+            return new ResolvedWebExtension(installation, webExtensionModule(component, server, versionMask));
         } catch (MatchingRuntimeNotFound e) {
             throw new EdtToolException(EdtToolErrorCode.WEB_EXTENSION_NOT_FOUND,
                     "Platform " + versionMask + " has no web-server extension component for " //$NON-NLS-1$ //$NON-NLS-2$
                             + server.getTypeId() + ": " + e.getMessage(), e); //$NON-NLS-1$
         }
+    }
+
+    /**
+     * The wsap module FILE the publish delegate must write into {@code LoadModule _1cws_module}.
+     *
+     * <p>{@code IRuntimeComponent.getLocation()} is the platform's {@code bin} DIRECTORY, and that
+     * directory carries every wsap flavour at once ({@code wsapch2.dll}, {@code wsap22.dll},
+     * {@code wsap24.dll}). {@code ApachePublishDelegateWin32.formatPathToWebExtensionComponent} only
+     * quotes what it is handed, so passing the directory wrote a {@code LoadModule} Apache refuses to
+     * parse — httpd then exited with code 1 before it could even open its error log (feedback
+     * 2026-08-04 …wsap-version-writes-directory-not-dll). EDT's own reader confirms the expected shape:
+     * its {@code RUNTIME_PATH} pattern only matches a path ending in {@code wsap*|wsisapi.(dll|so)}.</p>
+     *
+     * <p>EDT models the component as {@link ILaunchableRuntimeComponent}, whose {@code getFile()} IS
+     * the module — that is the primary path here. The by-name fallback mirrors EDT's own
+     * {@code IRuntimeComponentFileNames} table for a component that is not launchable.</p>
+     */
+    private static Path webExtensionModule(IRuntimeComponent component, WebServer server, String versionMask) {
+        if (component instanceof ILaunchableRuntimeComponent) {
+            File file = ((ILaunchableRuntimeComponent)component).getFile();
+            if (file != null) {
+                return file.toPath();
+            }
+        }
+        Path location = Paths.get(component.getLocation());
+        Path module = wsapModule(location, server.getTypeId());
+        if (module == null) {
+            throw new EdtToolException(EdtToolErrorCode.WEB_EXTENSION_NOT_FOUND,
+                    "Platform " + versionMask + " exposes its web-server extension as '" + location //$NON-NLS-1$ //$NON-NLS-2$
+                            + "', which holds no module for web server type " + server.getTypeId() //$NON-NLS-1$
+                            + " (expected " + wsapModuleFileName(server.getTypeId()) //$NON-NLS-1$
+                            + " there). Install 'Web server extension modules' for that version."); //$NON-NLS-1$
+        }
+        return module;
+    }
+
+    /**
+     * Resolves the wsap module inside a platform {@code bin} directory for a web-server type; returns
+     * {@code location} unchanged when it already IS a file, and {@code null} when nothing matches.
+     * Package visible so a plain JUnit test can drive it without an EDT runtime.
+     */
+    static Path wsapModule(Path location, String webServerTypeId) {
+        if (location == null) {
+            return null;
+        }
+        if (Files.isRegularFile(location)) {
+            return location;
+        }
+        String moduleFileName = wsapModuleFileName(webServerTypeId);
+        if (moduleFileName == null) {
+            return null;
+        }
+        Path module = location.resolve(moduleFileName);
+        if (Files.isRegularFile(module)) {
+            return module;
+        }
+        // Non-Windows platforms ship the same module as a shared object under the same base name.
+        Path sharedObject = location.resolve(moduleFileName.replace(".dll", ".so")); //$NON-NLS-1$ //$NON-NLS-2$
+        return Files.isRegularFile(sharedObject) ? sharedObject : null;
+    }
+
+    /**
+     * EDT's own web-server-type → module-file table ({@code IRuntimeComponentFileNames}); {@code null}
+     * for a type that has no wsap module (e.g. Jetty).
+     */
+    static String wsapModuleFileName(String webServerTypeId) {
+        if (webServerTypeId == null) {
+            return null;
+        }
+        if (IWebServerTypes.APACHE_2_0.equals(webServerTypeId)) {
+            return "wsapch2.dll"; //$NON-NLS-1$
+        }
+        if (IWebServerTypes.APACHE_2_2.equals(webServerTypeId)) {
+            return "wsap22.dll"; //$NON-NLS-1$
+        }
+        if (IWebServerTypes.APACHE_2_4.equals(webServerTypeId)) {
+            return "wsap24.dll"; //$NON-NLS-1$
+        }
+        return webServerTypeId.startsWith(IIS_TYPE_ID_PREFIX) ? "wsisapi.dll" : null; //$NON-NLS-1$
     }
 
     /** Hook for tests. */
@@ -765,6 +914,18 @@ public class EdtWebPublicationService {
         String trimmed = name.trim();
         while (trimmed.endsWith("/") || trimmed.endsWith("\\")) { //$NON-NLS-1$ //$NON-NLS-2$
             trimmed = trimmed.substring(0, trimmed.length() - 1);
+        }
+        return trimmed;
+    }
+
+    /**
+     * The comparable form of a publication alias: no surrounding whitespace, no leading and no
+     * trailing slash. Package visible so a plain JUnit test can pin the matching rule.
+     */
+    static String stripSlashes(String name) {
+        String trimmed = stripTrailingSlash(name);
+        while (trimmed.startsWith("/") || trimmed.startsWith("\\")) { //$NON-NLS-1$ //$NON-NLS-2$
+            trimmed = trimmed.substring(1);
         }
         return trimmed;
     }
