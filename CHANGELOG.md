@@ -35,9 +35,19 @@ commit hash in parentheses where useful.
   compares its own publication name to itself (`PublicationKey.equals`). Alias matching now strips a leading slash
   as well as a trailing one — the conf writes `Alias "/name"`, the model may store `name/`, the schema documents
   the bare alias.
-* **Status:** build green, 14 plain-JUnit cases green (resolution table, shared `bin` directory, already-a-file
-  and missing-module paths, alias forms). The delegate-backed read paths and the pinned publish need the live
-  stand — not reproducible in a unit test, since both hang off a running EDT's publish delegate.
+* **Status: LIVE-VALIDATED 2026-08-04**, build `0.1.7.20260804-1700`, stack-1 / `Apache-stack-1`, all three
+  scenarios PASS (run by `infra-bf13525` on alias `edt-fix-validate`). `publish` with `wsap_version` wrote
+  `…\bin\wsap24.dll` — the file, not the directory — and came back `restarted:true` / `probe_status:200`;
+  `list`/`get` right after the publish in the SAME EDT session returned the publication (the exact pair that
+  used to answer `[]` / `PUBLICATION_NOT_FOUND`); `remove` took the alias down with no manual conf editing
+  (`removed:true`, probe on the removed alias → 404). Build green, 14 plain-JUnit cases green (resolution
+  table, shared `bin` directory, already-a-file and missing-module paths, alias forms).
+* **Bystander note, verified in the decompile after the live run flagged it:** `remove` also drops the
+  `LoadModule _1cws_module` line — but only when the publication it removes was the conf's LAST 1C one.
+  `ConfigUpdate.update` re-scans every surviving `<Directory>` for `SetHandler 1c-application`
+  (`checkForV8Publication`) and writes the remembered module line back when it finds one, so removing one alias
+  from a multi-publication Apache does not break the others. EDT behaviour, not ours; recorded because the
+  fleet's Apache does host several aliases.
 
 ### Round-11 (2026-07-29) — `update_infobase` stops calling a deferred schema an update (BF-12843)
 
