@@ -9,6 +9,36 @@ commit hash in parentheses where useful.
 
 ## [Unreleased] — branch `pd/mcp-bridge-lite`
 
+### Round-12 (2026-08-04) — `web_publication`: the wsap pin and the publication list both told the truth about a model nobody refreshed (BF-13525)
+
+* **`wsap_version` now pins the module FILE, not the platform's `bin` directory** (`703de23`). Reported off
+  stack-1: `publish` returned `ok`, the next `restart` died with `httpd exited immediately with code 1`, and the
+  Apache error log stayed empty — the classic signature of a conf that fails to parse before logging starts. The
+  conf carried `LoadModule _1cws_module "C:\Program Files\1cv8\8.3.27.2074\bin"`. `IRuntimeComponent.getLocation()`
+  is that directory, and it holds every wsap flavour at once (`wsapch2.dll`, `wsap22.dll`, `wsap24.dll` side by
+  side), while `ApachePublishDelegateWin32.formatPathToWebExtensionComponent` only quotes what it is handed. EDT's
+  own reader states the expected shape — its `RUNTIME_PATH` pattern matches only a path ending in
+  `wsap*|wsisapi.(dll|so)`. The component is an `ILaunchableRuntimeComponent` whose `getFile()` IS the module, so
+  that is the primary resolution now, with a by-name fallback mirroring EDT's `IRuntimeComponentFileNames` table.
+  A platform installed without the web-server extension component now fails with a structured
+  `WEB_EXTENSION_NOT_FOUND` naming the directory searched, instead of writing a conf that stops Apache.
+* **`get`/`list`/`remove` read the conf instead of a snapshot frozen before the publish** (`703de23`). Same
+  session, same stand: an alias Apache had been serving for hours answered `PUBLICATION_NOT_FOUND`, with `list`
+  returning `[]`, while the `Alias` block sat in `httpd-1c.conf` untouched. `PublicationManager.getAll` never
+  consults the delegate — it serves a per-`WebServer` EMF Resource filled once via `computeIfAbsent` and dropped
+  only by the manager's own `firePublishedEvent`/`firePublicationRemovedEvent`. Publishing here has to bypass the
+  manager (it hands the delegate a `null` web-extension `Path`, an NPE for any vrd with `httpServices`), so those
+  events never fired — and `publish`'s own pre-flight existence check ran first, freezing an EMPTY snapshot for
+  the rest of the EDT session. Every read now goes to the delegate, which re-parses the conf per call; `publish`
+  additionally pokes the manager's invalidation hook best-effort so EDT's own publication editor stops showing the
+  pre-publish state. `getPublicationUrl` leaves the manager for the same reason, plus its `publicationUris` key
+  compares its own publication name to itself (`PublicationKey.equals`). Alias matching now strips a leading slash
+  as well as a trailing one — the conf writes `Alias "/name"`, the model may store `name/`, the schema documents
+  the bare alias.
+* **Status:** build green, 14 plain-JUnit cases green (resolution table, shared `bin` directory, already-a-file
+  and missing-module paths, alias forms). The delegate-backed read paths and the pinned publish need the live
+  stand — not reproducible in a unit test, since both hang off a running EDT's publish delegate.
+
 ### Round-11 (2026-07-29) — `update_infobase` stops calling a deferred schema an update (BF-12843)
 
 * **The non-convergence advisory stopped blaming a dynamic apply** (`6e29ddb`). Raised by the orchestrator off
